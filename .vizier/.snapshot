@@ -1,4 +1,4 @@
-SNAPSHOT v0.2 — Castra (VM orchestration harness)
+SNAPSHOT v0.3 — Castra (VM orchestration harness)
 
 Project promise
 - Orchestrate multiple virtual machines on a single host for agent workloads.
@@ -8,22 +8,25 @@ Project promise
 
 Current code state (observable surfaces)
 - Rust crate "castra" with a clap-based CLI binary.
-  - Subcommands scaffolded: init, up, down, status, ports, logs.
+  - Subcommands: init, up, down, status, ports, logs.
   - `--config PATH` supported; discovery searches upward for castra.toml unless `--skip-discovery` on relevant commands.
-  - Helpful errors and exit codes: help/version exit 0; usage errors exit 64; NYI surfaces return structured error with a tracking hint.
+  - Helpful errors and exit codes: help/version exit 0; usage errors exit 64; NYI surfaces return structured error with a tracking hint that references repo-local TODO files.
   - `init` implemented: writes castra.toml (TOML) and creates .castra/ workdir with friendly next-steps copy.
-  - Default config content includes single VM (devbox), overlay path, basic port forwards, and a placeholder workflow.
-- Not-yet-implemented commands (`up`, `down`, `status`, `ports`, `logs`) return NYI with a tracking path that currently points to .vizier/* TODOs (note: repository stores TODOs at project root).
+  - `ports` implemented: loads config, emits warnings for unknown fields, detects port conflicts (including broker port collision), and prints a tabular summary; `--verbose` adds per-VM detail and workflow steps.
+  - `up`, `down`, `status`, `logs` currently NYI.
+- Configuration: TOML at repo root (castra.toml); auto-discovered or overridden via --config. Parser performs validation with actionable errors and accumulates non-fatal warnings for unknown fields and suspicious patterns.
+- Known copy mismatch: CLI long_about still mentions a `.vizier/` directory; repo uses root-level TODOs.
 
 Near-term user-facing surface (target)
 - A single binary: `castra`.
 - Core flows to support (single-VM first):
-  1) `castra init` — scaffold config and working directories. [DONE in code]
-  2) `castra up` — start defined VM(s) via QEMU. [NYI]
-  3) `castra status` — show per-VM lifecycle and comm health. [NYI]
-  4) `castra down` — graceful stop/cleanup. [NYI]
-  5) `castra ports|logs` — connectivity and recent activity. [NYI]
-- Configuration: TOML at repo root (castra.toml); auto-discovered or overridden via --config.
+  1) `castra init` — scaffold config and working directories. [DONE]
+  2) `castra ports` — show declared/active connectivity and conflicts. [DONE v1]
+  3) `castra up` — start defined VM(s) via QEMU. [NYI]
+  4) `castra status` — show per-VM lifecycle and comm health. [NYI]
+  5) `castra down` — graceful stop/cleanup. [NYI]
+  6) `castra logs` — connectivity and recent activity. [NYI]
+- Configuration: TOML with version, [project], [[vms]] (name, description?, base_image, overlay, cpus, memory, [[vms.port_forwards]] host/guest/protocol), [workflows] (init[]), [broker] (port). Relative paths resolved against config directory.
 
 External constraints and promises
 - Backend: QEMU only (no libvirt requirement in UX; implementation choices remain open).
@@ -32,8 +35,8 @@ External constraints and promises
 
 Active threads (narrative arcs)
 1) UX-first CLI contract
-   - Tension: We promised polished CLI; skeleton now exists with subcommands, help/version, and structured errors. Remaining: refine copy, ensure NYI tracking hints reference real paths.
-   - Depends on: CODE STATE v0.2 CLI; External promise: UX premium.
+   - Tension: We promised polished CLI; skeleton exists with subcommands, help/version, and structured errors. NYI tracking hints now reference real repo TODOs. Remaining: audit CLI copy (long_about still points to `.vizier/`).
+   - Depends on: CODE STATE v0.3 CLI; External promise: UX premium.
    - Outcome: Predictable commands, helpful output, meaningful exit codes.
 
 2) QEMU backend and VM lifecycle
@@ -47,7 +50,7 @@ Active threads (narrative arcs)
    - Outcome: Host listener/broker exists; stable agent↔VM path.
 
 4) Project configuration and discovery
-   - Tension: Init and discovery now implemented; config validation and friendly errors still missing.
+   - Tension: Init and discovery implemented; parser now performs validation, resolves relative paths, and surfaces warnings for unknown fields. Remaining: tighten diagnostics/copy and example hints on errors.
    - Outcome: Readable config defines VMs/resources; auto-discovered from project root with clear diagnostics.
 
 5) VM images and storage hygiene
@@ -55,7 +58,7 @@ Active threads (narrative arcs)
    - Outcome: Base images + ephemeral overlays by default; explicit cleanup commands.
 
 6) Networking and connectivity ergonomics
-   - Tension: Need predictable host/guest connectivity; `ports` UX TBD.
+   - Tension: Need predictable host/guest connectivity; first-pass `ports` view exists and detects conflicts and broker overlap. Remaining: integrate live/active state once VMs run.
    - Outcome: NAT with stable forwards; clear `ports` view; common host OSes work.
 
 7) Observability and status legibility
@@ -71,4 +74,4 @@ Active threads (narrative arcs)
    - Outcome: Stable toolchain target; `cargo install`/releases; `--version` surfaced (commit optional).
 
 Direction of travel
-- Build on the working CLI: next, deliver a minimal end-to-end run (single VM): up → status → down. Fix NYI tracking paths to match repository layout. Keep UX copy crisp and errors actionable.
+- Build on the working CLI and config/ports flow: deliver a minimal end-to-end run (single VM): up → status → down. Keep UX copy crisp and errors actionable. Fix remaining copy mismatch in CLI long_about. Coordinate QEMU lifecycle with preflight checks (QEMU presence, overlays, port conflicts).
