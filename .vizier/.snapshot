@@ -1,4 +1,4 @@
-SNAPSHOT v0.4 — Castra (VM orchestration harness)
+SNAPSHOT v0.5 — Castra (VM orchestration harness)
 
 Project promise
 - Orchestrate multiple virtual machines on a single host for agent workloads.
@@ -7,76 +7,59 @@ Project promise
 - UX is at a premium: fast, legible, low-friction CLI with sensible defaults and clear status.
 
 Current code state (observable surfaces)
-- Rust crate "castra" with a clap-based CLI binary.
-  - Subcommands: init, up, down, status, ports, logs; hidden broker used internally.
-  - `--config PATH` supported; discovery searches upward for castra.toml unless `--skip-discovery` (up/down/status honor it).
-  - Exit codes: help/version exit 0; usage errors exit 64; other failures mapped via CliError to 65–74.
-  - `init`: writes castra.toml and creates .castra/ workdir with next-steps copy.
-  - `ports`: loads config, emits parser warnings, detects port conflicts (including broker-port collision), prints tabular declared forwards; `--verbose` shows per-VM details and workflow steps.
-  - `up`:
-    • Resolves config; prints parse warnings.
-    • Preflight: detects duplicate/overlapping ports; checks runtime availability (bind test) for each host forward and broker port; verifies qemu-system presence; prepares state/log directories; ensures overlays (creates via qemu-img if available, otherwise prints manual command).
-    • Starts host broker subprocess (hidden `broker` command) writing .castra/broker.pid and logs to .castra/logs/broker.log; idempotent if already running.
-    • Launches each VM via qemu-system with user-mode NAT and hostfwd rules; writes per-VM pidfile (.castra/<vm>.pid); logs QEMU stdout/stderr to .castra/logs/<vm>.log and serial to .castra/logs/<vm>-serial.log.
-  - `status`: prints table (VM | STATE | CPU/MEM | UPTIME | BROKER | FORWARDS); colors on TTY, plain when redirected. STATE is derived from pidfile/process checks; UPTIME from pidfile mtime. BROKER shows waiting/offline (reachable TBD).
-  - `down`: for each VM pidfile, sends SIGTERM, waits, escalates SIGKILL, removes pidfile; also stops the broker similarly; prints progress summaries.
-  - `logs`: shows tail per source and optional `--follow` streaming for [host-broker], vm:<name>:qemu, vm:<name>:serial; degrades gracefully if a file is not yet present.
-- Configuration: TOML at repo root (castra.toml); auto-discovered or overridden via --config. Parser validates required fields, resolves relative paths against config directory, and accumulates non-fatal warnings for unknown fields and patterns (e.g., duplicate guest forwards per VM). Default broker.port = 7070.
+- Rust CLI binary (clap).
+  - Subcommands: init, up, down, status, ports, logs; hidden broker.
+  - Global: --config PATH; discovery searches upward for castra.toml; --skip-discovery honored on up/down/status. Empty invocation prints help and exits 64. Help/version exit 0.
+  - Exit codes: usage 64; config/path 66; parse/invalid 65; IO/launch/shutdown/preflight 70–74 via CliError.exit_code.
+  - init: writes castra.toml and .castra/ workdir scaffold with next-steps copy.
+  - ports: loads config, prints warning summary, detects duplicate host ports and broker-port collision; prints declared forwards table; --verbose prints per-VM details and workflow steps.
+  - up:
+    • Resolves config; prints warning summary.
+    • Preflight: host CPU/memory headroom (with warn/fail thresholds), free-disk checks for state/logs/overlay dirs, host port conflict checks (including broker), qemu-system presence; --force bypass for fail conditions (warns).
+    • Ensures per-VM overlay (via qemu-img when available; otherwise prints manual command).
+    • Starts host broker (hidden broker subcommand) writing .castra/broker.pid and logs to .castra/logs/broker.log; idempotent if already running.
+    • Launches each VM via qemu-system (hvf on macOS, kvm on Linux) with user-mode NAT and hostfwd rules; writes .castra/<vm>.pid; logs QEMU stdout/stderr to .castra/logs/<vm>.log and serial to <vm>-serial.log.
+  - status: prints table (VM | STATE | CPU/MEM | UPTIME | BROKER | FORWARDS); colors on TTY only. STATE derived from pidfile/process checks; UPTIME from pidfile mtime. BROKER column shows waiting when broker listening, offline otherwise.
+  - down: reads pidfiles; sends SIGTERM then escalates SIGKILL with timeouts; removes pidfiles; stops broker similarly; prints progress.
+  - logs: tails broker and per-VM qemu/serial files; prefixes [host-broker] | [vm:<name>:qemu] | [vm:<name>:serial]; respects --tail N and --follow with graceful gaps.
+- Configuration: TOML; required fields validated; unknown fields warned with path context; relative paths resolved against config dir. Default broker.port = 7070. Warning summary emitted once per command with next-steps hints.
 
-Near-term user-facing surface (target)
-- End-to-end minimal flow is live for multi-VM configs: init → ports → up → status/logs → down.
-- Refinements planned:
-  1) ACPI-first shutdown path before TERM/KILL.
-  2) Distinguish active vs planned forwards (QMP/runtime inspection) and possible `ports --active`.
-  3) Broker reachability signal from guest handshake (status: reachable vs waiting).
-  4) Warning summary block post-parse; strengthen copy/examples in `--help`.
-  5) Optional directory layout split: .castra/run (pidfiles/sockets) vs .castra/logs.
-
-External constraints and promises
-- Backend: QEMU only; macOS uses HVF, Linux uses KVM; `-cpu host` requested.
-- Communication: Host-centric broker model; current protocol is minimal line-based greeting for connectivity validation.
-- Defaults emphasize safety: overlay images over base; NAT networking; clear teardown with `down`.
-
-Active threads (narrative arcs)
+Narrative state (active themes and tensions)
 1) UX-first CLI contract
-   - Tension: Keep help/copy precise and exit-code policy consistent as features land.
-   - Depends on: Implemented CLI commands and current outputs.
-   - Outcome: Predictable commands, accurate help text, examples.
+   - Promise: predictable commands, crisp copy, consistent exit codes.
+   - State: Help and copy largely aligned; exit policy consistent. Keep per-command help synced as features evolve.
 
 2) QEMU backend and VM lifecycle
-   - Tension: Improve shutdown via ACPI; introduce QMP for richer lifecycle.
-   - Depends on: Current direct qemu-system invocation with pidfiles and logs.
-   - Outcome: Reliable start/stop with cleaner guest-cooperative shutdown.
+   - Promise: reliable start/stop; guest-cooperative shutdown.
+   - State: Start/stop implemented with TERM→KILL; ACPI-first path not yet wired; no QMP.
 
 3) Host communication channel
-   - Tension: Broker running and logged; need guest handshake to surface "reachable".
-   - Depends on: Hidden broker subcommand, status integration.
-   - Outcome: Clear broker health and guest reachability status.
+   - Promise: broker reachable; surface guest reachability.
+   - State: Broker listener implemented with line-based greeting and logging; status shows listening vs offline; no guest handshake yet to mark reachable.
 
 4) Project configuration and discovery
-   - Tension: Parser warnings shown verbosely; add summary and next-steps hints.
-   - Depends on: Validating parser and warning collection.
-   - Outcome: Readable diagnostics with actionable suggestions.
+   - Promise: readable config with actionable diagnostics.
+   - State: Parser validates with warnings; warning summary and next-steps in place; discovery and --config implemented.
 
 5) VM images and storage hygiene
-   - Tension: Overlays created inline; directory layout could separate run vs logs vs images more clearly.
-   - Outcome: Safer, predictable storage with cleanup affordances.
+   - Promise: safe, predictable storage layout.
+   - State: Overlays created as needed; runtime and logs live under .castra (logs at .castra/logs, pidfiles at .castra/); potential split into run/ vs logs/ remains open.
 
 6) Networking and connectivity ergonomics
-   - Tension: Active forwards not yet distinguished at runtime; conflicts/broker overlap handled.
-   - Outcome: NAT with stable forwards; future `--active` view.
+   - Promise: predictable NAT + forwards; clarity on declared vs active.
+   - State: NAT + hostfwd on launch; ports lists declared forwards and flags conflicts and broker reservation; runtime inspection of active forwards not yet.
 
 7) Observability and status legibility
-   - Tension: Status lacks broker "reachable" and may need width/truncation handling for long names.
-   - Outcome: Color-coded, legible status and resilient logs streaming.
+   - Promise: legible status and logs with color-on-tty.
+   - State: Status and logs implemented per copy; BROKER shows waiting/offline; width calcs avoid ragged columns; truncation/long-name handling minimal but acceptable.
 
 8) Safety and resource limits
-   - Tension: Preflight lacks disk/CPU/mem headroom checks; signals not yet translated into graceful orchestrator shutdown.
-   - Outcome: Headroom checks with `--force` escape hatch; graceful signal handling.
+   - Promise: avoid host overload, provide overrides with care.
+   - State: CPU/mem/disk/port preflight implemented with thresholds, friendly messages, and --force escape hatch. Signals inside castra not yet wired for graceful self-termination; relies on child process management.
 
 9) Toolchain baseline and distribution
-   - Tension: Git SHA in --version and release docs remain TBD.
-   - Outcome: Version string includes git short SHA when available; MSRV and releasing checklist documented.
+   - Promise: surface git SHA; document MSRV and release path.
+   - State: --version uses Cargo semver only; git SHA/MSRV/releasing docs still TBD.
 
 Direction of travel
-- Harden the MVP by adding ACPI-first shutdown, warning summaries, and broker reachability handshake. Then introduce runtime inspection (QMP) to separate active vs planned forwards and consider a .castra/run layout to declutter logs. Keep UX copy crisp; maintain exit-code consistency.
+- Next hardening steps: ACPI-first shutdown before TERM/KILL; guest handshake to report broker reachable; consider QMP for richer lifecycle and active-port view; optional .castra/run split. Maintain copy/exit-code discipline and keep warning/observability polish high.
