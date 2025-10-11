@@ -29,6 +29,20 @@ pub enum CliError {
         #[source]
         source: std::io::Error,
     },
+    #[error("Failed to read configuration file at {path}: {source}")]
+    ReadConfig {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Configuration at {path} could not be parsed: {source}")]
+    ParseConfig {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
+    #[error("Configuration validation failed:\n{message}")]
+    InvalidConfig { message: String },
     #[error("The configuration path {path} does not exist or is not readable.")]
     ExplicitConfigMissing { path: PathBuf },
     #[error(
@@ -50,6 +64,9 @@ impl CliError {
             Self::AlreadyInitialized { .. } => ExitCode::from(73),
             Self::CreateDir { .. } => ExitCode::from(73),
             Self::WriteConfig { .. } => ExitCode::from(74),
+            Self::ReadConfig { .. } => ExitCode::from(74),
+            Self::ParseConfig { .. } => ExitCode::from(65),
+            Self::InvalidConfig { .. } => ExitCode::from(65),
             Self::ExplicitConfigMissing { .. } => ExitCode::from(66),
             Self::ConfigDiscoveryFailed { .. } => ExitCode::from(66),
             Self::WorkingDirectoryUnavailable { .. } => ExitCode::from(70),
