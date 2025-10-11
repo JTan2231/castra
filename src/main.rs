@@ -6,6 +6,7 @@ use std::cmp;
 use std::collections::{HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs;
+use std::io::IsTerminal;
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -16,7 +17,9 @@ use std::time::{Duration, Instant, SystemTime};
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use libc::{self, pid_t};
 
-use crate::cli::{Cli, Commands, DownArgs, InitArgs, LogsArgs, PortsArgs, StatusArgs, UpArgs};
+use crate::cli::{
+    BrokerArgs, Cli, Commands, DownArgs, InitArgs, LogsArgs, PortsArgs, StatusArgs, UpArgs,
+};
 use crate::config::{PortForward, PortProtocol, ProjectConfig, VmDefinition, load_project_config};
 use crate::error::{CliError, CliResult};
 
@@ -51,6 +54,7 @@ fn main() -> ExitCode {
         Commands::Status(args) => handle_status(args, config.as_ref()),
         Commands::Ports(args) => handle_ports(args, config.as_ref()),
         Commands::Logs(args) => handle_logs(args, config.as_ref()),
+        Commands::Broker(args) => handle_broker(args),
     };
 
     match exit {
@@ -118,7 +122,7 @@ fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> CliResult<()> {
         eprintln!("Warning: {warning}");
     }
 
-    let (status_rows, mut status_warnings) = collect_vm_status(&project);
+    let (status_rows, _, mut status_warnings) = collect_vm_status(&project);
     let running: Vec<_> = status_rows
         .iter()
         .filter(|row| row.state == "running")
@@ -142,6 +146,8 @@ fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> CliResult<()> {
     for vm in &project.vms {
         ensure_vm_assets(vm, &context)?;
     }
+
+    start_broker(&project, &context)?;
 
     for vm in &project.vms {
         launch_vm(vm, &context)?;
@@ -169,10 +175,16 @@ fn handle_down(args: DownArgs, config_override: Option<&PathBuf>) -> CliResult<(
         }
     }
 
-    if had_running {
-        println!("All VMs have been stopped.");
-    } else {
-        println!("No running VMs detected.");
+    let broker_running = shutdown_broker(&state_root)?;
+
+    match (had_running, broker_running) {
+        (false, false) => println!("No running VMs or broker detected."),
+        (true, false) => println!("All VMs have been stopped."),
+        (false, true) => println!("Broker listener stopped."),
+        (true, true) => {
+            println!("All VMs have been stopped.");
+            println!("Broker listener stopped.");
+        }
     }
 
     Ok(())
@@ -186,12 +198,12 @@ fn handle_status(args: StatusArgs, config_override: Option<&PathBuf>) -> CliResu
         eprintln!("Warning: {warning}");
     }
 
-    let (status_rows, status_warnings) = collect_vm_status(&project);
+    let (status_rows, broker_state, status_warnings) = collect_vm_status(&project);
     for warning in status_warnings {
         eprintln!("Warning: {warning}");
     }
 
-    print_status_table(&project, &status_rows);
+    print_status_table(&project, &status_rows, broker_state);
     Ok(())
 }
 
@@ -359,9 +371,15 @@ struct RuntimeContext {
 }
 
 struct LogSource {
-    name: String,
+    prefix: String,
     path: PathBuf,
     offset: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrokerProcessState {
+    Running { pid: pid_t },
+    Offline,
 }
 
 fn prepare_runtime_context(project: &ProjectConfig) -> CliResult<RuntimeContext> {
@@ -446,6 +464,70 @@ fn ensure_ports_available(project: &ProjectConfig) -> CliResult<()> {
         )?;
     }
 
+    Ok(())
+}
+
+fn broker_pid_path(context: &RuntimeContext) -> PathBuf {
+    context.state_root.join("broker.pid")
+}
+
+fn broker_log_path(context: &RuntimeContext) -> PathBuf {
+    context.log_root.join("broker.log")
+}
+
+fn start_broker(project: &ProjectConfig, context: &RuntimeContext) -> CliResult<()> {
+    let pidfile = broker_pid_path(context);
+    let (state, mut warnings) = inspect_broker_state(&pidfile);
+    for warning in warnings.drain(..) {
+        eprintln!("Warning: {warning}");
+    }
+
+    if let BrokerProcessState::Running { pid } = state {
+        println!(
+            "→ broker: already running on 127.0.0.1:{} (pid {}).",
+            project.broker.port, pid
+        );
+        return Ok(());
+    }
+
+    if pidfile.exists() {
+        let _ = fs::remove_file(&pidfile);
+    }
+
+    let exe = std::env::current_exe().map_err(|err| CliError::PreflightFailed {
+        message: format!("Failed to determine current executable for broker launch: {err}"),
+    })?;
+
+    let log_path = broker_log_path(context);
+
+    let mut command = Command::new(exe);
+    command
+        .arg("broker")
+        .arg("--port")
+        .arg(project.broker.port.to_string())
+        .arg("--pidfile")
+        .arg(pidfile.as_os_str())
+        .arg("--logfile")
+        .arg(log_path.as_os_str())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    let mut child = command.spawn().map_err(|err| CliError::PreflightFailed {
+        message: format!("Failed to launch broker subprocess: {err}"),
+    })?;
+
+    if let Err(err) = wait_for_pidfile(&pidfile, Duration::from_secs(3)) {
+        let _ = child.kill();
+        return Err(CliError::PreflightFailed {
+            message: format!("Broker process did not initialize: {err}"),
+        });
+    }
+
+    println!(
+        "→ broker: listening on 127.0.0.1:{} (pid {}).",
+        project.broker.port,
+        child.id()
+    );
     Ok(())
 }
 
@@ -565,6 +647,20 @@ fn launch_vm(vm: &VmDefinition, context: &RuntimeContext) -> CliResult<()> {
         ),
     })?;
 
+    let serial_path = context.log_root.join(format!("{}-serial.log", vm.name));
+    fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&serial_path)
+        .map_err(|err| CliError::LaunchFailed {
+            vm: vm.name.clone(),
+            message: format!(
+                "Could not prepare serial log {}: {err}",
+                serial_path.display()
+            ),
+        })?;
+
     let memory_mib = vm
         .memory
         .bytes()
@@ -597,7 +693,7 @@ fn launch_vm(vm: &VmDefinition, context: &RuntimeContext) -> CliResult<()> {
         .arg("-display")
         .arg("none")
         .arg("-serial")
-        .arg("none")
+        .arg(format!("file:{}", serial_path.display()))
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_clone));
 
@@ -746,9 +842,9 @@ fn follow_logs(sources: &mut [LogSource]) -> CliResult<()> {
                             buffer.pop();
                         }
                         if buffer.is_empty() {
-                            println!("{} |", source.name);
+                            println!("{}", source.prefix);
                         } else {
-                            println!("{} | {}", source.name, buffer);
+                            println!("{} {}", source.prefix, buffer);
                         }
                         activity = true;
                     }
@@ -862,6 +958,94 @@ fn shutdown_vm(vm: &VmDefinition, state_root: &Path) -> CliResult<bool> {
     Ok(true)
 }
 
+fn shutdown_broker(state_root: &Path) -> CliResult<bool> {
+    let pidfile = state_root.join("broker.pid");
+    if !pidfile.is_file() {
+        println!("→ broker: already stopped.");
+        return Ok(false);
+    }
+
+    let contents = fs::read_to_string(&pidfile).map_err(|err| CliError::ShutdownFailed {
+        vm: "broker".to_string(),
+        message: format!("Unable to read broker pidfile {}: {err}", pidfile.display()),
+    })?;
+
+    let trimmed = contents.trim();
+    let pid: pid_t = trimmed.parse().map_err(|_| CliError::ShutdownFailed {
+        vm: "broker".to_string(),
+        message: format!(
+            "Broker pidfile {} contained invalid pid `{trimmed}`.",
+            pidfile.display()
+        ),
+    })?;
+
+    let term = unsafe { libc::kill(pid, libc::SIGTERM) };
+    if term != 0 {
+        let errno = io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or_default();
+        if errno == libc::ESRCH {
+            println!("→ broker: removing stale pidfile (process {pid} already exited).");
+            let _ = fs::remove_file(&pidfile);
+            return Ok(false);
+        }
+
+        return Err(CliError::ShutdownFailed {
+            vm: "broker".to_string(),
+            message: format!("Failed to send SIGTERM to broker pid {pid}: errno {errno}"),
+        });
+    }
+
+    println!("→ broker: sent SIGTERM to pid {}.", pid);
+    if !wait_for_process_exit(pid, Duration::from_secs(5)).map_err(|err| {
+        CliError::ShutdownFailed {
+            vm: "broker".to_string(),
+            message: format!("Error while waiting for broker pid {pid}: {err}"),
+        }
+    })? {
+        println!("→ broker: escalating to SIGKILL (pid {}).", pid);
+        let kill_res = unsafe { libc::kill(pid, libc::SIGKILL) };
+        if kill_res != 0 {
+            let errno = io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or_default();
+            if errno != libc::ESRCH {
+                return Err(CliError::ShutdownFailed {
+                    vm: "broker".to_string(),
+                    message: format!("Failed to send SIGKILL to broker pid {pid}: errno {errno}"),
+                });
+            }
+        }
+
+        if !wait_for_process_exit(pid, Duration::from_secs(5)).map_err(|err| {
+            CliError::ShutdownFailed {
+                vm: "broker".to_string(),
+                message: format!("Error while waiting for broker pid {pid} after SIGKILL: {err}"),
+            }
+        })? {
+            return Err(CliError::ShutdownFailed {
+                vm: "broker".to_string(),
+                message: "Broker process did not exit after SIGKILL.".to_string(),
+            });
+        }
+    }
+
+    if let Err(err) = fs::remove_file(&pidfile) {
+        if err.kind() != io::ErrorKind::NotFound {
+            return Err(CliError::ShutdownFailed {
+                vm: "broker".to_string(),
+                message: format!(
+                    "Broker stopped but failed to remove pidfile {}: {err}",
+                    pidfile.display()
+                ),
+            });
+        }
+    }
+
+    println!("→ broker: stopped.");
+    Ok(true)
+}
+
 fn wait_for_process_exit(pid: pid_t, timeout: Duration) -> io::Result<bool> {
     let start = Instant::now();
     loop {
@@ -890,13 +1074,20 @@ struct VmStatusRow {
     cpus: u32,
     memory: String,
     uptime: Option<Duration>,
+    broker: String,
     forwards: String,
 }
 
-fn collect_vm_status(project: &ProjectConfig) -> (Vec<VmStatusRow>, Vec<String>) {
+fn collect_vm_status(
+    project: &ProjectConfig,
+) -> (Vec<VmStatusRow>, BrokerProcessState, Vec<String>) {
     let mut rows = Vec::with_capacity(project.vms.len());
     let mut warnings = Vec::new();
     let state_root = config_state_root(project);
+    let broker_pidfile = state_root.join("broker.pid");
+
+    let (broker_state, mut broker_warnings) = inspect_broker_state(&broker_pidfile);
+    warnings.append(&mut broker_warnings);
 
     for vm in &project.vms {
         let pidfile = state_root.join(format!("{}.pid", vm.name));
@@ -909,11 +1100,15 @@ fn collect_vm_status(project: &ProjectConfig) -> (Vec<VmStatusRow>, Vec<String>)
             cpus: vm.cpus,
             memory: vm.memory.original().replace(' ', ""),
             uptime,
+            broker: match broker_state {
+                BrokerProcessState::Running { .. } => "waiting".to_string(),
+                BrokerProcessState::Offline => "offline".to_string(),
+            },
             forwards: format_port_forwards(&vm.port_forwards),
         });
     }
 
-    (rows, warnings)
+    (rows, broker_state, warnings)
 }
 
 fn inspect_vm_state(pidfile: &Path, vm_name: &str) -> (String, Option<Duration>, Vec<String>) {
@@ -992,6 +1187,80 @@ fn inspect_vm_state(pidfile: &Path, vm_name: &str) -> (String, Option<Duration>,
     ("unknown".to_string(), None, warnings)
 }
 
+fn inspect_broker_state(pidfile: &Path) -> (BrokerProcessState, Vec<String>) {
+    let mut warnings = Vec::new();
+
+    if !pidfile.is_file() {
+        return (BrokerProcessState::Offline, warnings);
+    }
+
+    let contents = match fs::read_to_string(pidfile) {
+        Ok(contents) => contents,
+        Err(err) => {
+            warnings.push(format!(
+                "Unable to read broker pidfile at {}: {err}",
+                pidfile.display()
+            ));
+            return (BrokerProcessState::Offline, warnings);
+        }
+    };
+
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        warnings.push(format!(
+            "Broker pidfile at {} was empty; removing stale file.",
+            pidfile.display()
+        ));
+        let _ = fs::remove_file(pidfile);
+        return (BrokerProcessState::Offline, warnings);
+    }
+
+    let pid: pid_t = match trimmed.parse() {
+        Ok(pid) => pid,
+        Err(_) => {
+            warnings.push(format!(
+                "Broker pidfile at {} contained invalid pid `{trimmed}`; removing stale file.",
+                pidfile.display()
+            ));
+            let _ = fs::remove_file(pidfile);
+            return (BrokerProcessState::Offline, warnings);
+        }
+    };
+
+    let alive = unsafe { libc::kill(pid, 0) };
+    if alive == 0 {
+        return (BrokerProcessState::Running { pid }, warnings);
+    }
+
+    let errno = io::Error::last_os_error()
+        .raw_os_error()
+        .unwrap_or_default();
+    if errno == libc::EPERM {
+        return (BrokerProcessState::Running { pid }, warnings);
+    }
+
+    if errno == libc::ESRCH {
+        warnings.push(format!(
+            "Removing stale broker pidfile at {} (process {pid} no longer exists).",
+            pidfile.display()
+        ));
+        if let Err(err) = fs::remove_file(pidfile) {
+            warnings.push(format!(
+                "Failed to remove stale broker pidfile at {}: {err}",
+                pidfile.display()
+            ));
+        }
+        return (BrokerProcessState::Offline, warnings);
+    }
+
+    warnings.push(format!(
+        "Unable to determine broker process state (pid {pid}, errno {errno}).",
+        errno = errno,
+        pid = pid
+    ));
+    (BrokerProcessState::Offline, warnings)
+}
+
 fn uptime_from_pidfile(pidfile: &Path) -> Option<Duration> {
     let metadata = fs::metadata(pidfile).ok()?;
     let modified = metadata.modified().ok()?;
@@ -1029,7 +1298,11 @@ fn format_uptime(value: Option<Duration>) -> String {
     "—".to_string()
 }
 
-fn print_status_table(project: &ProjectConfig, rows: &[VmStatusRow]) {
+fn print_status_table(
+    project: &ProjectConfig,
+    rows: &[VmStatusRow],
+    broker_state: BrokerProcessState,
+) {
     println!(
         "Project: {} ({})",
         project.project_name,
@@ -1037,12 +1310,22 @@ fn print_status_table(project: &ProjectConfig, rows: &[VmStatusRow]) {
     );
     println!("Config version: {}", project.version);
     println!("Broker endpoint: 127.0.0.1:{}", project.broker.port);
+    match broker_state {
+        BrokerProcessState::Running { pid } => println!("Broker process: listening (pid {pid})."),
+        BrokerProcessState::Offline => println!("Broker process: offline (run `castra up`)."),
+    }
     println!();
 
     if rows.is_empty() {
         println!("No VMs defined in configuration.");
         return;
     }
+
+    let use_color = io::stdout().is_terminal();
+    let cpu_mem: Vec<String> = rows
+        .iter()
+        .map(|row| format!("{}/{}", row.cpus, row.memory))
+        .collect();
 
     let vm_width = rows
         .iter()
@@ -1056,56 +1339,149 @@ fn print_status_table(project: &ProjectConfig, rows: &[VmStatusRow]) {
         .max()
         .unwrap_or(5)
         .max("STATE".len());
-    let cpu_width = rows
+    let cpu_mem_width = cpu_mem
         .iter()
-        .map(|row| row.cpus.to_string().len())
+        .map(|value| value.len())
         .max()
-        .unwrap_or(3)
-        .max("CPU".len());
-    let mem_width = rows
-        .iter()
-        .map(|row| row.memory.len())
-        .max()
-        .unwrap_or(3)
-        .max("MEM".len());
+        .unwrap_or(1)
+        .max("CPU/MEM".len());
     let uptime_width = rows
         .iter()
         .map(|row| format_uptime(row.uptime).len())
         .max()
         .unwrap_or(1)
         .max("UPTIME".len());
+    let broker_width = rows
+        .iter()
+        .map(|row| row.broker.len())
+        .max()
+        .unwrap_or(1)
+        .max("BROKER".len());
 
     println!(
-        "{:<vm_width$}  {:<state_width$}  {:>cpu_width$}  {:>mem_width$}  {:>uptime_width$}  {}",
+        "{:<vm_width$}  {:<state_width$}  {:>cpu_mem_width$}  {:>uptime_width$}  {:<broker_width$}  {}",
         "VM",
         "STATE",
-        "CPU",
-        "MEM",
+        "CPU/MEM",
         "UPTIME",
+        "BROKER",
         "FORWARDS",
         vm_width = vm_width,
         state_width = state_width,
-        cpu_width = cpu_width,
-        mem_width = mem_width,
-        uptime_width = uptime_width
+        cpu_mem_width = cpu_mem_width,
+        uptime_width = uptime_width,
+        broker_width = broker_width,
     );
 
-    for row in rows {
+    for (idx, row) in rows.iter().enumerate() {
+        let state = style_state(&row.state, state_width, use_color);
+        let broker = style_broker(&row.broker, broker_width, use_color);
         println!(
-            "{:<vm_width$}  {:<state_width$}  {:>cpu_width$}  {:>mem_width$}  {:>uptime_width$}  {}",
+            "{:<vm_width$}  {}  {:>cpu_mem_width$}  {:>uptime_width$}  {}  {}",
             row.name,
-            row.state,
-            row.cpus,
-            row.memory,
+            state,
+            cpu_mem[idx],
             format_uptime(row.uptime),
+            broker,
             row.forwards,
             vm_width = vm_width,
-            state_width = state_width,
-            cpu_width = cpu_width,
-            mem_width = mem_width,
-            uptime_width = uptime_width
+            cpu_mem_width = cpu_mem_width,
+            uptime_width = uptime_width,
         );
     }
+
+    println!();
+    println!(
+        "Legend: BROKER reachable = host broker handshake OK; waiting = broker up, guest not connected; offline = listener not running."
+    );
+    println!("States: stopped | starting | running | shutting_down | error");
+    println!("Exit codes: 0 on success; non-zero if any VM in error.");
+}
+
+fn colorize(value: &str, code: &str, enabled: bool) -> String {
+    if enabled {
+        format!("[{code}m{value}[0m")
+    } else {
+        value.to_string()
+    }
+}
+
+fn style_state(state: &str, width: usize, colored: bool) -> String {
+    let padded = format!("{:<width$}", state, width = width);
+    let code = match state {
+        "running" => "32",
+        "starting" => "33",
+        "shutting_down" => "33",
+        "error" => "31",
+        "stopped" => "90",
+        _ => return padded,
+    };
+    colorize(&padded, code, colored)
+}
+
+fn style_broker(status: &str, width: usize, colored: bool) -> String {
+    let padded = format!("{:<width$}", status, width = width);
+    let code = match status {
+        "reachable" => "32",
+        "waiting" => "33",
+        "offline" => "90",
+        "—" => "90",
+        _ => return padded,
+    };
+    colorize(&padded, code, colored)
+}
+
+fn format_log_prefix(label: &str, colored: bool) -> String {
+    let bracketed = format!("[{label}]");
+    if !colored {
+        return bracketed;
+    }
+
+    let code = if label.starts_with("host-broker") {
+        "36"
+    } else if label.contains(":serial") {
+        "35"
+    } else {
+        "34"
+    };
+    colorize(&bracketed, code, colored)
+}
+
+fn emit_log_tail(prefix: &str, path: &Path, tail: usize) -> CliResult<u64> {
+    if tail > 0 {
+        match read_tail_lines(path, tail) {
+            Ok(lines) if lines.is_empty() => {
+                if path.exists() {
+                    println!("{prefix} (no log entries yet)");
+                } else {
+                    println!("{prefix} (log file not created yet)");
+                }
+            }
+            Ok(lines) => {
+                for line in lines {
+                    if line.is_empty() {
+                        println!("{prefix}");
+                    } else {
+                        println!("{prefix} {line}");
+                    }
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                println!("{prefix} (log file not created yet)");
+            }
+            Err(err) => {
+                return Err(CliError::LogReadFailed {
+                    path: path.to_path_buf(),
+                    source: err,
+                });
+            }
+        }
+    } else if !path.exists() {
+        println!("{prefix} (log file not created yet)");
+    }
+
+    let offset = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    Ok(offset)
 }
 
 fn handle_logs(args: LogsArgs, config_override: Option<&PathBuf>) -> CliResult<()> {
@@ -1117,42 +1493,44 @@ fn handle_logs(args: LogsArgs, config_override: Option<&PathBuf>) -> CliResult<(
     }
 
     let log_dir = config_state_root(&project).join("logs");
+    let use_color = io::stdout().is_terminal();
+    println!(
+        "Tailing last {} lines per source.{}",
+        args.tail,
+        if args.follow {
+            " Press Ctrl-C to stop."
+        } else {
+            ""
+        }
+    );
+    println!();
+
     let mut sources = Vec::new();
+    let mut sections: Vec<(String, PathBuf)> = Vec::new();
+    sections.push(("host-broker".to_string(), log_dir.join("broker.log")));
 
     for vm in &project.vms {
-        let log_path = log_dir.join(format!("{}.log", vm.name));
-        println!("== {} ({}) ==", vm.name, log_path.display());
+        sections.push((
+            format!("vm:{}:qemu", vm.name),
+            log_dir.join(format!("{}.log", vm.name)),
+        ));
+        sections.push((
+            format!("vm:{}:serial", vm.name),
+            log_dir.join(format!("{}-serial.log", vm.name)),
+        ));
+    }
 
-        match read_tail_lines(&log_path, args.tail) {
-            Ok(lines) if lines.is_empty() => println!("{} | (no log entries yet)", vm.name),
-            Ok(lines) => {
-                for line in lines {
-                    if line.is_empty() {
-                        println!("{} |", vm.name);
-                    } else {
-                        println!("{} | {}", vm.name, line);
-                    }
-                }
-            }
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                println!("{} | (log file not created yet)", vm.name);
-            }
-            Err(err) => {
-                return Err(CliError::LogReadFailed {
-                    path: log_path.clone(),
-                    source: err,
-                });
-            }
-        }
-
-        let offset = fs::metadata(&log_path).map(|meta| meta.len()).unwrap_or(0);
+    for (idx, (label, path)) in sections.iter().enumerate() {
+        let styled_prefix = format_log_prefix(label, use_color);
+        let offset = emit_log_tail(&styled_prefix, path, args.tail)?;
         sources.push(LogSource {
-            name: vm.name.clone(),
-            path: log_path,
+            prefix: styled_prefix,
+            path: path.clone(),
             offset,
         });
-
-        println!();
+        if idx + 1 < sections.len() {
+            println!();
+        }
     }
 
     if args.follow {
@@ -1160,6 +1538,131 @@ fn handle_logs(args: LogsArgs, config_override: Option<&PathBuf>) -> CliResult<(
     }
 
     Ok(())
+}
+
+fn handle_broker(args: BrokerArgs) -> CliResult<()> {
+    run_broker(args)
+}
+
+fn run_broker(args: BrokerArgs) -> CliResult<()> {
+    if let Some(parent) = args.pidfile.parent() {
+        fs::create_dir_all(parent).map_err(|err| CliError::PreflightFailed {
+            message: format!(
+                "Failed to prepare broker pidfile directory {}: {err}",
+                parent.display()
+            ),
+        })?;
+    }
+    if let Some(parent) = args.logfile.parent() {
+        fs::create_dir_all(parent).map_err(|err| CliError::PreflightFailed {
+            message: format!(
+                "Failed to prepare broker log directory {}: {err}",
+                parent.display()
+            ),
+        })?;
+    }
+
+    let listener =
+        TcpListener::bind(("127.0.0.1", args.port)).map_err(|err| CliError::PreflightFailed {
+            message: format!("Broker failed to bind 127.0.0.1:{}: {err}", args.port),
+        })?;
+
+    let mut log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&args.logfile)
+        .map_err(|err| CliError::PreflightFailed {
+            message: format!(
+                "Unable to open broker log {}: {err}",
+                args.logfile.display()
+            ),
+        })?;
+
+    fs::write(
+        &args.pidfile,
+        format!(
+            "{}
+",
+            std::process::id()
+        ),
+    )
+    .map_err(|err| CliError::PreflightFailed {
+        message: format!(
+            "Failed to write broker pidfile {}: {err}",
+            args.pidfile.display()
+        ),
+    })?;
+    let _guard = PidfileGuard {
+        path: args.pidfile.clone(),
+    };
+
+    broker_log_line(
+        &mut log,
+        "INFO",
+        &format!("listening on 127.0.0.1:{}", args.port),
+    )?;
+
+    loop {
+        match listener.accept() {
+            Ok((mut stream, addr)) => {
+                broker_log_line(&mut log, "INFO", &format!("connection from {addr}"))?;
+                let _ = stream.write_all(
+                    b"castra-broker 0.1 ready
+",
+                );
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => {
+                broker_log_line(&mut log, "ERROR", &format!("accept failed: {err}"))?;
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+}
+
+struct PidfileGuard {
+    path: PathBuf,
+}
+
+impl Drop for PidfileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn broker_log_line(log: &mut fs::File, level: &str, message: &str) -> CliResult<()> {
+    let line = format!("[host-broker] {} {} {}", broker_timestamp(), level, message);
+    log.write_all(line.as_bytes())
+        .map_err(|err| CliError::PreflightFailed {
+            message: format!("Failed to write broker log entry: {err}"),
+        })?;
+    log.write_all(
+        b"
+",
+    )
+    .map_err(|err| CliError::PreflightFailed {
+        message: format!("Failed to finalize broker log entry: {err}"),
+    })?;
+    log.flush().map_err(|err| CliError::PreflightFailed {
+        message: format!("Failed to flush broker log: {err}"),
+    })?;
+    Ok(())
+}
+
+fn broker_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now();
+    let Ok(duration) = now.duration_since(UNIX_EPOCH) else {
+        return "00:00:00".to_string();
+    };
+    let mut raw: libc::time_t = duration.as_secs() as libc::time_t;
+    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+    let ptr = unsafe { libc::localtime_r(&mut raw, &mut tm) };
+    if ptr.is_null() {
+        return "00:00:00".to_string();
+    }
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
 fn preferred_config_target(

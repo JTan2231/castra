@@ -41,6 +41,8 @@ pub enum Commands {
     Ports(PortsArgs),
     /// Tail orchestrator and guest logs.
     Logs(LogsArgs),
+    #[command(hide = true)]
+    Broker(BrokerArgs),
 }
 
 #[derive(Debug, Args)]
@@ -124,4 +126,17 @@ pub struct LogsArgs {
         help = "Show the most recent LINES before streaming"
     )]
     pub tail: usize,
+}
+
+#[derive(Debug, Args)]
+#[command(hide = true)]
+pub struct BrokerArgs {
+    #[arg(long, value_name = "PORT")]
+    pub port: u16,
+
+    #[arg(long, value_name = "PATH")]
+    pub pidfile: PathBuf,
+
+    #[arg(long, value_name = "PATH")]
+    pub logfile: PathBuf,
 }
