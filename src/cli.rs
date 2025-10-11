@@ -80,6 +80,13 @@ pub struct UpArgs {
         help = "Skip config discovery and require --config for this invocation"
     )]
     pub skip_discovery: bool,
+
+    /// Proceed even if host resource headroom checks fail (use with caution).
+    #[arg(
+        long,
+        help = "Bypass disk/CPU/memory safety checks during preflight (use with caution)"
+    )]
+    pub force: bool,
 }
 
 #[derive(Debug, Args, Default)]

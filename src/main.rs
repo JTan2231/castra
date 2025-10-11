@@ -16,6 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use libc::{self, pid_t};
+use sysinfo::{Disks, System};
 
 use crate::cli::{
     BrokerArgs, Cli, Commands, DownArgs, InitArgs, LogsArgs, PortsArgs, StatusArgs, UpArgs,
@@ -64,6 +65,23 @@ fn main() -> ExitCode {
             err.exit_code()
         }
     }
+}
+
+fn emit_config_warnings(warnings: &[String]) {
+    if warnings.is_empty() {
+        return;
+    }
+
+    let count = warnings.len();
+    let suffix = if count == 1 { "" } else { "s" };
+    eprintln!("Found {count} warning{suffix} while parsing configuration:");
+    for warning in warnings {
+        eprintln!("  • {warning}");
+    }
+    eprintln!("Next checks:");
+    eprintln!("  • Review port mappings via `castra ports`.");
+    eprintln!("  • Inspect VM status with `castra status` once VMs are running.");
+    eprintln!();
 }
 
 fn handle_init(args: InitArgs, config_override: Option<&PathBuf>) -> CliResult<()> {
@@ -118,9 +136,7 @@ fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> CliResult<()> {
     let config_path = resolve_config_path(config_override, args.skip_discovery)?;
     let project = load_project_config(&config_path)?;
 
-    for warning in &project.warnings {
-        eprintln!("Warning: {warning}");
-    }
+    emit_config_warnings(&project.warnings);
 
     let (status_rows, _, mut status_warnings) = collect_vm_status(&project);
     let running: Vec<_> = status_rows
@@ -140,7 +156,9 @@ fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> CliResult<()> {
         });
     }
 
+    check_host_capacity(&project, args.force)?;
     let context = prepare_runtime_context(&project)?;
+    check_disk_space(&project, &context, args.force)?;
     ensure_ports_available(&project)?;
 
     for vm in &project.vms {
@@ -162,9 +180,7 @@ fn handle_down(args: DownArgs, config_override: Option<&PathBuf>) -> CliResult<(
     let config_path = resolve_config_path(config_override, args.skip_discovery)?;
     let project = load_project_config(&config_path)?;
 
-    for warning in &project.warnings {
-        eprintln!("Warning: {warning}");
-    }
+    emit_config_warnings(&project.warnings);
 
     let state_root = config_state_root(&project);
     let mut had_running = false;
@@ -194,9 +210,7 @@ fn handle_status(args: StatusArgs, config_override: Option<&PathBuf>) -> CliResu
     let config_path = resolve_config_path(config_override, args.skip_discovery)?;
     let project = load_project_config(&config_path)?;
 
-    for warning in &project.warnings {
-        eprintln!("Warning: {warning}");
-    }
+    emit_config_warnings(&project.warnings);
 
     let (status_rows, broker_state, status_warnings) = collect_vm_status(&project);
     for warning in status_warnings {
@@ -211,9 +225,7 @@ fn handle_ports(args: PortsArgs, config_override: Option<&PathBuf>) -> CliResult
     let config_path = resolve_config_path(config_override, false)?;
     let project = load_project_config(&config_path)?;
 
-    for warning in &project.warnings {
-        eprintln!("Warning: {warning}");
-    }
+    emit_config_warnings(&project.warnings);
 
     print_port_overview(&project, args.verbose);
     Ok(())
@@ -379,8 +391,13 @@ struct LogSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BrokerProcessState {
     Running { pid: pid_t },
-    Offline,
+   Offline,
 }
+
+const DISK_WARN_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
+const DISK_FAIL_THRESHOLD: u64 = 500 * 1024 * 1024;
+const MEMORY_WARN_HEADROOM: u64 = 1 * 1024 * 1024 * 1024;
+const MEMORY_FAIL_HEADROOM: u64 = 512 * 1024 * 1024;
 
 fn prepare_runtime_context(project: &ProjectConfig) -> CliResult<RuntimeContext> {
     let state_root = config_state_root(project);
@@ -418,6 +435,231 @@ fn prepare_runtime_context(project: &ProjectConfig) -> CliResult<RuntimeContext>
         qemu_system,
         qemu_img,
     })
+}
+
+fn check_host_capacity(project: &ProjectConfig, force: bool) -> CliResult<()> {
+    let mut failures = Vec::new();
+    let mut warnings = Vec::new();
+
+    let requested_cpus: u32 = project.vms.iter().map(|vm| vm.cpus).sum();
+    let system = System::new_all();
+    let host_cpus = system.cpus().len() as u32;
+
+    if host_cpus == 0 {
+        warnings.push("Unable to determine host CPU count; skipping CPU headroom check.".to_string());
+    } else if requested_cpus > host_cpus {
+        failures.push(format!(
+            "VMs request {requested_cpus} vCPU(s) but host reports {host_cpus} logical core(s)."
+        ));
+    } else {
+        let remaining = host_cpus - requested_cpus;
+        if remaining == 0 {
+            warnings.push("VMs consume all host logical cores; host responsiveness may degrade.".to_string());
+        } else if remaining == 1 {
+            warnings.push(
+                "Only one host logical core remains after allocating VM CPUs; consider lowering per-VM `cpus`."
+                    .to_string(),
+            );
+        }
+    }
+
+    let requested_memory: u64 = project
+        .vms
+        .iter()
+        .filter_map(|vm| vm.memory.bytes())
+        .sum();
+
+    let available_bytes = system.available_memory().saturating_mul(1024);
+    let total_bytes = system.total_memory().saturating_mul(1024);
+    let (memory_pool, pool_label) = if available_bytes > 0 {
+        (available_bytes, "available")
+    } else if total_bytes > 0 {
+        (total_bytes, "total")
+    } else {
+        (0, "available")
+    };
+
+    if memory_pool == 0 {
+        warnings.push("Unable to determine host memory availability; skipping memory headroom check.".to_string());
+    } else if requested_memory > memory_pool {
+        failures.push(format!(
+            "VMs request {} but host only reports {} {pool_label} memory.",
+            format_bytes(requested_memory),
+            format_bytes(memory_pool),
+        ));
+    } else {
+        let remaining = memory_pool - requested_memory;
+        if remaining < MEMORY_FAIL_HEADROOM {
+            failures.push(format!(
+                "Only {} of {pool_label} memory remains after allocating {}; castra requires at least {} of headroom.",
+                format_bytes(remaining),
+                format_bytes(requested_memory),
+                format_bytes(MEMORY_FAIL_HEADROOM),
+            ));
+        } else if remaining < MEMORY_WARN_HEADROOM {
+            warnings.push(format!(
+                "Only {} of {pool_label} memory remains after allocating {}; close host applications or lower VM memory.",
+                format_bytes(remaining),
+                format_bytes(requested_memory),
+            ));
+        }
+    }
+
+    for warning in warnings {
+        eprintln!("Warning: {warning}");
+    }
+
+    if !failures.is_empty() {
+        if force {
+            for failure in &failures {
+                eprintln!("Warning: {failure} (continuing due to --force).");
+            }
+        } else {
+            let bullet_list = failures
+                .iter()
+                .map(|msg| format!("- {msg}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(CliError::PreflightFailed {
+                message: format!(
+                    "Host resource checks failed:\n{bullet_list}\nRerun with `castra up --force` to override."
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn check_disk_space(
+    project: &ProjectConfig,
+    context: &RuntimeContext,
+    force: bool,
+) -> CliResult<()> {
+    let mut paths: HashSet<PathBuf> = HashSet::new();
+    paths.insert(context.state_root.clone());
+    paths.insert(context.log_root.clone());
+    for vm in &project.vms {
+        if let Some(parent) = vm.overlay.parent() {
+            paths.insert(parent.to_path_buf());
+        } else {
+            paths.insert(vm.overlay.clone());
+        }
+    }
+
+    let mut disks = Disks::new_with_refreshed_list();
+
+    let mut failures = Vec::new();
+    let mut warnings = Vec::new();
+
+    for path in paths {
+        let probe = existing_directory(&path);
+        let location = if probe == path {
+            format!("{}", probe.display())
+        } else {
+            format!("{} (checked at {})", path.display(), probe.display())
+        };
+
+        match available_disk_space(&mut disks, &probe) {
+            Some(space) if space < DISK_FAIL_THRESHOLD => {
+                failures.push(format!(
+                    "{location} has only {} free (requires at least {}).",
+                    format_bytes(space),
+                    format_bytes(DISK_FAIL_THRESHOLD),
+                ));
+            }
+            Some(space) if space < DISK_WARN_THRESHOLD => {
+                warnings.push(format!(
+                    "{location} has {} free; consider freeing space before launch (recommended {}).",
+                    format_bytes(space),
+                    format_bytes(DISK_WARN_THRESHOLD),
+                ));
+            }
+            Some(_) => {}
+            None => warnings.push(format!(
+                "Unable to determine free space at {location}; skipping disk safety check for this path."
+            )),
+        }
+    }
+
+    for warning in warnings {
+        eprintln!("Warning: {warning}");
+    }
+
+    if !failures.is_empty() {
+        if force {
+            for failure in &failures {
+                eprintln!("Warning: {failure} (continuing due to --force).");
+            }
+        } else {
+            let bullet_list = failures
+                .iter()
+                .map(|msg| format!("- {msg}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(CliError::PreflightFailed {
+                message: format!(
+                    "Insufficient free disk space:\n{bullet_list}\nRerun with `castra up --force` to override."
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn existing_directory(path: &Path) -> PathBuf {
+    let mut cursor = Some(path);
+    while let Some(dir) = cursor {
+        if dir.is_dir() {
+            return fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+        }
+        cursor = dir.parent();
+    }
+
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn available_disk_space(disks: &mut Disks, path: &Path) -> Option<u64> {
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut best: Option<(u64, usize)> = None;
+
+    for disk in disks.iter_mut() {
+        let mount = disk.mount_point().to_path_buf();
+        if canonical.starts_with(&mount) {
+            disk.refresh();
+            let depth = mount.components().count();
+            let take = match best {
+                Some((_, best_depth)) => depth > best_depth,
+                None => true,
+            };
+            if take {
+                best = Some((disk.available_space(), depth));
+            }
+        }
+    }
+
+    best.map(|(space, _)| space)
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+
+    if unit == 0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 fn ensure_ports_available(project: &ProjectConfig) -> CliResult<()> {
@@ -1488,9 +1730,7 @@ fn handle_logs(args: LogsArgs, config_override: Option<&PathBuf>) -> CliResult<(
     let config_path = resolve_config_path(config_override, false)?;
     let project = load_project_config(&config_path)?;
 
-    for warning in &project.warnings {
-        eprintln!("Warning: {warning}");
-    }
+    emit_config_warnings(&project.warnings);
 
     let log_dir = config_state_root(&project).join("logs");
     let use_color = io::stdout().is_terminal();
