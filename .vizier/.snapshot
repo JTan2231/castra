@@ -1,4 +1,4 @@
-SNAPSHOT v0.5 — Castra (VM orchestration harness)
+SNAPSHOT v0.6 — Castra (VM orchestration harness)
 
 Project promise
 - Orchestrate multiple virtual machines on a single host for agent workloads.
@@ -61,5 +61,9 @@ Narrative state (active themes and tensions)
    - Promise: surface git SHA; document MSRV and release path.
    - State: --version uses Cargo semver only; git SHA/MSRV/releasing docs still TBD.
 
+10) Seamless Alpine Bootstrap (new)
+   - Promise: zero-config `castra up` boots a managed Alpine VM; built-in catalog drives asset fetch/transform; clear progress; compatible with user-provided QCOWs.
+   - State: Not implemented. Plan adopted to add a managed image catalog, ImageManager pipeline with cache/manifest, config fallback to an in-memory project using the Alpine profile, and QEMU profile injection for kernel/args. UX requires progress lines and cache-hit messages; detailed logs under .castra/logs.
+
 Direction of travel
-- Next hardening steps: ACPI-first shutdown before TERM/KILL; guest handshake to report broker reachable; consider QMP for richer lifecycle and active-port view; optional .castra/run split. Maintain copy/exit-code discipline and keep warning/observability polish high.
+- Implement Seamless Alpine Bootstrap in phases: (1) catalog + config model + manager skeleton; (2) fallback project + manager wiring in up/status; (3) QEMU profile injection and direct kernel boot; (4) CLI copy + docs/tests. Maintain copy/exit-code discipline and keep warning/observability polish high. Continue hardening lifecycle (ACPI/QMP) afterwards, ensuring compatibility with managed-image flow.

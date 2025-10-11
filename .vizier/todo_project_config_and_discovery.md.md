@@ -14,3 +14,13 @@ Acceptance criteria (amended v0.5)
 
 ---
 
+
+---
+Alignment with Seamless Alpine Bootstrap (Thread 10)
+- Incorporate a default-project branch when discovery fails: `load_or_default_project` returns an in-memory config referencing the managed Alpine image (`alpine-minimal@v1`).
+- Ensure the fallback path preserves current CLI exit codes and warning-summary semantics; no files are written to disk unless assets are fetched.
+- Acceptance hook: `castra up` in an empty directory proceeds without `ConfigDiscoveryFailed` and launches the managed VM when network/cache permits.
+
+
+---
+
