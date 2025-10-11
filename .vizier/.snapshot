@@ -1,4 +1,4 @@
-SNAPSHOT v0.3 — Castra (VM orchestration harness)
+SNAPSHOT v0.4 — Castra (VM orchestration harness)
 
 Project promise
 - Orchestrate multiple virtual machines on a single host for agent workloads.
@@ -8,70 +8,75 @@ Project promise
 
 Current code state (observable surfaces)
 - Rust crate "castra" with a clap-based CLI binary.
-  - Subcommands: init, up, down, status, ports, logs.
-  - `--config PATH` supported; discovery searches upward for castra.toml unless `--skip-discovery` on relevant commands.
-  - Helpful errors and exit codes: help/version exit 0; usage errors exit 64; NYI surfaces return structured error with a tracking hint that references repo-local TODO files.
-  - `init` implemented: writes castra.toml (TOML) and creates .castra/ workdir with friendly next-steps copy.
-  - `ports` implemented: loads config, emits warnings for unknown fields, detects port conflicts (including broker port collision), and prints a tabular summary; `--verbose` adds per-VM detail and workflow steps.
-  - `up`, `down`, `status`, `logs` currently NYI.
-  - CLI long_about now references repo-root todo_*.md files (previous .vizier reference removed).
-- Configuration: TOML at repo root (castra.toml); auto-discovered or overridden via --config. Parser performs validation with actionable errors and accumulates non-fatal warnings for unknown fields and suspicious patterns.
+  - Subcommands: init, up, down, status, ports, logs; hidden broker used internally.
+  - `--config PATH` supported; discovery searches upward for castra.toml unless `--skip-discovery` (up/down/status honor it).
+  - Exit codes: help/version exit 0; usage errors exit 64; other failures mapped via CliError to 65–74.
+  - `init`: writes castra.toml and creates .castra/ workdir with next-steps copy.
+  - `ports`: loads config, emits parser warnings, detects port conflicts (including broker-port collision), prints tabular declared forwards; `--verbose` shows per-VM details and workflow steps.
+  - `up`:
+    • Resolves config; prints parse warnings.
+    • Preflight: detects duplicate/overlapping ports; checks runtime availability (bind test) for each host forward and broker port; verifies qemu-system presence; prepares state/log directories; ensures overlays (creates via qemu-img if available, otherwise prints manual command).
+    • Starts host broker subprocess (hidden `broker` command) writing .castra/broker.pid and logs to .castra/logs/broker.log; idempotent if already running.
+    • Launches each VM via qemu-system with user-mode NAT and hostfwd rules; writes per-VM pidfile (.castra/<vm>.pid); logs QEMU stdout/stderr to .castra/logs/<vm>.log and serial to .castra/logs/<vm>-serial.log.
+  - `status`: prints table (VM | STATE | CPU/MEM | UPTIME | BROKER | FORWARDS); colors on TTY, plain when redirected. STATE is derived from pidfile/process checks; UPTIME from pidfile mtime. BROKER shows waiting/offline (reachable TBD).
+  - `down`: for each VM pidfile, sends SIGTERM, waits, escalates SIGKILL, removes pidfile; also stops the broker similarly; prints progress summaries.
+  - `logs`: shows tail per source and optional `--follow` streaming for [host-broker], vm:<name>:qemu, vm:<name>:serial; degrades gracefully if a file is not yet present.
+- Configuration: TOML at repo root (castra.toml); auto-discovered or overridden via --config. Parser validates required fields, resolves relative paths against config directory, and accumulates non-fatal warnings for unknown fields and patterns (e.g., duplicate guest forwards per VM). Default broker.port = 7070.
 
 Near-term user-facing surface (target)
-- A single binary: `castra`.
-- Core flows to support (single-VM first):
-  1) `castra init` — scaffold config and working directories. [DONE]
-  2) `castra ports` — show declared/active connectivity and conflicts. [DONE v1]
-  3) `castra up` — start defined VM(s) via QEMU. [NYI]
-  4) `castra status` — show per-VM lifecycle and comm health. [NYI]
-  5) `castra down` — graceful stop/cleanup. [NYI]
-  6) `castra logs` — connectivity and recent activity. [NYI]
-- Configuration: TOML with version, [project], [[vms]] (name, description?, base_image, overlay, cpus, memory, [[vms.port_forwards]] host/guest/protocol), [workflows] (init[]), [broker] (port). Relative paths resolved against config directory.
+- End-to-end minimal flow is live for multi-VM configs: init → ports → up → status/logs → down.
+- Refinements planned:
+  1) ACPI-first shutdown path before TERM/KILL.
+  2) Distinguish active vs planned forwards (QMP/runtime inspection) and possible `ports --active`.
+  3) Broker reachability signal from guest handshake (status: reachable vs waiting).
+  4) Warning summary block post-parse; strengthen copy/examples in `--help`.
+  5) Optional directory layout split: .castra/run (pidfiles/sockets) vs .castra/logs.
 
 External constraints and promises
-- Backend: QEMU only (no libvirt requirement in UX; implementation choices remain open).
-- Communication: Host-centric broker model; concrete protocol remains open.
-- Defaults should be safe and ergonomic: ephemeral overlays, NAT + host port mappings, clear teardown.
+- Backend: QEMU only; macOS uses HVF, Linux uses KVM; `-cpu host` requested.
+- Communication: Host-centric broker model; current protocol is minimal line-based greeting for connectivity validation.
+- Defaults emphasize safety: overlay images over base; NAT networking; clear teardown with `down`.
 
 Active threads (narrative arcs)
 1) UX-first CLI contract
-   - Tension: We promised polished CLI; skeleton exists with subcommands, help/version, and structured errors. Prior mismatch in NYI tracking hints/long_about is resolved; copy now points to repo-root todo_*.md files.
-   - Depends on: CODE STATE v0.3 CLI; External promise: UX premium.
-   - Outcome: Predictable commands, helpful output, meaningful exit codes.
+   - Tension: Keep help/copy precise and exit-code policy consistent as features land.
+   - Depends on: Implemented CLI commands and current outputs.
+   - Outcome: Predictable commands, accurate help text, examples.
 
 2) QEMU backend and VM lifecycle
-   - Tension: QEMU orchestration unimplemented.
-   - Depends on: External constraint: QEMU backend.
-   - Outcome: Start/stop VM reliably; detect boot success; tear down cleanly.
+   - Tension: Improve shutdown via ACPI; introduce QMP for richer lifecycle.
+   - Depends on: Current direct qemu-system invocation with pidfiles and logs.
+   - Outcome: Reliable start/stop with cleaner guest-cooperative shutdown.
 
 3) Host communication channel
-   - Tension: No broker yet.
-   - Depends on: Host-centric comms promise.
-   - Outcome: Host listener/broker exists; stable agent↔VM path.
+   - Tension: Broker running and logged; need guest handshake to surface "reachable".
+   - Depends on: Hidden broker subcommand, status integration.
+   - Outcome: Clear broker health and guest reachability status.
 
 4) Project configuration and discovery
-   - Tension: Init and discovery implemented; parser now performs validation, resolves relative paths, and surfaces warnings for unknown fields. Remaining: tighten diagnostics/copy and example hints on errors.
-   - Outcome: Readable config defines VMs/resources; auto-discovered from project root with clear diagnostics.
+   - Tension: Parser warnings shown verbosely; add summary and next-steps hints.
+   - Depends on: Validating parser and warning collection.
+   - Outcome: Readable diagnostics with actionable suggestions.
 
 5) VM images and storage hygiene
-   - Tension: Need safe image/overlay flows.
-   - Outcome: Base images + ephemeral overlays by default; explicit cleanup commands.
+   - Tension: Overlays created inline; directory layout could separate run vs logs vs images more clearly.
+   - Outcome: Safer, predictable storage with cleanup affordances.
 
 6) Networking and connectivity ergonomics
-   - Tension: Need predictable host/guest connectivity; first-pass `ports` view exists and detects conflicts and broker overlap. Remaining: integrate live/active state once VMs run.
-   - Outcome: NAT with stable forwards; clear `ports` view; common host OSes work.
+   - Tension: Active forwards not yet distinguished at runtime; conflicts/broker overlap handled.
+   - Outcome: NAT with stable forwards; future `--active` view.
 
 7) Observability and status legibility
-   - Tension: Status/logs surfaces are NYI; copy and states TBD.
-   - Outcome: `status`/`logs` provide clear, color-coded info.
+   - Tension: Status lacks broker "reachable" and may need width/truncation handling for long names.
+   - Outcome: Color-coded, legible status and resilient logs streaming.
 
 8) Safety and resource limits
-   - Tension: Preflight checks and limits not implemented.
-   - Outcome: Configurable CPU/mem; preflight; graceful shutdown.
+   - Tension: Preflight lacks disk/CPU/mem headroom checks; signals not yet translated into graceful orchestrator shutdown.
+   - Outcome: Headroom checks with `--force` escape hatch; graceful signal handling.
 
 9) Toolchain baseline and distribution
-   - Tension: Toolchain packaging and releases TBD.
-   - Outcome: Stable toolchain target; `cargo install`/releases; `--version` surfaced (commit optional).
+   - Tension: Git SHA in --version and release docs remain TBD.
+   - Outcome: Version string includes git short SHA when available; MSRV and releasing checklist documented.
 
 Direction of travel
-- Build on the working CLI and config/ports flow: deliver a minimal end-to-end run (single VM): up → status → down. Keep UX copy crisp and errors actionable. With the long_about/NYI hint references fixed, next tighten per-command help text and exit code consistency. Coordinate QEMU lifecycle with preflight checks (QEMU presence, overlays, port conflicts).
+- Harden the MVP by adding ACPI-first shutdown, warning summaries, and broker reachability handshake. Then introduce runtime inspection (QMP) to separate active vs planned forwards and consider a .castra/run layout to declutter logs. Keep UX copy crisp; maintain exit-code consistency.
