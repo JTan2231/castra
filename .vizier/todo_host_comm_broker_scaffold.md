@@ -10,3 +10,18 @@ Acceptance criteria
 
 Notes
 - Protocol left open; start with a no-op echo/health endpoint to validate connectivity.
+---
+Update (SNAPSHOT v0.2)
+
+Evidence
+- No broker yet; `ports`/`status` exist as NYI surfaces.
+
+Refinement
+- Reserve default broker port (7070) in config defaults or internal constants; show it in `ports` even when broker is stubbed to set UX expectations.
+- Provide a no-op health endpoint and log a single line on connection to validate observability thread.
+
+Acceptance criteria (clarified)
+- `castra status` shows broker endpoint once `up` is run, even if VMs are not yet connected.
+
+---
+

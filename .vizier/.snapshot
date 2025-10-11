@@ -1,4 +1,4 @@
-SNAPSHOT v0.1 — Castra (VM orchestration harness)
+SNAPSHOT v0.2 — Castra (VM orchestration harness)
 
 Project promise
 - Orchestrate multiple virtual machines on a single host for agent workloads.
@@ -7,63 +7,68 @@ Project promise
 - UX is at a premium: fast, legible, low-friction CLI with sensible defaults and clear status.
 
 Current code state (observable surfaces)
-- Rust crate "castra" with a minimal binary (src/main.rs) printing "Hello, world!".
-- Cargo.toml declares edition = "2024"; no dependencies. No CLI, no QEMU integration yet.
+- Rust crate "castra" with a clap-based CLI binary.
+  - Subcommands scaffolded: init, up, down, status, ports, logs.
+  - `--config PATH` supported; discovery searches upward for castra.toml unless `--skip-discovery` on relevant commands.
+  - Helpful errors and exit codes: help/version exit 0; usage errors exit 64; NYI surfaces return structured error with a tracking hint.
+  - `init` implemented: writes castra.toml (TOML) and creates .castra/ workdir with friendly next-steps copy.
+  - Default config content includes single VM (devbox), overlay path, basic port forwards, and a placeholder workflow.
+- Not-yet-implemented commands (`up`, `down`, `status`, `ports`, `logs`) return NYI with a tracking path that currently points to .vizier/* TODOs (note: repository stores TODOs at project root).
 
 Near-term user-facing surface (target)
 - A single binary: `castra`.
-- Core flows to support:
-  1) `castra init` — scaffold config and working directories.
-  2) `castra up` — start one or more defined VMs via QEMU.
-  3) `castra status` — show per-VM lifecycle state and comm-channel health.
-  4) `castra down` — graceful stop and cleanup.
-  5) `castra ports|logs` — reveal connectivity and recent activity.
-- Configuration: human-readable project config at repo root (exact filename TBD), discoverable by `castra` without extra flags.
+- Core flows to support (single-VM first):
+  1) `castra init` — scaffold config and working directories. [DONE in code]
+  2) `castra up` — start defined VM(s) via QEMU. [NYI]
+  3) `castra status` — show per-VM lifecycle and comm health. [NYI]
+  4) `castra down` — graceful stop/cleanup. [NYI]
+  5) `castra ports|logs` — connectivity and recent activity. [NYI]
+- Configuration: TOML at repo root (castra.toml); auto-discovered or overridden via --config.
 
 External constraints and promises
 - Backend: QEMU only (no libvirt requirement in UX; implementation choices remain open).
-- Communication: Agents connect to the host first; host brokers/bridges to VMs. Concrete protocol is deliberately open to allow evolution.
+- Communication: Host-centric broker model; concrete protocol remains open.
 - Defaults should be safe and ergonomic: ephemeral overlays, NAT + host port mappings, clear teardown.
 
 Active threads (narrative arcs)
 1) UX-first CLI contract
-   - Tension: We promise a polished experience, but have no CLI or commands.
-   - Depends on: CODE STATE v0 (no CLI), External promise: UX premium.
+   - Tension: We promised polished CLI; skeleton now exists with subcommands, help/version, and structured errors. Remaining: refine copy, ensure NYI tracking hints reference real paths.
+   - Depends on: CODE STATE v0.2 CLI; External promise: UX premium.
    - Outcome: Predictable commands, helpful output, meaningful exit codes.
 
 2) QEMU backend and VM lifecycle
-   - Tension: We commit to QEMU orchestration with zero wiring implemented.
+   - Tension: QEMU orchestration unimplemented.
    - Depends on: External constraint: QEMU backend.
-   - Outcome: Start/stop VMs reliably; detect boot success; tear down cleanly.
+   - Outcome: Start/stop VM reliably; detect boot success; tear down cleanly.
 
 3) Host communication channel
-   - Tension: Host must be the primary conduit for agents; no broker exists.
-   - Depends on: External promise: host-centric comms.
-   - Outcome: A host listener/broker exists; VMs have a stable path to/from agents via the host.
+   - Tension: No broker yet.
+   - Depends on: Host-centric comms promise.
+   - Outcome: Host listener/broker exists; stable agent↔VM path.
 
 4) Project configuration and discovery
-   - Tension: UX expects zero-ceremony configuration; nothing exists.
-   - Outcome: A readable config file defines VMs/resources; `castra` auto-discovers it from project root.
+   - Tension: Init and discovery now implemented; config validation and friendly errors still missing.
+   - Outcome: Readable config defines VMs/resources; auto-discovered from project root with clear diagnostics.
 
 5) VM images and storage hygiene
-   - Tension: Need fast, safe VM storage flows without data loss.
+   - Tension: Need safe image/overlay flows.
    - Outcome: Base images + ephemeral overlays by default; explicit cleanup commands.
 
 6) Networking and connectivity ergonomics
-   - Tension: VMs must reach the host and be reachable predictably.
-   - Outcome: NAT with stable host port forwards; clear `ports` view; works on common host OSes.
+   - Tension: Need predictable host/guest connectivity; `ports` UX TBD.
+   - Outcome: NAT with stable forwards; clear `ports` view; common host OSes work.
 
 7) Observability and status legibility
-   - Tension: Users need at-a-glance state; no surfaces exist.
-   - Outcome: `status` and `logs` provide clear, color-coded live info.
+   - Tension: Status/logs surfaces are NYI; copy and states TBD.
+   - Outcome: `status`/`logs` provide clear, color-coded info.
 
 8) Safety and resource limits
-   - Tension: Prevent host overload and data loss.
-   - Outcome: Configurable CPU/mem; preflight checks; graceful shutdown.
+   - Tension: Preflight checks and limits not implemented.
+   - Outcome: Configurable CPU/mem; preflight; graceful shutdown.
 
 9) Toolchain baseline and distribution
-   - Tension: Edition/toolchain unclear; no packaging.
-   - Outcome: Stable toolchain target; `cargo install`/releases; `--version` surfaced.
+   - Tension: Toolchain packaging and releases TBD.
+   - Outcome: Stable toolchain target; `cargo install`/releases; `--version` surfaced (commit optional).
 
 Direction of travel
-- Deliver a minimal but end-to-end happy path: init → up (single VM) → status → down, with host-broker scaffold and legible UX. Expand to multiple VMs once single-VM lifecycle is rock solid.
+- Build on the working CLI: next, deliver a minimal end-to-end run (single VM): up → status → down. Fix NYI tracking paths to match repository layout. Keep UX copy crisp and errors actionable.
