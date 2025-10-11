@@ -9,6 +9,58 @@ use crate::error::CliError;
 pub const DEFAULT_BROKER_PORT: u16 = 7070;
 
 #[derive(Debug, Clone)]
+pub enum BaseImageSource {
+    Path(PathBuf),
+    Managed(ManagedImageReference),
+}
+
+impl BaseImageSource {
+    pub fn describe(&self) -> String {
+        match self {
+            BaseImageSource::Path(path) => path.display().to_string(),
+            BaseImageSource::Managed(reference) => format!(
+                "managed:{}@{} ({})",
+                reference.name,
+                reference.version,
+                reference.disk.describe()
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagedImageReference {
+    pub name: String,
+    pub version: String,
+    pub disk: ManagedDiskKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum ManagedDiskKind {
+    RootDisk,
+}
+
+impl ManagedDiskKind {
+    pub fn parse(input: Option<String>) -> Result<Self, String> {
+        match input {
+            None => Ok(Self::RootDisk),
+            Some(value) => match value.as_str() {
+                "root" | "rootfs" | "root_disk" => Ok(Self::RootDisk),
+                other => Err(format!(
+                    "Unknown managed disk kind `{other}`. Supported values: root"
+                )),
+            },
+        }
+    }
+
+    pub fn describe(&self) -> &'static str {
+        match self {
+            ManagedDiskKind::RootDisk => "root disk",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ProjectConfig {
     pub file_path: PathBuf,
     pub version: String,
@@ -57,7 +109,7 @@ impl ProjectConfig {
 pub struct VmDefinition {
     pub name: String,
     pub description: Option<String>,
-    pub base_image: PathBuf,
+    pub base_image: BaseImageSource,
     pub overlay: PathBuf,
     pub cpus: u32,
     pub memory: MemorySpec,
@@ -77,6 +129,13 @@ impl MemorySpec {
 
     pub fn bytes(&self) -> Option<u64> {
         self.bytes
+    }
+
+    pub(crate) fn new(original: impl Into<String>, bytes: Option<u64>) -> Self {
+        Self {
+            original: original.into(),
+            bytes,
+        }
     }
 }
 
@@ -186,6 +245,7 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
                                 "name",
                                 "description",
                                 "base_image",
+                                "managed_image",
                                 "overlay",
                                 "cpus",
                                 "memory",
@@ -284,6 +344,8 @@ struct RawVm {
     #[serde(default)]
     description: Option<String>,
     base_image: Option<PathBuf>,
+    #[serde(default)]
+    managed_image: Option<RawManagedImage>,
     overlay: Option<PathBuf>,
     #[serde(default)]
     cpus: Option<u32>,
@@ -299,6 +361,14 @@ struct RawPortForward {
     guest: Option<u16>,
     #[serde(default)]
     protocol: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawManagedImage {
+    name: Option<String>,
+    version: Option<String>,
+    #[serde(default)]
+    disk: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -387,14 +457,54 @@ impl RawConfig {
                 ));
             }
 
-            let base_image = vm.base_image.ok_or_else(|| {
-                invalid_config(
-                    path,
-                    format!(
-                        "VM `{name}` is missing required field `base_image`. Example: `base_image = \"images/{name}-base.qcow2\"`."
-                    ),
-                )
-            })?;
+            let base_image = match (vm.base_image, vm.managed_image) {
+                (Some(path), None) => BaseImageSource::Path(resolve_path(&root_dir, path)),
+                (None, Some(managed)) => {
+                    let name = managed.name.ok_or_else(|| {
+                        invalid_config(
+                            path,
+                            format!(
+                                "VM `{name}` declares `managed_image` but is missing required field `name`."
+                            ),
+                        )
+                    })?;
+                    let version = managed.version.ok_or_else(|| {
+                        invalid_config(
+                            path,
+                            format!(
+                                "VM `{name}` declares `managed_image` but is missing required field `version`."
+                            ),
+                        )
+                    })?;
+                    let disk = ManagedDiskKind::parse(managed.disk).map_err(|message| {
+                        invalid_config(
+                            path,
+                            format!(
+                                "VM `{name}` declares `managed_image` with invalid `disk`: {message}"
+                            ),
+                        )
+                    })?;
+                    BaseImageSource::Managed(ManagedImageReference {
+                        name,
+                        version,
+                        disk,
+                    })
+                }
+                (Some(_), Some(_)) => {
+                    return Err(invalid_config(
+                        path,
+                        format!(
+                            "VM `{name}` declares both `base_image` and `managed_image`. Choose one operand."
+                        ),
+                    ));
+                }
+                (None, None) => {
+                    return Err(invalid_config(
+                        path,
+                        format!("VM `{name}` must declare either `base_image` or `managed_image`."),
+                    ));
+                }
+            };
 
             let overlay = vm.overlay.ok_or_else(|| {
                 invalid_config(
@@ -501,7 +611,7 @@ impl RawConfig {
             vms.push(VmDefinition {
                 name,
                 description: vm.description,
-                base_image: resolve_path(&root_dir, base_image),
+                base_image,
                 overlay: resolve_path(&root_dir, overlay),
                 cpus,
                 memory: memory_spec,
