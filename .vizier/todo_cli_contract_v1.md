@@ -29,3 +29,23 @@ Acceptance criteria (amended)
 
 ---
 
+---
+Update (SNAPSHOT v0.3)
+
+Evidence
+- cli.rs long_about now references repo-root todo_*.md files (no `.vizier/` mention).
+- Commands include: init, up, down, status, ports, logs; help/version work; NYI surfaces point to real TODOs.
+- Ports command copy highlights conflicts and broker reservations.
+
+Refinement
+- Do a per-command help copy pass to ensure summaries match current behavior precisely and are consistent in tone.
+- Reconfirm exit code consistency across commands as new features land.
+
+Acceptance criteria (amended v0.3)
+- Long help and NYI hints reference correct repo-root docs. [DONE]
+- `ports` help mentions conflict detection and broker-port overlap. [DONE]
+- Consistent exit codes maintained as features ship. [ONGOING]
+---
+
+---
+

@@ -27,3 +27,22 @@ Acceptance criteria (amended)
 
 ---
 
+---
+Update (SNAPSHOT v0.3)
+
+Evidence
+- Parser performs validation and accumulates non-fatal warnings for unknown fields and suspicious patterns.
+- Relative paths in config are resolved against the config directory.
+
+Refinement
+- Tighten diagnostic copy: include actionable suggestions and example snippets in error messages for missing/invalid fields.
+- Emit a summary block after parse when warnings exist (count + brief bullets), and point to `castra ports`/`status` as next checks.
+
+Acceptance criteria (amended v0.3)
+- Unknown fields: clearly warned with path context (e.g., vms[0].foo) and suggestion.
+- Relative paths resolved deterministically; errors mention the base directory used.
+- On parse with warnings, exit code remains success, but a visible summary is shown once per invocation.
+---
+
+---
+

@@ -14,8 +14,8 @@ Current code state (observable surfaces)
   - `init` implemented: writes castra.toml (TOML) and creates .castra/ workdir with friendly next-steps copy.
   - `ports` implemented: loads config, emits warnings for unknown fields, detects port conflicts (including broker port collision), and prints a tabular summary; `--verbose` adds per-VM detail and workflow steps.
   - `up`, `down`, `status`, `logs` currently NYI.
+  - CLI long_about now references repo-root todo_*.md files (previous .vizier reference removed).
 - Configuration: TOML at repo root (castra.toml); auto-discovered or overridden via --config. Parser performs validation with actionable errors and accumulates non-fatal warnings for unknown fields and suspicious patterns.
-- Known copy mismatch: CLI long_about still mentions a `.vizier/` directory; repo uses root-level TODOs.
 
 Near-term user-facing surface (target)
 - A single binary: `castra`.
@@ -35,7 +35,7 @@ External constraints and promises
 
 Active threads (narrative arcs)
 1) UX-first CLI contract
-   - Tension: We promised polished CLI; skeleton exists with subcommands, help/version, and structured errors. NYI tracking hints now reference real repo TODOs. Remaining: audit CLI copy (long_about still points to `.vizier/`).
+   - Tension: We promised polished CLI; skeleton exists with subcommands, help/version, and structured errors. Prior mismatch in NYI tracking hints/long_about is resolved; copy now points to repo-root todo_*.md files.
    - Depends on: CODE STATE v0.3 CLI; External promise: UX premium.
    - Outcome: Predictable commands, helpful output, meaningful exit codes.
 
@@ -74,4 +74,4 @@ Active threads (narrative arcs)
    - Outcome: Stable toolchain target; `cargo install`/releases; `--version` surfaced (commit optional).
 
 Direction of travel
-- Build on the working CLI and config/ports flow: deliver a minimal end-to-end run (single VM): up → status → down. Keep UX copy crisp and errors actionable. Fix remaining copy mismatch in CLI long_about. Coordinate QEMU lifecycle with preflight checks (QEMU presence, overlays, port conflicts).
+- Build on the working CLI and config/ports flow: deliver a minimal end-to-end run (single VM): up → status → down. Keep UX copy crisp and errors actionable. With the long_about/NYI hint references fixed, next tighten per-command help text and exit code consistency. Coordinate QEMU lifecycle with preflight checks (QEMU presence, overlays, port conflicts).
