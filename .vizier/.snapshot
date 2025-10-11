@@ -1,0 +1,69 @@
+SNAPSHOT v0.1 — Castra (VM orchestration harness)
+
+Project promise
+- Orchestrate multiple virtual machines on a single host for agent workloads.
+- QEMU is the sole virtualization backend (initially).
+- The host acts as the primary communication channel for agents interacting with VMs.
+- UX is at a premium: fast, legible, low-friction CLI with sensible defaults and clear status.
+
+Current code state (observable surfaces)
+- Rust crate "castra" with a minimal binary (src/main.rs) printing "Hello, world!".
+- Cargo.toml declares edition = "2024"; no dependencies. No CLI, no QEMU integration yet.
+
+Near-term user-facing surface (target)
+- A single binary: `castra`.
+- Core flows to support:
+  1) `castra init` — scaffold config and working directories.
+  2) `castra up` — start one or more defined VMs via QEMU.
+  3) `castra status` — show per-VM lifecycle state and comm-channel health.
+  4) `castra down` — graceful stop and cleanup.
+  5) `castra ports|logs` — reveal connectivity and recent activity.
+- Configuration: human-readable project config at repo root (exact filename TBD), discoverable by `castra` without extra flags.
+
+External constraints and promises
+- Backend: QEMU only (no libvirt requirement in UX; implementation choices remain open).
+- Communication: Agents connect to the host first; host brokers/bridges to VMs. Concrete protocol is deliberately open to allow evolution.
+- Defaults should be safe and ergonomic: ephemeral overlays, NAT + host port mappings, clear teardown.
+
+Active threads (narrative arcs)
+1) UX-first CLI contract
+   - Tension: We promise a polished experience, but have no CLI or commands.
+   - Depends on: CODE STATE v0 (no CLI), External promise: UX premium.
+   - Outcome: Predictable commands, helpful output, meaningful exit codes.
+
+2) QEMU backend and VM lifecycle
+   - Tension: We commit to QEMU orchestration with zero wiring implemented.
+   - Depends on: External constraint: QEMU backend.
+   - Outcome: Start/stop VMs reliably; detect boot success; tear down cleanly.
+
+3) Host communication channel
+   - Tension: Host must be the primary conduit for agents; no broker exists.
+   - Depends on: External promise: host-centric comms.
+   - Outcome: A host listener/broker exists; VMs have a stable path to/from agents via the host.
+
+4) Project configuration and discovery
+   - Tension: UX expects zero-ceremony configuration; nothing exists.
+   - Outcome: A readable config file defines VMs/resources; `castra` auto-discovers it from project root.
+
+5) VM images and storage hygiene
+   - Tension: Need fast, safe VM storage flows without data loss.
+   - Outcome: Base images + ephemeral overlays by default; explicit cleanup commands.
+
+6) Networking and connectivity ergonomics
+   - Tension: VMs must reach the host and be reachable predictably.
+   - Outcome: NAT with stable host port forwards; clear `ports` view; works on common host OSes.
+
+7) Observability and status legibility
+   - Tension: Users need at-a-glance state; no surfaces exist.
+   - Outcome: `status` and `logs` provide clear, color-coded live info.
+
+8) Safety and resource limits
+   - Tension: Prevent host overload and data loss.
+   - Outcome: Configurable CPU/mem; preflight checks; graceful shutdown.
+
+9) Toolchain baseline and distribution
+   - Tension: Edition/toolchain unclear; no packaging.
+   - Outcome: Stable toolchain target; `cargo install`/releases; `--version` surfaced.
+
+Direction of travel
+- Deliver a minimal but end-to-end happy path: init → up (single VM) → status → down, with host-broker scaffold and legible UX. Expand to multiple VMs once single-VM lifecycle is rock solid.
