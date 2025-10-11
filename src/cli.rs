@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
     version,
     about = "A user-friendly orchestrator for lightweight QEMU-based sandboxes.",
     long_about = "Castra helps you spin up reproducible, host-friendly QEMU environments.\n\
-                  Explore the roadmap in the .vizier/ directory for features under active development."
+                  Explore the roadmap in the repo's todo_*.md files for features under active development."
 )]
 pub struct Cli {
     /// Path to an explicit configuration file. Defaults to searching for `castra.toml`.
@@ -37,7 +37,7 @@ pub enum Commands {
     Down(DownArgs),
     /// Inspect the state of managed virtual machines.
     Status(StatusArgs),
-    /// Display host<->guest networking forwards.
+    /// Display declared host/guest forwards and highlight conflicts and broker reservations.
     Ports(PortsArgs),
     /// Tail orchestrator and guest logs.
     Logs(LogsArgs),

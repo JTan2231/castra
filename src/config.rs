@@ -154,6 +154,13 @@ pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CliError> {
     raw.into_validated(path, &mut warnings)
 }
 
+fn invalid_config(path: &Path, message: impl Into<String>) -> CliError {
+    CliError::InvalidConfig {
+        path: path.to_path_buf(),
+        message: message.into(),
+    }
+}
+
 fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
     let mut warnings = Vec::new();
     let allowed_root = ["version", "project", "vms", "workflows", "broker"];
@@ -311,8 +318,11 @@ impl RawConfig {
         path: &Path,
         warnings: &mut Vec<String>,
     ) -> Result<ProjectConfig, CliError> {
-        let version = self.version.ok_or_else(|| CliError::InvalidConfig {
-            message: "Missing required top-level field `version`.".to_string(),
+        let version = self.version.ok_or_else(|| {
+            invalid_config(
+                path,
+                "Missing required top-level field `version`. Example: `version = \"0.1.0\"`.",
+            )
         })?;
 
         if version != "0.1.0" {
@@ -321,18 +331,32 @@ impl RawConfig {
             ));
         }
 
-        let project = self.project.ok_or_else(|| CliError::InvalidConfig {
-            message: "Missing required table `[project]`.".to_string(),
+        let project = self.project.ok_or_else(|| {
+            invalid_config(
+                path,
+                "Missing required table `[project]`. Example:\n\
+                 [project]\n\
+                 name = \"devbox\"",
+            )
         })?;
 
-        let project_name = project.name.ok_or_else(|| CliError::InvalidConfig {
-            message: "Missing required field `project.name`.".to_string(),
+        let project_name = project.name.ok_or_else(|| {
+            invalid_config(
+                path,
+                "Missing required field `project.name`. Example: `name = \"devbox\"`.",
+            )
         })?;
 
         if self.vms.is_empty() {
-            return Err(CliError::InvalidConfig {
-                message: "At least one `[[vms]]` entry is required.".to_string(),
-            });
+            return Err(invalid_config(
+                path,
+                "At least one `[[vms]]` entry is required. Example:\n\
+                 [[vms]]\n\
+                 name = \"devbox\"\n\
+                 base_image = \"images/devbox.qcow2\"\n\
+                 overlay = \".castra/devbox-overlay.qcow2\"\n\
+                 (Tip: run `castra init` to scaffold a starter config.)",
+            ));
         }
 
         let root_dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| {
@@ -347,62 +371,93 @@ impl RawConfig {
         let mut vms = Vec::with_capacity(self.vms.len());
 
         for vm in self.vms {
-            let name = vm.name.ok_or_else(|| CliError::InvalidConfig {
-                message: "Each `[[vms]]` entry must define `name`.".to_string(),
+            let name = vm.name.ok_or_else(|| {
+                invalid_config(
+                    path,
+                    "Each `[[vms]]` entry must define `name`. Example: `name = \"devbox\"`.",
+                )
             })?;
 
             if !seen_vm_names.insert(name.clone()) {
-                return Err(CliError::InvalidConfig {
-                    message: format!("Duplicate VM name `{name}` detected."),
-                });
+                return Err(invalid_config(
+                    path,
+                    format!(
+                        "Duplicate VM name `{name}` detected. Each VM must have a unique `name`."
+                    ),
+                ));
             }
 
-            let base_image = vm.base_image.ok_or_else(|| CliError::InvalidConfig {
-                message: format!("VM `{name}` is missing required field `base_image`."),
+            let base_image = vm.base_image.ok_or_else(|| {
+                invalid_config(
+                    path,
+                    format!(
+                        "VM `{name}` is missing required field `base_image`. Example: `base_image = \"images/{name}-base.qcow2\"`."
+                    ),
+                )
             })?;
 
-            let overlay = vm.overlay.ok_or_else(|| CliError::InvalidConfig {
-                message: format!("VM `{name}` is missing required field `overlay`."),
+            let overlay = vm.overlay.ok_or_else(|| {
+                invalid_config(
+                    path,
+                    format!(
+                        "VM `{name}` is missing required field `overlay`. Example: `overlay = \".castra/{name}-overlay.qcow2\"`."
+                    ),
+                )
             })?;
 
             let cpus = vm.cpus.unwrap_or(2);
             if cpus == 0 {
-                return Err(CliError::InvalidConfig {
-                    message: format!("VM `{name}` must request at least one CPU."),
-                });
+                return Err(invalid_config(
+                    path,
+                    format!("VM `{name}` must request at least one CPU. Example: `cpus = 2`."),
+                ));
             }
 
             let memory = vm.memory.unwrap_or_else(|| "2048 MiB".to_string());
-            let memory_spec = parse_memory(&memory).map_err(|msg| CliError::InvalidConfig {
-                message: format!("VM `{name}` has invalid memory specification: {msg}"),
+            let memory_spec = parse_memory(&memory).map_err(|msg| {
+                invalid_config(
+                    path,
+                    format!(
+                        "VM `{name}` has invalid memory specification `{memory}`: {msg}. \
+                         Example values: `2048 MiB`, `2 GiB`."
+                    ),
+                )
             })?;
 
             let mut forwards = Vec::with_capacity(vm.port_forwards.len());
             for forward in vm.port_forwards {
-                let host = forward.host.ok_or_else(|| CliError::InvalidConfig {
-                    message: format!(
-                        "Port forward on VM `{name}` is missing required `host` port."
-                    ),
+                let host = forward.host.ok_or_else(|| {
+                    invalid_config(
+                        path,
+                        format!(
+                            "Port forward on VM `{name}` is missing required `host` port. Example: `host = 2222`."
+                        ),
+                    )
                 })?;
                 if host == 0 {
-                    return Err(CliError::InvalidConfig {
-                        message: format!(
+                    return Err(invalid_config(
+                        path,
+                        format!(
                             "Port forward on VM `{name}` must use a host port between 1 and 65535."
                         ),
-                    });
+                    ));
                 }
 
-                let guest = forward.guest.ok_or_else(|| CliError::InvalidConfig {
-                    message: format!(
-                        "Port forward on VM `{name}` is missing required `guest` port."
-                    ),
+                let guest = forward.guest.ok_or_else(|| {
+                    invalid_config(
+                        path,
+                        format!(
+                            "Port forward on VM `{name}` is missing required `guest` port. Example: `guest = 22`."
+                        ),
+                    )
                 })?;
                 if guest == 0 {
-                    return Err(CliError::InvalidConfig {
-                        message: format!(
+                    return Err(invalid_config(
+                        path,
+                        format!(
                             "Port forward on VM `{name}` must use a guest port between 1 and 65535."
                         ),
-                    });
+                    ));
                 }
 
                 let protocol = forward
@@ -410,11 +465,14 @@ impl RawConfig {
                     .as_deref()
                     .map(PortProtocol::from_str)
                     .unwrap_or(Some(PortProtocol::Tcp))
-                    .ok_or_else(|| CliError::InvalidConfig {
-                        message: format!(
-                            "Port forward on VM `{name}` has unsupported protocol `{}`.",
-                            forward.protocol.unwrap()
-                        ),
+                    .ok_or_else(|| {
+                        invalid_config(
+                            path,
+                            format!(
+                                "Port forward on VM `{name}` has unsupported protocol `{}`. Supported values: `tcp`, `udp`.",
+                                forward.protocol.unwrap()
+                            ),
+                        )
                     })?;
 
                 forwards.push(PortForward {
