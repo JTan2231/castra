@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use hex::encode as hex_encode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use ureq::Agent;
+use ureq::{Agent, Error as UreqError, ErrorKind as UreqErrorKind};
 
 use crate::error::{Error, Result};
 
@@ -143,14 +143,16 @@ impl ImageManager {
 
             let download_path = self.download_artifact(spec, &image_root, artifact, &mut events)?;
             if let Some(expected) = artifact.source.sha256 {
-                verify_checksum(&download_path, expected).map_err(|err| {
-                    Error::PreflightFailed {
+                if let Err(err) = verify_checksum(&download_path, expected) {
+                    let _ = fs::remove_file(&download_path);
+                    return Err(Error::PreflightFailed {
                         message: format!(
-                            "Checksum mismatch for {} (expected {expected}): {err}",
-                            artifact.source.url
+                            "Checksum mismatch for {} (expected {expected}). Removed {} to force a fresh download: {err}",
+                            artifact.source.url,
+                            download_path.display()
                         ),
-                    }
-                })?;
+                    });
+                }
                 self.push_event(
                     spec,
                     &mut events,
@@ -293,9 +295,9 @@ impl ImageManager {
             ),
         );
 
-        let response = request.call().map_err(|err| Error::PreflightFailed {
-            message: format!("Failed to download {}: {err}", artifact.source.url),
-        })?;
+        let response = request
+            .call()
+            .map_err(|err| Self::map_download_error(&artifact.source.url, err))?;
 
         if start > 0 && response.status() == 200 {
             // Server ignored the Range header; start fresh.
@@ -362,16 +364,64 @@ impl ImageManager {
                 .map(|meta| meta.len())
                 .unwrap_or_default();
             if actual != expected {
+                let _ = fs::remove_file(&partial);
                 return Err(Error::PreflightFailed {
                     message: format!(
-                        "Downloaded {} but size {} did not match expected {} bytes.",
-                        artifact.source.url, actual, expected
+                        "Downloaded {} but size {} did not match expected {} bytes. Removed {} so it can be fetched afresh.",
+                        artifact.source.url,
+                        actual,
+                        expected,
+                        partial.display()
                     ),
                 });
             }
         }
 
         Ok(partial)
+    }
+
+    fn map_download_error(url: &str, err: UreqError) -> Error {
+        match err {
+            UreqError::Status(status, response) => {
+                let status_text = response.status_text().to_string();
+                Error::PreflightFailed {
+                    message: format!(
+                        "Server responded with HTTP {status} {status_text} while downloading {url}.",
+                    ),
+                }
+            }
+            UreqError::Transport(transport) => {
+                let kind = transport.kind();
+                let detail = transport
+                    .message()
+                    .map(|msg| msg.to_string())
+                    .unwrap_or_else(|| transport.to_string());
+                let (base, hint) = match kind {
+                    UreqErrorKind::Dns
+                    | UreqErrorKind::ConnectionFailed
+                    | UreqErrorKind::Io
+                    | UreqErrorKind::ProxyConnect => (
+                        format!("Network unavailable while downloading {url}"),
+                        "Restore connectivity or prefetch managed images before retrying `castra up`.",
+                    ),
+                    UreqErrorKind::InvalidProxyUrl | UreqErrorKind::ProxyUnauthorized => (
+                        format!("Proxy configuration blocked the download of {url}"),
+                        "Review CAStra proxy settings or environment variables to proceed.",
+                    ),
+                    UreqErrorKind::InsecureRequestHttpsOnly => (
+                        format!("Download rejected due to HTTPS-only policy for {url}"),
+                        "Use an HTTPS endpoint or relax the https-only setting if intentional.",
+                    ),
+                    _ => (
+                        format!("Failed to download {url}"),
+                        "Retry once the remote endpoint is reachable.",
+                    ),
+                };
+                Error::PreflightFailed {
+                    message: format!("{base}: {detail}. {hint}"),
+                }
+            }
+        }
     }
 
     fn apply_transformations(
@@ -492,9 +542,7 @@ pub struct ArtifactSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ManagedArtifactKind {
     RootDisk,
-    #[allow(dead_code)]
     Kernel,
-    #[allow(dead_code)]
     Initrd,
 }
 
@@ -702,29 +750,51 @@ pub fn lookup_managed_image(id: &str, version: &str) -> Option<&'static ManagedI
     }
 }
 
-static ALPINE_ARTIFACTS: [ManagedArtifactSpec; 1] = [ManagedArtifactSpec {
-    kind: ManagedArtifactKind::RootDisk,
-    final_filename: "rootfs.qcow2",
-    source: ArtifactSource {
-        url: "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/aws_alpine-3.22.2-x86_64-bios-tiny-r0.vhd",
-        sha256: None,
-        size: None,
+static ALPINE_ARTIFACTS: [ManagedArtifactSpec; 3] = [
+    ManagedArtifactSpec {
+        kind: ManagedArtifactKind::RootDisk,
+        final_filename: "rootfs.qcow2",
+        source: ArtifactSource {
+            url: "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/aws_alpine-3.22.2-x86_64-bios-tiny-r0.vhd",
+            sha256: Some("8f58945cd972f31b8a7e3116d2b33cdb4298e6b3c0609c0bfd083964678afffb"),
+            size: Some(127_926_784),
+        },
+        transformations: &[TransformStep::QemuImgConvert {
+            input_format: "vpc",
+            output_format: "qcow2",
+            output: "rootfs.qcow2",
+        }],
     },
-    transformations: &[TransformStep::QemuImgConvert {
-        input_format: "vpc",
-        output_format: "qcow2",
-        output: "rootfs.qcow2",
-    }],
-}];
+    ManagedArtifactSpec {
+        kind: ManagedArtifactKind::Kernel,
+        final_filename: "vmlinuz-lts",
+        source: ArtifactSource {
+            url: "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/netboot/vmlinuz-lts",
+            sha256: Some("6eb498e1898d138e8a493eae901a580ddc3c1c105bd9ddc84cb9f820855958e7"),
+            size: Some(13_624_320),
+        },
+        transformations: &[],
+    },
+    ManagedArtifactSpec {
+        kind: ManagedArtifactKind::Initrd,
+        final_filename: "initramfs-lts",
+        source: ArtifactSource {
+            url: "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/netboot/initramfs-lts",
+            sha256: Some("e82c5c2d4a6372f25e53fcbad4defe7b10bbf8be766b6e571291fd5ebcf9e383"),
+            size: Some(26_335_797),
+        },
+        transformations: &[],
+    },
+];
 
 static ALPINE_MINIMAL_V1: ManagedImageSpec = ManagedImageSpec {
     id: "alpine-minimal",
     version: "v1",
     artifacts: &ALPINE_ARTIFACTS,
     qemu: QemuProfile {
-        kernel: None,
-        initrd: None,
-        append: "",
+        kernel: Some(ManagedArtifactKind::Kernel),
+        initrd: Some(ManagedArtifactKind::Initrd),
+        append: "console=ttyS0 root=/dev/vda modules=virtio_pci,virtio_blk,virtio_console,virtio_net,ext4 quiet",
         machine: None,
         extra_args: &[],
     },
@@ -817,6 +887,16 @@ mod tests {
         let spec = lookup_managed_image("alpine-minimal", "v1").expect("known spec");
         assert_eq!(spec.id, "alpine-minimal");
         assert_eq!(spec.version, "v1");
+        assert!(matches!(
+            spec.qemu.kernel,
+            Some(ManagedArtifactKind::Kernel)
+        ));
+        assert!(matches!(
+            spec.qemu.initrd,
+            Some(ManagedArtifactKind::Initrd)
+        ));
+        assert!(!spec.qemu.append.is_empty());
+        assert_eq!(spec.artifacts.len(), 3);
     }
 
     #[test]
