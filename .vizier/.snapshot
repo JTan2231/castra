@@ -12,9 +12,9 @@ Current code state (observable surfaces)
   - Global: --config PATH; discovery searches upward for castra.toml; --skip-discovery honored on up/down/status. Empty invocation prints help and exits 64. Help/version exit 0.
   - Exit codes: usage 64; config/path 66; parse/invalid 65; IO/launch/shutdown/preflight 70–74 via CliError.exit_code.
   - init: writes castra.toml and .castra/ workdir scaffold with next-steps copy.
-  - ports: loads config, prints warning summary, detects duplicate host ports and broker-port collision; prints declared forwards table; --verbose prints per-VM details and workflow steps.
+  - ports: loads config, prints warning summary, detects duplicate host ports and broker-port collision; prints declared forwards table with STATUS (declared | conflict | broker-reserved); --verbose prints per-VM details and workflow steps.
   - logs: tails broker and per-VM qemu/serial files; prefixes [host-broker] | [vm:<name>:qemu] | [vm:<name>:serial]; respects --tail N and --follow with graceful gaps; color only on TTY.
-  - status: prints table (VM | STATE | CPU/MEM | UPTIME | BROKER | FORWARDS); colors on TTY only. STATE derived from pidfile/process checks; UPTIME from pidfile mtime. BROKER shows waiting when broker listening, offline otherwise.
+  - status: prints table (VM | STATE | CPU/MEM | UPTIME | BROKER | FORWARDS); colors on TTY only. STATE derived from pidfile/process checks; UPTIME from pidfile mtime. BROKER shows waiting when broker listening, offline otherwise; legend includes reachable for future handshake.
   - up:
     • Resolves config; if discovery fails (and not skipped), synthesizes a default in-memory project using a managed Alpine VM (no file is written).
     • Preflight: host CPU/memory headroom (warn/fail thresholds), free-disk checks for state/logs/overlay dirs, host port conflict checks (including broker), qemu-system presence; --force bypass for fail conditions (warns).
@@ -22,6 +22,8 @@ Current code state (observable surfaces)
     • Starts host broker (hidden broker subcommand) writing .castra/broker.pid and logs to .castra/logs/broker.log; idempotent if already running.
     • Managed images: ImageManager ensures assets under .castra/images/<id>/<version>/; for alpine-minimal@v1 downloads a VHD and converts via qemu-img (vpc→qcow2) to rootfs.qcow2; emits progress/cache-hit lines; persists a manifest with final checksums.
     • Launches each VM via qemu-system with user-mode NAT and hostfwd rules; writes .castra/<vm>.pid; logs QEMU stdout/stderr to .castra/logs/<vm>.log and serial to <vm>-serial.log.
+- Library API surface:
+  - castra::core::operations exposes programmatic entry points for init/up/down/status/ports/logs returning OperationOutput<T> with diagnostics and events. CLI is a thin adapter over these. Docs: docs/library_usage.md.
 - Configuration: TOML; required fields validated; unknown fields warned with path context; relative paths resolved against config dir. Default broker.port = 7070. Warning summary emitted once per command with next-steps hints. VM base image can be either a path or a managed image reference (managed_image = { name, version, disk }).
 - Managed images: static catalog in src/managed with alpine-minimal@v1; ImageManager handles fetch/resume, transform (qemu-img), manifest (JSON), and logging to .castra/logs/image-manager.log. QEMU profile hooks are present but Alpine v1 does not inject a kernel.
 - QEMU acceleration: detects supported accelerators via `qemu-system -accel help` and adds `-accel hvf` on macOS or `-accel kvm` on Linux when available; falls back cleanly; `-cpu host` when accel engaged. Boot overrides (kernel/initrd/append/machine) are supported when provided by a managed profile.
@@ -30,7 +32,7 @@ Current code state (observable surfaces)
 Narrative state (active themes and tensions)
 1) UX-first CLI contract
    - Promise: predictable commands, crisp copy, consistent exit codes.
-   - State: Help and copy aligned; exit policy consistent. Keep per-command help synced as features evolve.
+   - State: Help and copy aligned; exit policy consistent. Keep per-command help synced as features evolve. CLI long_about references todo_*.md files; keep TODOs current in repo root to match.
 
 2) QEMU backend and VM lifecycle
    - Promise: reliable start/stop; guest-cooperative shutdown.
@@ -50,7 +52,7 @@ Narrative state (active themes and tensions)
 
 6) Networking and connectivity ergonomics
    - Promise: predictable NAT + forwards; clarity on declared vs active.
-   - State: NAT + hostfwd on launch; ports lists declared forwards and flags conflicts and broker reservation; runtime inspection of active forwards not yet.
+   - State: NAT + hostfwd on launch; ports lists declared forwards and flags conflicts and broker reservation; runtime inspection of active forwards not yet; STATUS column includes placeholders for future active state.
 
 7) Observability and status legibility
    - Promise: legible status and logs with color-on-tty.
@@ -68,5 +70,13 @@ Narrative state (active themes and tensions)
    - Promise: zero-config `castra up` boots a managed Alpine VM; built-in catalog drives asset fetch/transform; clear progress; compatible with user-provided QCOWs.
    - State: Phase 1–2 delivered. Catalog and ImageManager implemented with alpine-minimal@v1; default-project fallback in place; events printed during `up`; manifest recorded; cache hits verified via final checksums. Phase 3 (kernel/initrd injection/profile) is scaffolded but unused for Alpine v1. Checksums/sizes for source artifacts are not yet populated in the catalog; offline/error copy can be tightened.
 
+11) Library API stability for embedders
+   - Promise: stable, typed operations for programmatic use with durable event/diagnostic contracts.
+   - State: operations/options/outcomes/events exported; initial docs added (docs/library_usage.md). API surface is new; stabilization and versioning policy not documented yet.
+
 Direction of travel
-- Complete Seamless Alpine Bootstrap: (3) wire QEMU profile injection for images that provide kernels; (4) enrich catalog entries with source checksums/sizes and improve offline/error paths and CLI copy. Maintain copy/exit-code discipline and keep warning/observability polish high. After that, harden lifecycle (ACPI/QMP) ensuring compatibility with managed-image flow. Consider `ports --active` backed by QMP for declared vs active clarity.
+- Complete Seamless Alpine Bootstrap: (3) wire QEMU profile injection for images that provide kernels; (4) enrich catalog entries with source checksums/sizes and improve offline/error paths and CLI copy. Maintain copy/exit-code discipline and keep warning/observability polish high.
+- Harden lifecycle: add ACPI/QMP-assisted graceful shutdown before TERM/KILL while preserving idempotence and timeouts.
+- Connectivity clarity: implement a broker↔guest handshake to mark VM BROKER state as reachable; consider a ports --active view to contrast declared vs active forwards.
+- Versioning/distribution: include git SHA in --version, document MSRV and release workflow.
+- Library API: document stability expectations and keep CLI a thin adapter over castra::core to prevent drift.
