@@ -1,55 +1,36 @@
-use std::fs;
 use std::path::PathBuf;
 
+use crate::Result;
 use crate::cli::InitArgs;
-use crate::error::{CliError, CliResult};
+use crate::core::operations;
+use crate::core::options::InitOptions;
+use crate::core::project::format_config_warnings;
 
-use super::project::{default_config_contents, default_project_name, preferred_config_target};
+use super::common::{config_source, emit_diagnostics, split_config_warnings};
 
-pub fn handle_init(args: InitArgs, config_override: Option<&PathBuf>) -> CliResult<()> {
-    let target_path = preferred_config_target(config_override, args.output.as_ref());
-    let project_name = args
-        .project_name
-        .clone()
-        .unwrap_or_else(|| default_project_name(&target_path));
-    let state_root = crate::config::default_state_root(&project_name, &target_path);
+pub fn handle_init(args: InitArgs, config_override: Option<&PathBuf>) -> Result<()> {
+    let options = InitOptions {
+        force: args.force,
+        project_name: args.project_name.clone(),
+        output_path: args.output.clone(),
+        config_hint: config_source(config_override),
+    };
 
-    if target_path.exists() && !args.force {
-        return Err(CliError::AlreadyInitialized {
-            path: target_path.clone(),
-        });
+    let output = operations::init(options, None)?;
+
+    let (config_warnings, other) = split_config_warnings(&output.diagnostics);
+    if let Some(message) = format_config_warnings(&config_warnings) {
+        eprint!("{message}");
     }
+    emit_diagnostics(&other);
 
-    if let Some(parent) = target_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        fs::create_dir_all(parent).map_err(|source| CliError::CreateDir {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-
-    let overlay_root = target_path
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".castra");
-
-    fs::create_dir_all(&overlay_root).map_err(|source| CliError::CreateDir {
-        path: overlay_root.clone(),
-        source,
-    })?;
-
-    let config_contents = default_config_contents(&project_name);
-    fs::write(&target_path, config_contents).map_err(|source| CliError::WriteConfig {
-        path: target_path.clone(),
-        source,
-    })?;
-
+    let outcome = output.value;
     println!("✔ Created castra project scaffold.");
-    println!("  config  → {}", target_path.display());
-    println!("  state   → {}", state_root.display());
+    println!("  config  → {}", outcome.config_path.display());
+    println!("  state   → {}", outcome.state_root.display());
     println!(
         "  local   → {} (opt-in via [project].state_dir)",
-        overlay_root.display()
+        outcome.overlay_root.display()
     );
     println!();
     println!("Next steps:");

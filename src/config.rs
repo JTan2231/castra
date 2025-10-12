@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::error::CliError;
+use crate::error::Error;
 
 pub const DEFAULT_BROKER_PORT: u16 = 7070;
 
@@ -194,20 +194,20 @@ pub struct BrokerCollision {
     pub port: u16,
 }
 
-pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CliError> {
-    let contents = fs::read_to_string(path).map_err(|source| CliError::ReadConfig {
+pub fn load_project_config(path: &Path) -> Result<ProjectConfig, Error> {
+    let contents = fs::read_to_string(path).map_err(|source| Error::ReadConfig {
         path: path.to_path_buf(),
         source,
     })?;
 
-    let value: toml::Value = toml::from_str(&contents).map_err(|source| CliError::ParseConfig {
+    let value: toml::Value = toml::from_str(&contents).map_err(|source| Error::ParseConfig {
         path: path.to_path_buf(),
         source,
     })?;
 
     let mut warnings = detect_unknown_fields(&value);
 
-    let raw = RawConfig::deserialize(value).map_err(|source| CliError::ParseConfig {
+    let raw = RawConfig::deserialize(value).map_err(|source| Error::ParseConfig {
         path: path.to_path_buf(),
         source,
     })?;
@@ -215,8 +215,8 @@ pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CliError> {
     raw.into_validated(path, &mut warnings)
 }
 
-fn invalid_config(path: &Path, message: impl Into<String>) -> CliError {
-    CliError::InvalidConfig {
+fn invalid_config(path: &Path, message: impl Into<String>) -> Error {
+    Error::InvalidConfig {
         path: path.to_path_buf(),
         message: message.into(),
     }
@@ -396,7 +396,7 @@ impl RawConfig {
         self,
         path: &Path,
         warnings: &mut Vec<String>,
-    ) -> Result<ProjectConfig, CliError> {
+    ) -> Result<ProjectConfig, Error> {
         let version = self.version.ok_or_else(|| {
             invalid_config(
                 path,
@@ -792,7 +792,7 @@ fn user_home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::CliError;
+    use crate::error::Error;
     use regex::Regex;
     use std::path::{Path, PathBuf};
     use temp_env::with_var;
@@ -925,7 +925,7 @@ memory = "1 GiB"
 
         let err = load_project_config(&path).expect_err("should reject duplicate names");
         match err {
-            CliError::InvalidConfig { message, .. } => {
+            Error::InvalidConfig { message, .. } => {
                 assert!(
                     message.contains("Duplicate VM name"),
                     "unexpected message: {message}"
@@ -952,7 +952,7 @@ memory = "1 GiB"
         );
 
         let err = load_project_config(&path).expect_err("must fail without image");
-        assert!(matches!(err, CliError::InvalidConfig { .. }));
+        assert!(matches!(err, Error::InvalidConfig { .. }));
     }
 
     #[test]
@@ -974,7 +974,7 @@ memory = "1 GiB"
         );
 
         let err = load_project_config(&path).expect_err("should reject both image types");
-        assert!(matches!(err, CliError::InvalidConfig { .. }));
+        assert!(matches!(err, Error::InvalidConfig { .. }));
     }
 
     #[test]

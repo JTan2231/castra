@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ureq::Agent;
 
-use crate::error::{CliError, CliResult};
+use crate::error::{Error, Result};
 
 #[derive(Debug)]
 pub struct ImageManager {
@@ -26,7 +26,7 @@ pub struct ManagedImageEnsureOutcome {
     pub events: Vec<ManagedArtifactEvent>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ManagedImagePaths {
     pub root_disk: PathBuf,
     pub kernel: Option<PathBuf>,
@@ -37,11 +37,11 @@ impl ManagedImagePaths {
     fn from_records(
         spec: &'static ManagedImageSpec,
         records: &HashMap<ManagedArtifactKind, PathBuf>,
-    ) -> CliResult<Self> {
+    ) -> Result<Self> {
         let root_disk = records
             .get(&ManagedArtifactKind::RootDisk)
             .cloned()
-            .ok_or_else(|| CliError::PreflightFailed {
+            .ok_or_else(|| Error::PreflightFailed {
                 message: format!(
                     "Managed image `{}` missing root disk after acquisition.",
                     spec.identifier()
@@ -94,9 +94,9 @@ impl ImageManager {
     pub fn ensure_image(
         &self,
         spec: &'static ManagedImageSpec,
-    ) -> CliResult<ManagedImageEnsureOutcome> {
+    ) -> Result<ManagedImageEnsureOutcome> {
         let image_root = self.storage_root.join(spec.id).join(spec.version);
-        fs::create_dir_all(&image_root).map_err(|err| CliError::PreflightFailed {
+        fs::create_dir_all(&image_root).map_err(|err| Error::PreflightFailed {
             message: format!(
                 "Failed to prepare managed image directory {}: {err}",
                 image_root.display()
@@ -144,7 +144,7 @@ impl ImageManager {
             let download_path = self.download_artifact(spec, &image_root, artifact, &mut events)?;
             if let Some(expected) = artifact.source.sha256 {
                 verify_checksum(&download_path, expected).map_err(|err| {
-                    CliError::PreflightFailed {
+                    Error::PreflightFailed {
                         message: format!(
                             "Checksum mismatch for {} (expected {expected}): {err}",
                             artifact.source.url
@@ -171,7 +171,7 @@ impl ImageManager {
                 transformed_path
             } else {
                 fs::rename(&transformed_path, &final_path).map_err(|err| {
-                    CliError::PreflightFailed {
+                    Error::PreflightFailed {
                         message: format!(
                             "Failed to place managed artifact at {}: {err}",
                             final_path.display()
@@ -268,7 +268,7 @@ impl ImageManager {
         image_root: &Path,
         artifact: &ManagedArtifactSpec,
         events: &mut Vec<ManagedArtifactEvent>,
-    ) -> CliResult<PathBuf> {
+    ) -> Result<PathBuf> {
         let partial = image_root.join(format!("{}.partial", artifact.final_filename));
         let mut start = 0u64;
 
@@ -293,7 +293,7 @@ impl ImageManager {
             ),
         );
 
-        let response = request.call().map_err(|err| CliError::PreflightFailed {
+        let response = request.call().map_err(|err| Error::PreflightFailed {
             message: format!("Failed to download {}: {err}", artifact.source.url),
         })?;
 
@@ -306,7 +306,7 @@ impl ImageManager {
             OpenOptions::new()
                 .append(true)
                 .open(&partial)
-                .map_err(|err| CliError::PreflightFailed {
+                .map_err(|err| Error::PreflightFailed {
                     message: format!(
                         "Failed to open partial download {}: {err}",
                         partial.display()
@@ -318,7 +318,7 @@ impl ImageManager {
                 .write(true)
                 .truncate(true)
                 .open(&partial)
-                .map_err(|err| CliError::PreflightFailed {
+                .map_err(|err| Error::PreflightFailed {
                     message: format!(
                         "Failed to create download file {}: {err}",
                         partial.display()
@@ -331,14 +331,14 @@ impl ImageManager {
         loop {
             let bytes = reader
                 .read(&mut buffer)
-                .map_err(|err| CliError::PreflightFailed {
+                .map_err(|err| Error::PreflightFailed {
                     message: format!("I/O error while downloading {}: {err}", artifact.source.url),
                 })?;
             if bytes == 0 {
                 break;
             }
             file.write_all(&buffer[..bytes])
-                .map_err(|err| CliError::PreflightFailed {
+                .map_err(|err| Error::PreflightFailed {
                     message: format!("Failed writing to download {}: {err}", partial.display()),
                 })?;
         }
@@ -362,7 +362,7 @@ impl ImageManager {
                 .map(|meta| meta.len())
                 .unwrap_or_default();
             if actual != expected {
-                return Err(CliError::PreflightFailed {
+                return Err(Error::PreflightFailed {
                     message: format!(
                         "Downloaded {} but size {} did not match expected {} bytes.",
                         artifact.source.url, actual, expected
@@ -381,7 +381,7 @@ impl ImageManager {
         artifact: &ManagedArtifactSpec,
         mut current: PathBuf,
         events: &mut Vec<ManagedArtifactEvent>,
-    ) -> CliResult<PathBuf> {
+    ) -> Result<PathBuf> {
         for step in artifact.transformations {
             match step {
                 TransformStep::StripVhdFooter => {
@@ -393,7 +393,7 @@ impl ImageManager {
                     output_format,
                     output,
                 } => {
-                    let qemu_img = self.qemu_img.as_ref().ok_or_else(|| CliError::PreflightFailed {
+                    let qemu_img = self.qemu_img.as_ref().ok_or_else(|| Error::PreflightFailed {
                         message: "qemu-img binary required for managed image conversion but not found in PATH.".to_string(),
                     })?;
                     let target = image_root.join(output);
@@ -411,7 +411,7 @@ impl ImageManager {
                 }
                 TransformStep::Rename { output } => {
                     let target = image_root.join(output);
-                    fs::rename(&current, &target).map_err(|err| CliError::PreflightFailed {
+                    fs::rename(&current, &target).map_err(|err| Error::PreflightFailed {
                         message: format!(
                             "Failed to rename {} to {}: {err}",
                             current.display(),
@@ -568,15 +568,15 @@ fn load_manifest(path: &Path) -> ImageManifest {
     }
 }
 
-fn save_manifest(path: &Path, manifest: &ImageManifest) -> CliResult<()> {
+fn save_manifest(path: &Path, manifest: &ImageManifest) -> Result<()> {
     let serialized =
-        serde_json::to_string_pretty(manifest).map_err(|err| CliError::PreflightFailed {
+        serde_json::to_string_pretty(manifest).map_err(|err| Error::PreflightFailed {
             message: format!(
                 "Failed to serialize image manifest {}: {err}",
                 path.display()
             ),
         })?;
-    fs::write(path, serialized).map_err(|err| CliError::PreflightFailed {
+    fs::write(path, serialized).map_err(|err| Error::PreflightFailed {
         message: format!("Failed to persist image manifest {}: {err}", path.display()),
     })
 }
@@ -588,8 +588,8 @@ fn timestamp_seconds() -> u64 {
         .as_secs()
 }
 
-fn compute_sha256(path: &Path) -> CliResult<String> {
-    let mut file = fs::File::open(path).map_err(|err| CliError::PreflightFailed {
+fn compute_sha256(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path).map_err(|err| Error::PreflightFailed {
         message: format!("Failed to open {} for hashing: {err}", path.display()),
     })?;
     let mut hasher = Sha256::new();
@@ -597,7 +597,7 @@ fn compute_sha256(path: &Path) -> CliResult<String> {
     loop {
         let bytes = file
             .read(&mut buffer)
-            .map_err(|err| CliError::PreflightFailed {
+            .map_err(|err| Error::PreflightFailed {
                 message: format!("Failed to read {} for hashing: {err}", path.display()),
             })?;
         if bytes == 0 {
@@ -609,7 +609,7 @@ fn compute_sha256(path: &Path) -> CliResult<String> {
     Ok(hex_encode(hasher.finalize()))
 }
 
-fn verify_checksum(path: &Path, expected: &str) -> Result<(), String> {
+fn verify_checksum(path: &Path, expected: &str) -> std::result::Result<(), String> {
     let actual = compute_sha256(path).map_err(|err| err.to_string())?;
     if actual.eq_ignore_ascii_case(expected) {
         Ok(())
@@ -623,13 +623,13 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), String> {
     }
 }
 
-fn strip_vhd_footer(path: &Path) -> CliResult<()> {
-    let metadata = fs::metadata(path).map_err(|err| CliError::PreflightFailed {
+fn strip_vhd_footer(path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path).map_err(|err| Error::PreflightFailed {
         message: format!("Unable to stat {}: {err}", path.display()),
     })?;
     let len = metadata.len();
     if len < 512 {
-        return Err(CliError::PreflightFailed {
+        return Err(Error::PreflightFailed {
             message: format!(
                 "File {} too small to contain VHD footer ({} bytes).",
                 path.display(),
@@ -638,20 +638,18 @@ fn strip_vhd_footer(path: &Path) -> CliResult<()> {
         });
     }
     let new_len = len - 512;
-    let file =
-        OpenOptions::new()
-            .write(true)
-            .open(path)
-            .map_err(|err| CliError::PreflightFailed {
-                message: format!("Unable to open {} for truncation: {err}", path.display()),
-            })?;
-    file.set_len(new_len)
-        .map_err(|err| CliError::PreflightFailed {
-            message: format!(
-                "Failed truncating {} to strip VHD footer: {err}",
-                path.display()
-            ),
-        })
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|err| Error::PreflightFailed {
+            message: format!("Unable to open {} for truncation: {err}", path.display()),
+        })?;
+    file.set_len(new_len).map_err(|err| Error::PreflightFailed {
+        message: format!(
+            "Failed truncating {} to strip VHD footer: {err}",
+            path.display()
+        ),
+    })
 }
 
 fn run_qemu_img_convert(
@@ -660,9 +658,9 @@ fn run_qemu_img_convert(
     output_format: &str,
     input: &Path,
     output: &Path,
-) -> CliResult<()> {
+) -> Result<()> {
     if output.exists() {
-        fs::remove_file(output).map_err(|err| CliError::PreflightFailed {
+        fs::remove_file(output).map_err(|err| Error::PreflightFailed {
             message: format!(
                 "Failed to clear previous output {}: {err}",
                 output.display()
@@ -679,12 +677,12 @@ fn run_qemu_img_convert(
         .arg(input)
         .arg(output)
         .status()
-        .map_err(|err| CliError::PreflightFailed {
+        .map_err(|err| Error::PreflightFailed {
             message: format!("Failed to invoke `{}`: {err}", qemu_img.display()),
         })?;
 
     if !status.success() {
-        return Err(CliError::PreflightFailed {
+        return Err(Error::PreflightFailed {
             message: format!(
                 "`{}` exited with code {} while converting {}.",
                 qemu_img.display(),

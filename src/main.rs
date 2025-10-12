@@ -1,14 +1,12 @@
 mod app;
 mod cli;
-mod config;
-mod error;
-mod managed;
 
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, error::ErrorKind};
 
 use crate::cli::{Cli, Commands};
+pub use castra::{Error, Result, core};
 
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
@@ -48,7 +46,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("Error: {err}");
-            err.exit_code()
+            app::error::exit_code(&err)
         }
     }
 }

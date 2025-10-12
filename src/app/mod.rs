@@ -1,11 +1,10 @@
 pub mod broker;
-pub mod display;
+pub mod common;
 pub mod down;
+pub mod error;
 pub mod init;
 pub mod logs;
 pub mod ports;
-pub mod project;
-pub mod runtime;
 pub mod status;
 pub mod up;
 
