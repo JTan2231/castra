@@ -42,4 +42,7 @@ Acceptance criteria
 - Help text for `--skip-discovery` and `--config` reflects the stricter semantics.
 
 Anchors
-- src/app/common.rs; src/core/options.rs; src/cli.rs (flag help/copy).
+- src/app/common.rs; src/core/options.rs; src/cli.rs (flag help/copy).Cross-link: CLEAN.md mandates that `castra clean` obey the same skip-discovery contract. Acceptance: when `--skip-discovery` is used without `--config` or `--state-root`, both `status` and `clean` fail fast with a clear diagnostic (no filesystem walking).
+
+---
+

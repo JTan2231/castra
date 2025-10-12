@@ -77,4 +77,7 @@ Acceptance criteria
 - JSON output includes fields with stable names. Text UI shows age in human units and a legend line.
 
 Anchors
-- src/core/status.rs; src/core/broker.rs; src/app/status.rs (help/legend).
+- src/core/status.rs; src/core/broker.rs; src/app/status.rs (help/legend).Cross-link: BOOTSTRAP.md relies on `reachable=true` and `last_handshake_age_ms` to trigger host-side bootstrap. Acceptance should ensure `status --json` fields are stable enough for external automation to poll at ~2s cadence without blocking. Future: sessions may upgrade to bus-v1 (Thread 13) but handshake-only must remain supported.
+
+---
+

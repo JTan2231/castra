@@ -1,38 +1,48 @@
 SNAPSHOT v0.7.3 — Castra (VM orchestration harness)
 
 Edits since last snapshot
-- Resolved Thread 9 (version/MSRV/release surface): build embeds git SHA; README surfaces MSRV=1.77; docs/RELEASING.md added with lightweight checklist. Consolidated narrative to remove this as an active tension. No behavioral deltas to CLI beyond confirmed version output.
-- Clarified Thread 11 (feature gating): library-only builds succeed; remaining task narrowed to AGENTS.md guidance for embedders.
+- Added Thread 12 (Post-boot bootstrap pipeline): BOOTSTRAP.md establishes an idempotent, Nix-driven provisioning flow triggered by broker handshake freshness; documented scripts and wiring via workflows.init. No code yet; acceptance rides on Thread 3 and Thread 10 surfaces.
+- Added Thread 13 (Castra Bus): BUS.md proposes a host-centric pub/sub built on the broker session with capability versioning; CLI surfaces (`bus publish`/`bus tail`) scoped for later. No code yet; extends Thread 3.
+- Added Thread 14 (First-class clean): CLEAN.md defines UX, safety, and scope for `castra clean` with global/workspace modes and dry-run/force; aligns with Threads 1, 2, and 10. No code yet.
+- Cross-linked existing threads: Thread 3 acceptance now explicitly supports external automation polling for bootstrap; Thread 10 events must be machine-parseable for bootstrap prechecks; Thread 1 contract reiterated for clean.
 
 Active threads (intent + acceptance)
-- Thread 1 — Discovery semantics gap: `--skip-discovery` must require `--config` or fail fast; zero filesystem walking when set. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs.
-- Thread 2 — Lifecycle gap: add multi-phase graceful shutdown before TERM→KILL with ordered Events and configurable timeouts; observable in logs/OperationOutput. Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
-- Thread 3 — Broker reachability: expose non-blocking freshness via reachable bool and last_handshake_age_ms; bounded initial probe allowed; help/legend updated. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs.
+- Thread 1 — Discovery semantics gap: `--skip-discovery` must require `--config` or `--state-root`; zero filesystem walking when set. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs.
+- Thread 2 — Lifecycle gap: add multi-phase graceful shutdown before TERM→KILL with ordered Events and configurable timeouts. Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
+- Thread 3 — Broker reachability: expose non-blocking freshness via reachable bool and last_handshake_age_ms; bounded initial probe allowed; stable fields for automation. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs.
 - Thread 6 — Ports active mode: add `--active` view; keep columns stable; target <200ms; degrade gracefully if inspection unavailable. Anchors: src/core/ports.rs; src/app/ports.rs; src/core/runtime.rs.
 - Thread 10 — Managed images: add source checksums/sizes and optional Alpine boot profile; emit verification/profile events; sharpen diagnostics and docs. Anchors: src/managed/mod.rs; src/core/logs.rs/reporter.rs; docs.
 - Thread 11 — Library API for embedders: feature gating in place; add AGENTS.md guidance/snippet for using castra as a library with default-features=false. Anchors: src/lib.rs; Cargo.toml; docs/AGENTS.md.
+- Thread 12 — Post-boot bootstrap pipeline: host bootstrap daemon reacts to fresh handshake and applies Nix flake over SSH; idempotent via hash stamps; observable logs under state root. Depends on Threads 3 and 10. Anchors: docs/BOOTSTRAP.md; workflows.init hooks; broker/status fields.
+- Thread 13 — Castra Bus: extend broker to framed sessions for publish/subscribe; preserve handshake-only mode via capabilities; add host CLI to publish/tail; log persistence and freshness. Depends on Thread 3. Anchors: src/core/broker.rs; src/core/status.rs; src/core/events.rs; src/core/logs.rs; src/cli.rs.
+- Thread 14 — First-class clean: implement `castra clean` with global/workspace scopes, dry-run/force, overlay opt-in; safe around running processes; emit CleanupProgress events and reclaimed bytes. Aligns with Threads 1, 2, 10. Anchors: src/cli.rs; src/app/clean.rs; src/core/options.rs; src/core/operations/clean.rs; src/core/project.rs; src/core/runtime.rs.
 
 Current code state (observable surfaces)
-- Versioning: build.rs injects CASTRA_VERSION as "<semver> (<short SHA>)" when git is available; CLI reports it. CASTRA_GIT_SHA set or empty for scripts.
-- MSRV surfaced: README declares MSRV=1.77; releasing process documented in docs/RELEASING.md.
+- Versioning/MSRV: build.rs injects version/short SHA; CLI reports it. README declares MSRV=1.77; docs/RELEASING.md present.
 - Feature gating: default features include `cli`; building with --no-default-features succeeds and excludes CLI. AGENTS.md lacks embedding guidance.
-- Known gaps unchanged: skip-discovery lax; no broker freshness; no active ports view; shutdown is signal-only; managed images lack checksums and Alpine boot profile.
+- Gaps outstanding: skip-discovery lax; no broker freshness/age; no active ports view; shutdown is signal-only; managed images lack checksums/boot profile events; no clean command; bus not implemented; bootstrap flow is documented-only.
 
 Narrative themes
 1) UX-first CLI contract → enforce explicit-config with skip-discovery; crisp help and failures.
 2) Robust VM lifecycle → cooperative shutdown phases with events/timeouts.
-3) Clear connectivity signals → broker handshake freshness, non-blocking status.
+3) Clear connectivity signals → broker handshake freshness, non-blocking status, stable JSON for automation.
 6) Networking clarity → ports --active with stable columns and fast path.
-10) Trustworthy bootstrap → managed image verification + Alpine boot profile with clear diagnostics.
+10) Trustworthy bootstrap → managed image verification + Alpine boot profile with clear diagnostics enabling post-boot provisioning.
 11) Embedder clarity → document how to consume castra as a library without CLI.
+12) Day-1 productivity → documented, repeatable post-boot environment application keyed to handshakes.
+13) Host-centric messaging → broker-based bus for guest↔host eventing without extra network plumbing.
+14) Safe housekeeping → first-class clean to recover space and resolve cache corruption.
 
 Direction of travel
 - Land skip-discovery contract; ship help/tests.
 - Implement graceful shutdown phases and events.
-- Add broker freshness and age to status.
+- Add broker freshness and age to status; keep fields stable for scripts.
 - Expose ports --active; wire runtime inspection hook.
-- Fill managed image checksums and Alpine boot profile; document cache/profile.
+- Fill managed image checksums and Alpine boot profile; document cache/profile and emit events.
 - Author AGENTS.md embedder guide reflecting feature gating.
+- Deliver `castra clean` end-to-end per CLEAN.md.
+- Keep bootstrap as documented scripts first; consider first-class command after Threads 3/10 land.
+- Design and stage broker bus behind a capability flag without regressing handshake.
 
 Cross-links
-- All TODOs cite this snapshot (v0.7.3) and anchors for implementation context.
+- BOOTSTRAP.md consumes Thread 3/10 fields and events; CLEAN.md enforces Thread 1/2/10; BUS.md extends Thread 3 semantics.

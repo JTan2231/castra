@@ -45,4 +45,7 @@ Acceptance criteria
 - docs/library_usage.md or LIBRARY.md explains cache behavior and profile intent.
 
 Anchors
-- src/managed/mod.rs (catalog); src/core/logs.rs or reporter.rs (events/logs); docs (cache/profile notes).
+- src/managed/mod.rs (catalog); src/core/logs.rs or reporter.rs (events/logs); docs (cache/profile notes).Cross-link: BOOTSTRAP.md requires emitting explicit events for (a) verified source checksums and sizes and (b) applied Alpine boot profiles when a kernel/initrd is used. Acceptance: event log lines must be machine-parseable and surfaced through the reporter API so host bootstrap scripts can assert preconditions before proceeding.
+
+---
+
