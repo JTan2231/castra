@@ -7,6 +7,8 @@ pub mod core;
 #[cfg(feature = "cli")]
 pub mod cli;
 
+/// CLI-facing application helpers (only when the `cli` feature is enabled).
+#[cfg(feature = "cli")]
 pub mod app;
 
 mod config;

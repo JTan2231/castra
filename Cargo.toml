@@ -9,6 +9,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "castra"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [features]
 default = ["cli"]
