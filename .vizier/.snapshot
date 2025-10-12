@@ -3,6 +3,7 @@ SNAPSHOT v0.7.2 — Castra (VM orchestration harness)
 Edits since v0.7.1
 - Versioning/distribution: COMPLETE. build.rs embeds version as "<semver> (<short SHA>)" via CASTRA_VERSION; src/cli.rs consumes it; README.md now declares MSRV (Rust 1.77) and docs/RELEASING.md provides a lightweight release checklist. Thread 9 closed; keep MSRV statement current as ongoing hygiene, not an open thread.
 - Library feature gating: COMPLETE. src/lib.rs gates cli/app behind feature "cli"; Cargo.toml marks clap optional and requires feature for the bin; docs/library_usage.md shows default-features = false path. Remaining doc follow-up lives under Thread 11 (AGENTS.md guidance).
+- Housekeeping: Deduplicated TODOs for MSRV/versioning and CLI feature gating; canonicalized under todo_version_msrv_release_surface.md (closed) and todo_cli_feature_gating_app_split.md (docs-only scope).
 
 Carried forward (unchanged in code, clarified by TODOs)
 - Discovery semantics gap: --skip-discovery currently disables only synthetic fallback and still walks upward when --config is omitted (src/app/common.rs:17 → src/core/options.rs:37). TODO requires explicit --config when skipping discovery; treat missing --config as usage/config error with clear guidance.
@@ -30,7 +31,7 @@ Narrative state (themes/tensions)
    - Provide `ports --active` view fed by runtime inspection; ensure summarize() can label Active.
 
 11) Library API stability for embedders
-   - DONE for gating. Follow-up: update AGENTS.md with a minimal embedding snippet and feature guidance (AGENTS.md currently lacks this content).
+   - DONE for gating. Docs-only follow-up: update AGENTS.md with a minimal embedding snippet and feature guidance; cross-link library_usage.md and MSRV.
 
 Cross-links
 - TODOs reference these threads and cite file/line anchors above.
@@ -40,4 +41,4 @@ Direction of travel
 - Lifecycle robustness: introduce graceful shutdown phases with Events and logging.
 - Connectivity clarity: broker freshness/handshake and ports active-mode surface.
 - Catalog credibility: add checksums/sizes and optional QEMU boot profile to managed images; sharpen offline vs mismatch diagnostics.
-- Docs hygiene: maintain MSRV and release docs; add embedder guidance to AGENTS.md.
+- Docs hygiene: maintain MSRV and release docs; add embedder guidance to AGENTS.md (docs-only).
