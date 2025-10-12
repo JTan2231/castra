@@ -25,3 +25,7 @@ Scope and anchors (non-prescriptive)
 
 Notes
 - Align copy with existing event style; ensure warnings/errors route through diagnostics for consistency.
+Snapshot reference bumped to v0.7.1. Clarify that events should include "verified source checksums" prior to transform and errors route through diagnostics with distinct codes/messages for offline vs mismatch.
+
+---
+

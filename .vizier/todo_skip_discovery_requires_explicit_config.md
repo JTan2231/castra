@@ -15,3 +15,7 @@ Acceptance criteria
 - `up`, `down`, `ports`, and `logs` exhibit the same behavior.
 - With both `--skip-discovery --config <path>`, no directory walking occurs (verified by a targeted unit/integration test exercising the library API path used by CLI).
 - Help text for `--skip-discovery` updated to reflect the stricter semantics.
+Snapshot reference bumped to v0.7.1. Clarify exit behavior: treat missing --config under --skip-discovery as a usage/config error with guidance; ensure no filesystem walking occurs when the flag is set.
+
+---
+

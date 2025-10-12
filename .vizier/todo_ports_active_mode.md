@@ -19,3 +19,7 @@ Acceptance criteria
 
 Scope and anchors (non-prescriptive)
 - Anchors: src/core/ports.rs (summary), src/app/ports.rs (rendering). Runtime inspection may use QMP, QEMU monitor output, or process args/logs — keep choice open.
+Snapshot reference bumped to v0.7.1. Preserve acceptance and anchors; emphasize that summarize() must be able to emit Active where applicable and CLI adds --active flag with consistent columns.
+
+---
+

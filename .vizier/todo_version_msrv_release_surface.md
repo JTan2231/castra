@@ -18,3 +18,7 @@ Acceptance criteria
 Scope and anchors (non-prescriptive)
 - Anchors: src/cli.rs (version string), Cargo build scripts if used; docs/.* for MSRV/releasing.
 - Keep build mechanism open (env vars, build.rs); avoid over-prescribing tooling.
+Snapshot reference bumped to v0.7.1. Acceptance unchanged; note that README top-level may surface MSRV while docs/RELEASING.md carries process detail.
+
+---
+

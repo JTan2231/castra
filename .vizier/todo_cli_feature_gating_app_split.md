@@ -13,3 +13,7 @@ Acceptance criteria
 - Building the crate with `--no-default-features` succeeds on stable Rust and exposes only the library API (core::{operations, options, outcomes, events}).
 - `cargo features` shows `cli` gating app and clap dependencies.
 - docs/library_usage.md reflects the clarified feature-gating policy and provides examples for embedders.
+Snapshot reference bumped to v0.7.1. Keep mechanism open; acceptance unchanged. Note: update docs/library_usage.md and AGENTS.md to reflect feature policy for embedders.
+
+---
+
