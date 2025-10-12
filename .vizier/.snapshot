@@ -1,8 +1,8 @@
 SNAPSHOT v0.7.2 — Castra (VM orchestration harness)
 
 Edits since v0.7.1
-- Versioning/distribution: Implemented. build.rs now embeds version as "<semver> (<short SHA>)" via CASTRA_VERSION; src/cli.rs consumes it; tests cover wiring. MSRV documented (Rust 1.77) in README.md; docs/RELEASING.md added with a lightweight release checklist. Thread 9 narrowed to docs polish only (if any).
-- Library feature gating: Implemented. src/lib.rs gates cli/app behind feature "cli"; Cargo.toml marks clap optional and requires feature for the bin; docs/library_usage.md shows default-features = false path. Thread 11 narrowed to updating AGENTS.md with embedding guidance.
+- Versioning/distribution: COMPLETE. build.rs embeds version as "<semver> (<short SHA>)" via CASTRA_VERSION; src/cli.rs consumes it; README.md now declares MSRV (Rust 1.77) and docs/RELEASING.md provides a lightweight release checklist. Thread 9 closed; keep MSRV statement current as ongoing hygiene, not an open thread.
+- Library feature gating: COMPLETE. src/lib.rs gates cli/app behind feature "cli"; Cargo.toml marks clap optional and requires feature for the bin; docs/library_usage.md shows default-features = false path. Remaining doc follow-up lives under Thread 11 (AGENTS.md guidance).
 
 Carried forward (unchanged in code, clarified by TODOs)
 - Discovery semantics gap: --skip-discovery currently disables only synthetic fallback and still walks upward when --config is omitted (src/app/common.rs:17 → src/core/options.rs:37). TODO requires explicit --config when skipping discovery; treat missing --config as usage/config error with clear guidance.
@@ -29,11 +29,8 @@ Narrative state (themes/tensions)
 6) Networking and connectivity ergonomics
    - Provide `ports --active` view fed by runtime inspection; ensure summarize() can label Active.
 
-9) Toolchain baseline and distribution
-   - DONE for version embedding + docs. Follow-ups: keep MSRV in README current; ensure release checklist stays accurate.
-
 11) Library API stability for embedders
-   - DONE for gating. Follow-up: update AGENTS.md with a minimal embedding snippet and feature guidance.
+   - DONE for gating. Follow-up: update AGENTS.md with a minimal embedding snippet and feature guidance (AGENTS.md currently lacks this content).
 
 Cross-links
 - TODOs reference these threads and cite file/line anchors above.
