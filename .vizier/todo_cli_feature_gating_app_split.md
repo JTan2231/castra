@@ -46,3 +46,26 @@ Anchors
 
 ---
 
+Status update — docs gap only (Snapshot v0.7.3)
+
+Evidence
+- README.md includes MSRV and library usage entry points; build with `--no-default-features` succeeds. AGENTS.md currently contains placeholder text and does not instruct embedders.
+
+Remaining change (product-level)
+- Replace AGENTS.md with a concise embedder guide:
+  - Explain feature gating policy (default `cli`, disable for library-only).
+  - Provide Cargo.toml snippet showing `default-features = false` and optional feature flags.
+  - Minimal code example constructing Options and invoking a core operation (e.g., Status) without CLI.
+  - Note on version/sha envs available (CASTRA_VERSION/CASTRA_GIT_SHA) for embedders if desired.
+
+Acceptance criteria (refined)
+- AGENTS.md contains the above guidance and builds cleanly as markdown (no broken anchors to non-existent modules).
+- `cargo tree -e features` with `--no-default-features` shows no clap/CLI deps; AGENTS.md reflects this.
+- docs/library_usage.md and AGENTS.md do not conflict; AGENTS.md can link to library_usage.md for deeper docs.
+
+Anchors
+- docs/AGENTS.md; src/lib.rs; Cargo.toml.
+
+
+---
+

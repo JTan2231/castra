@@ -1,25 +1,30 @@
-SNAPSHOT v0.7.2 — Castra (VM orchestration harness)
+SNAPSHOT v0.7.3 — Castra (VM orchestration harness)
 
 Edits since last snapshot
-- Normalized TODO set: deduplicated and reconstituted five active TODOs with clear thread ties and anchors. No code behavior changes captured; this is a planning hygiene pass.
+- Resolved Thread 9 (version/MSRV/release surface): build embeds git SHA; README surfaces MSRV=1.77; docs/RELEASING.md added with lightweight checklist. Consolidated narrative to remove this as an active tension. No behavioral deltas to CLI beyond confirmed version output.
+- Clarified Thread 11 (feature gating): library-only builds succeed; remaining task narrowed to AGENTS.md guidance for embedders.
 
-Active threads (unchanged intent, clarified acceptance)
-- Thread 1 — Discovery semantics gap: `--skip-discovery` now framed to require `--config` or fail fast; acceptance clarifies CLI copy, exit behavior, and zero FS walking. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs.
-- Thread 2 — Lifecycle gap: define multi‑phase graceful shutdown before signals with ordered Events and configurable timeouts; acceptance calls for observable logs and OperationOutput sequence. Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
-- Thread 3 — Broker reachability: status must expose non‑blocking freshness via reachable bool and last_handshake_age_ms; initial bounded probe allowed, help/legend updated. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs.
-- Thread 6 — Ports active mode: add `--active` view; keep columns stable; performance target <200ms; graceful degradation note. Anchors: src/core/ports.rs; src/app/ports.rs or src/app/mod.rs; src/core/runtime.rs.
-- Thread 10 — Managed images: add checksums/sizes and optional Alpine boot profile; emit verification/profile events; sharpen diagnostics and docs. Anchors: src/managed/mod.rs; src/core/logs.rs/reporter.rs; docs.
+Active threads (intent + acceptance)
+- Thread 1 — Discovery semantics gap: `--skip-discovery` must require `--config` or fail fast; zero filesystem walking when set. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs.
+- Thread 2 — Lifecycle gap: add multi-phase graceful shutdown before TERM→KILL with ordered Events and configurable timeouts; observable in logs/OperationOutput. Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
+- Thread 3 — Broker reachability: expose non-blocking freshness via reachable bool and last_handshake_age_ms; bounded initial probe allowed; help/legend updated. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs.
+- Thread 6 — Ports active mode: add `--active` view; keep columns stable; target <200ms; degrade gracefully if inspection unavailable. Anchors: src/core/ports.rs; src/app/ports.rs; src/core/runtime.rs.
+- Thread 10 — Managed images: add source checksums/sizes and optional Alpine boot profile; emit verification/profile events; sharpen diagnostics and docs. Anchors: src/managed/mod.rs; src/core/logs.rs/reporter.rs; docs.
+- Thread 11 — Library API for embedders: feature gating in place; add AGENTS.md guidance/snippet for using castra as a library with default-features=false. Anchors: src/lib.rs; Cargo.toml; docs/AGENTS.md.
 
 Current code state (observable surfaces)
-- Versioning embeds semver + short SHA; feature-gated CLI/app behind `cli` (default on). Library builds with --no-default-features succeed.
-- Known gaps: skip-discovery lax; no broker freshness; no active ports view; shutdown is signal-only; managed images lack checksums and Alpine boot profile.
+- Versioning: build.rs injects CASTRA_VERSION as "<semver> (<short SHA>)" when git is available; CLI reports it. CASTRA_GIT_SHA set or empty for scripts.
+- MSRV surfaced: README declares MSRV=1.77; releasing process documented in docs/RELEASING.md.
+- Feature gating: default features include `cli`; building with --no-default-features succeeds and excludes CLI. AGENTS.md lacks embedding guidance.
+- Known gaps unchanged: skip-discovery lax; no broker freshness; no active ports view; shutdown is signal-only; managed images lack checksums and Alpine boot profile.
 
 Narrative themes
 1) UX-first CLI contract → enforce explicit-config with skip-discovery; crisp help and failures.
-2) Robust VM lifecycle → cooperative shutdown phases with events and timeouts.
+2) Robust VM lifecycle → cooperative shutdown phases with events/timeouts.
 3) Clear connectivity signals → broker handshake freshness, non-blocking status.
 6) Networking clarity → ports --active with stable columns and fast path.
 10) Trustworthy bootstrap → managed image verification + Alpine boot profile with clear diagnostics.
+11) Embedder clarity → document how to consume castra as a library without CLI.
 
 Direction of travel
 - Land skip-discovery contract; ship help/tests.
@@ -27,6 +32,7 @@ Direction of travel
 - Add broker freshness and age to status.
 - Expose ports --active; wire runtime inspection hook.
 - Fill managed image checksums and Alpine boot profile; document cache/profile.
+- Author AGENTS.md embedder guide reflecting feature gating.
 
 Cross-links
-- Each TODO cites this snapshot (v0.7.2) and anchors for implementation context.
+- All TODOs cite this snapshot (v0.7.3) and anchors for implementation context.
