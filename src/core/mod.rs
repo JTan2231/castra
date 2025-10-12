@@ -19,7 +19,7 @@ pub use events::{Event, ManagedImageSpecHandle};
 pub use operations::{broker, down, init, logs, ports, status, up};
 pub use options::{
     BrokerOptions, ConfigLoadOptions, ConfigSource, DownOptions, InitOptions, LogsOptions,
-    PortsOptions, StatusOptions, UpOptions,
+    PortsOptions, PortsView, StatusOptions, UpOptions,
 };
 pub use outcome::{
     BrokerLaunchOutcome, BrokerShutdownOutcome, BrokerState, DownOutcome, InitOutcome, LogEntry,

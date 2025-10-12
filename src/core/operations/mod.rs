@@ -318,7 +318,7 @@ pub fn ports(
     let mut diagnostics = Vec::new();
     let (project, _) = load_project_for_operation(&options.config, &mut diagnostics)?;
 
-    let (outcome, mut port_diags) = ports_core::summarize(&project);
+    let (outcome, mut port_diags) = ports_core::summarize(&project, options.view);
     diagnostics.append(&mut port_diags);
 
     Ok(OperationOutput::new(outcome).with_diagnostics(diagnostics))

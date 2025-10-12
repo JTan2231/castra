@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::Result;
 use crate::cli::PortsArgs;
 use crate::core::operations;
-use crate::core::options::PortsOptions;
+use crate::core::options::{PortsOptions, PortsView};
 use crate::core::outcome::{PortForwardStatus, PortsOutcome};
 use crate::core::project::format_config_warnings;
 
@@ -14,6 +14,11 @@ pub fn handle_ports(args: PortsArgs, config_override: Option<&PathBuf>) -> Resul
     let options = PortsOptions {
         config: config_load_options(config_override, args.skip_discovery, "ports")?,
         verbose: args.verbose,
+        view: if args.active {
+            PortsView::Active
+        } else {
+            PortsView::Declared
+        },
     };
 
     let output = operations::ports(options, None)?;
@@ -38,6 +43,9 @@ fn render_ports(outcome: &PortsOutcome, verbose: bool) {
     println!("Config version: {}", outcome.config_version);
     println!("Broker endpoint: 127.0.0.1:{}", outcome.broker_port);
     println!("(start the broker via `castra up` once available)");
+    if matches!(outcome.view, PortsView::Active) {
+        println!("STATUS column reflects runtime state; stopped VMs show as inactive.");
+    }
     println!();
 
     if outcome.declared.is_empty() {
@@ -55,7 +63,11 @@ fn render_ports(outcome: &PortsOutcome, verbose: bool) {
                 .max()
                 .unwrap_or(0),
         );
-        println!("Declared forwards:");
+        let heading = match outcome.view {
+            PortsView::Declared => "Declared forwards:",
+            PortsView::Active => "Runtime forwards:",
+        };
+        println!("{heading}");
         println!(
             "  {vm:<width$}  {:>5}  {:>5}  {:<5}  {}",
             "HOST",
@@ -71,7 +83,7 @@ fn render_ports(outcome: &PortsOutcome, verbose: bool) {
                 row.forward.host,
                 row.forward.guest,
                 row.forward.protocol,
-                status = status_label(row.status),
+                status = status_label(row.status, outcome.view),
                 vm = row.vm,
                 width = vm_width
             );
@@ -122,11 +134,14 @@ fn render_ports(outcome: &PortsOutcome, verbose: bool) {
     }
 }
 
-fn status_label(status: PortForwardStatus) -> &'static str {
+fn status_label(status: PortForwardStatus, view: PortsView) -> String {
     match status {
-        PortForwardStatus::Declared => "declared",
-        PortForwardStatus::Active => "active",
-        PortForwardStatus::Conflicting => "conflict",
-        PortForwardStatus::BrokerReserved => "broker-reserved",
+        PortForwardStatus::Declared => match view {
+            PortsView::Declared => "declared".to_string(),
+            PortsView::Active => "inactive (vm stopped)".to_string(),
+        },
+        PortForwardStatus::Active => "active".to_string(),
+        PortForwardStatus::Conflicting => "conflict".to_string(),
+        PortForwardStatus::BrokerReserved => "broker-reserved".to_string(),
     }
 }

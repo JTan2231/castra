@@ -6,6 +6,7 @@ use crate::managed::ManagedImagePaths;
 
 use super::diagnostics::Diagnostic;
 use super::events::{Event, ManagedImageSpecHandle};
+use super::options::PortsView;
 
 /// Result wrapper returned by high-level operations.
 pub type OperationResult<T> = crate::error::Result<OperationOutput<T>>;
@@ -167,6 +168,7 @@ pub struct PortsOutcome {
     pub conflicts: Vec<PortConflictRow>,
     pub vm_details: Vec<VmPortDetail>,
     pub without_forwards: Vec<String>,
+    pub view: PortsView,
 }
 
 #[derive(Debug)]

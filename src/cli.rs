@@ -114,6 +114,13 @@ pub struct PortsArgs {
         help = "Display verbose forward information, even for inactive VMs"
     )]
     pub verbose: bool,
+
+    /// Inspect runtime state and surface forwards that are currently active.
+    #[arg(
+        long,
+        help = "Mark forwards as active only when their VM is running via pidfiles"
+    )]
+    pub active: bool,
 }
 
 #[derive(Debug, Args, Default)]
@@ -280,6 +287,16 @@ mod tests {
         };
         assert!(args.skip_discovery);
         assert!(args.verbose);
+        assert!(!args.active);
+    }
+
+    #[test]
+    fn parse_ports_active_flag() {
+        let cli = Cli::try_parse_from(["castra", "ports", "--active"]).expect("parse ports active");
+        let Commands::Ports(args) = cli.command.expect("ports command present") else {
+            panic!("expected ports command");
+        };
+        assert!(args.active);
     }
 
     #[test]

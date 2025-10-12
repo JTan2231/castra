@@ -119,6 +119,8 @@ pub struct PortsOptions {
     pub config: ConfigLoadOptions,
     /// Whether to include inactive forwards.
     pub verbose: bool,
+    /// Which ports view to render.
+    pub view: PortsView,
 }
 
 impl Default for PortsOptions {
@@ -126,8 +128,18 @@ impl Default for PortsOptions {
         Self {
             config: ConfigLoadOptions::discover(true),
             verbose: false,
+            view: PortsView::Declared,
         }
     }
+}
+
+/// View mode requested for the ports surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortsView {
+    /// Show declared forwards without inspecting runtime state.
+    Declared,
+    /// Inspect runtime state and mark forwards as active when their VM is running.
+    Active,
 }
 
 /// Options for the `logs` operation.
