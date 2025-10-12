@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::config::{BrokerConfig, PortForward};
 use crate::managed::ManagedImagePaths;
@@ -109,6 +109,8 @@ pub struct StatusOutcome {
     pub config_version: String,
     pub broker_port: u16,
     pub broker_state: BrokerState,
+    pub broker_reachable: bool,
+    pub last_handshake: Option<BrokerHandshake>,
     pub rows: Vec<VmStatusRow>,
 }
 
@@ -125,8 +127,33 @@ pub struct VmStatusRow {
     pub cpus: u32,
     pub memory: String,
     pub uptime: Option<Duration>,
-    pub broker: String,
+    pub broker_reachability: BrokerReachability,
+    pub handshake_age: Option<Duration>,
     pub forwards: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrokerReachability {
+    Offline,
+    Waiting,
+    Reachable,
+}
+
+impl BrokerReachability {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BrokerReachability::Offline => "offline",
+            BrokerReachability::Waiting => "waiting",
+            BrokerReachability::Reachable => "reachable",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BrokerHandshake {
+    pub vm: String,
+    pub timestamp: SystemTime,
+    pub age: Duration,
 }
 
 /// Outcome of `ports`.

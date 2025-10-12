@@ -8,7 +8,7 @@ use crate::core::operations;
 use crate::core::options::StatusOptions;
 use crate::core::outcome::{BrokerState, StatusOutcome};
 use crate::core::project::format_config_warnings;
-use crate::core::status::format_uptime;
+use crate::core::status::{HANDSHAKE_FRESHNESS, format_uptime};
 
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
 
@@ -51,12 +51,56 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
             writeln!(out, "Broker process: offline (run `castra up`).").unwrap();
         }
     }
+
+    match (&outcome.last_handshake, outcome.broker_reachable) {
+        (Some(handshake), true) => {
+            writeln!(
+                out,
+                "Broker reachability: reachable (last handshake {} ago from {}).",
+                format_uptime(Some(handshake.age)),
+                handshake.vm
+            )
+            .unwrap();
+        }
+        (Some(handshake), false) => {
+            writeln!(
+                out,
+                "Broker reachability: waiting (last handshake {} ago from {}).",
+                format_uptime(Some(handshake.age)),
+                handshake.vm
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "Fresh connections within {} keep reachability marked reachable.",
+                format_uptime(Some(HANDSHAKE_FRESHNESS))
+            )
+            .unwrap();
+        }
+        (None, true) => {
+            writeln!(out, "Broker reachability: reachable.").unwrap();
+        }
+        (None, false) => {
+            writeln!(
+                out,
+                "Broker reachability: waiting for guest agent handshake (fresh within {}).",
+                format_uptime(Some(HANDSHAKE_FRESHNESS))
+            )
+            .unwrap();
+        }
+    }
     out.push('\n');
 
     if outcome.rows.is_empty() {
         writeln!(out, "No VMs defined in configuration.").unwrap();
         return out;
     }
+
+    let broker_labels: Vec<&str> = outcome
+        .rows
+        .iter()
+        .map(|row| row.broker_reachability.as_str())
+        .collect();
 
     let cpu_mem: Vec<String> = outcome
         .rows
@@ -94,7 +138,8 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
     let broker_width = outcome
         .rows
         .iter()
-        .map(|row| row.broker.len())
+        .enumerate()
+        .map(|(idx, _)| broker_labels[idx].len())
         .max()
         .unwrap_or(1)
         .max("BROKER".len());
@@ -118,7 +163,7 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
 
     for (idx, row) in outcome.rows.iter().enumerate() {
         let state = style_state(&row.state, state_width, use_color);
-        let broker = style_broker(&row.broker, broker_width, use_color);
+        let broker = style_broker(broker_labels[idx], broker_width, use_color);
         writeln!(
             out,
             "{:<vm_width$}  {}  {:>cpu_mem_width$}  {:>uptime_width$}  {}  {}",

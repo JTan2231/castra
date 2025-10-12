@@ -100,8 +100,12 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
     let outcome = {
         let mut reporter = ReporterProxy::new(reporter, &mut events);
 
-        let (status_rows, _, status_diags) = status_core::collect_status(&project);
-        diagnostics.extend(status_diags);
+        let status_core::StatusSnapshot {
+            diagnostics: mut status_diags,
+            rows: status_rows,
+            ..
+        } = status_core::collect_status(&project);
+        diagnostics.append(&mut status_diags);
 
         let running: Vec<String> = status_rows
             .iter()
@@ -279,8 +283,14 @@ pub fn status(
     let mut diagnostics = Vec::new();
     let (project, _) = load_project_for_operation(&options.config, &mut diagnostics)?;
 
-    let (rows, broker_state_raw, status_diags) = status_core::collect_status(&project);
-    diagnostics.extend(status_diags);
+    let status_core::StatusSnapshot {
+        rows,
+        broker_state: broker_state_raw,
+        diagnostics: mut status_diags,
+        broker_reachable,
+        last_handshake,
+    } = status_core::collect_status(&project);
+    diagnostics.append(&mut status_diags);
 
     let broker_state = match broker_state_raw {
         BrokerProcessState::Running { pid } => super::outcome::BrokerState::Running { pid },
@@ -293,6 +303,8 @@ pub fn status(
         config_version: project.version.clone(),
         broker_port: project.broker.port,
         broker_state,
+        broker_reachable,
+        last_handshake,
         rows,
     };
 

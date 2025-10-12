@@ -160,4 +160,6 @@ pub struct BrokerOptions {
     pub pidfile: PathBuf,
     /// Log file path for the broker.
     pub logfile: PathBuf,
+    /// Directory where broker ↔ guest handshake artifacts are recorded.
+    pub handshake_dir: PathBuf,
 }

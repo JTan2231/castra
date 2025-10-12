@@ -145,6 +145,9 @@ pub struct BrokerArgs {
 
     #[arg(long, value_name = "PATH")]
     pub logfile: PathBuf,
+
+    #[arg(long, value_name = "PATH")]
+    pub handshake_dir: PathBuf,
 }
 
 #[cfg(test)]
@@ -224,6 +227,8 @@ mod tests {
             "/tmp/broker.pid",
             "--logfile",
             "/tmp/broker.log",
+            "--handshake-dir",
+            "/tmp/handshakes",
         ])
         .expect("parse broker");
         let Commands::Broker(args) = cli.command.expect("broker command present") else {
@@ -232,6 +237,7 @@ mod tests {
         assert_eq!(args.port, 8080);
         assert_eq!(args.pidfile, PathBuf::from("/tmp/broker.pid"));
         assert_eq!(args.logfile, PathBuf::from("/tmp/broker.log"));
+        assert_eq!(args.handshake_dir, PathBuf::from("/tmp/handshakes"));
     }
 
     #[test]

@@ -316,6 +316,13 @@ pub fn start_broker(
     })?;
 
     let log_path = broker_log_path(context);
+    let handshake_dir = broker_handshake_dir(context);
+    fs::create_dir_all(&handshake_dir).map_err(|err| Error::PreflightFailed {
+        message: format!(
+            "Failed to prepare broker handshake directory {}: {err}",
+            handshake_dir.display()
+        ),
+    })?;
 
     let mut command = Command::new(exe);
     command
@@ -326,6 +333,8 @@ pub fn start_broker(
         .arg(pidfile.as_os_str())
         .arg("--logfile")
         .arg(log_path.as_os_str())
+        .arg("--handshake-dir")
+        .arg(handshake_dir.as_os_str())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
@@ -1002,6 +1011,14 @@ fn broker_pid_path(context: &RuntimeContext) -> PathBuf {
 
 fn broker_log_path(context: &RuntimeContext) -> PathBuf {
     context.log_root.join("broker.log")
+}
+
+fn broker_handshake_dir(context: &RuntimeContext) -> PathBuf {
+    broker_handshake_dir_from_root(&context.state_root)
+}
+
+pub(crate) fn broker_handshake_dir_from_root(state_root: &Path) -> PathBuf {
+    state_root.join("handshakes")
 }
 
 fn format_bytes(bytes: u64) -> String {
