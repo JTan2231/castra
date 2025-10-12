@@ -75,10 +75,7 @@ pub struct InitArgs {
 #[derive(Debug, Args, Default)]
 pub struct UpArgs {
     /// Only use the explicit --config path instead of searching parent directories.
-    #[arg(
-        long,
-        help = "Skip config discovery and require --config for this invocation"
-    )]
+    #[arg(long, help = "Skip config discovery. Requires --config PATH when set.")]
     pub skip_discovery: bool,
 
     /// Proceed even if host resource headroom checks fail (use with caution).
@@ -92,25 +89,23 @@ pub struct UpArgs {
 #[derive(Debug, Args, Default)]
 pub struct DownArgs {
     /// Only use the explicit --config path instead of searching parent directories.
-    #[arg(
-        long,
-        help = "Skip config discovery and require --config for this invocation"
-    )]
+    #[arg(long, help = "Skip config discovery. Requires --config PATH when set.")]
     pub skip_discovery: bool,
 }
 
 #[derive(Debug, Args, Default)]
 pub struct StatusArgs {
     /// Only use the explicit --config path instead of searching parent directories.
-    #[arg(
-        long,
-        help = "Skip config discovery and require --config for this invocation"
-    )]
+    #[arg(long, help = "Skip config discovery. Requires --config PATH when set.")]
     pub skip_discovery: bool,
 }
 
 #[derive(Debug, Args, Default)]
 pub struct PortsArgs {
+    /// Only use the explicit --config path instead of searching parent directories.
+    #[arg(long, help = "Skip config discovery. Requires --config PATH when set.")]
+    pub skip_discovery: bool,
+
     /// Verbose output including planned but inactive forwards.
     #[arg(
         long,
@@ -121,6 +116,10 @@ pub struct PortsArgs {
 
 #[derive(Debug, Args, Default)]
 pub struct LogsArgs {
+    /// Only use the explicit --config path instead of searching parent directories.
+    #[arg(long, help = "Skip config discovery. Requires --config PATH when set.")]
+    pub skip_discovery: bool,
+
     /// Follow logs in real time.
     #[arg(short, long, help = "Stream logs until interrupted")]
     pub follow: bool,
@@ -211,6 +210,7 @@ mod tests {
         };
         assert_eq!(args.tail, 50);
         assert!(!args.follow);
+        assert!(!args.skip_discovery);
     }
 
     #[test]
@@ -238,5 +238,39 @@ mod tests {
     fn logs_tail_requires_number() {
         let err = Cli::try_parse_from(["castra", "logs", "--tail", "abc"]).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn parse_logs_skip_discovery_flag() {
+        let cli = Cli::try_parse_from([
+            "castra",
+            "--config",
+            "/tmp/castra.toml",
+            "logs",
+            "--skip-discovery",
+        ])
+        .expect("parse logs skip discovery");
+        let Commands::Logs(args) = cli.command.expect("logs command present") else {
+            panic!("expected logs command");
+        };
+        assert!(args.skip_discovery);
+    }
+
+    #[test]
+    fn parse_ports_skip_discovery_flag() {
+        let cli = Cli::try_parse_from([
+            "castra",
+            "--config",
+            "/tmp/castra.toml",
+            "ports",
+            "--skip-discovery",
+            "--verbose",
+        ])
+        .expect("parse ports flags");
+        let Commands::Ports(args) = cli.command.expect("ports command present") else {
+            panic!("expected ports command");
+        };
+        assert!(args.skip_discovery);
+        assert!(args.verbose);
     }
 }

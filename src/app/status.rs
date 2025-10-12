@@ -14,7 +14,7 @@ use super::common::{config_load_options, emit_diagnostics, split_config_warnings
 
 pub fn handle_status(args: StatusArgs, config_override: Option<&PathBuf>) -> Result<()> {
     let options = StatusOptions {
-        config: config_load_options(config_override, args.skip_discovery),
+        config: config_load_options(config_override, args.skip_discovery, "status")?,
     };
 
     let output = operations::status(options, None)?;

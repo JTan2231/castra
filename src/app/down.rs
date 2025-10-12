@@ -12,7 +12,7 @@ use super::common::{config_load_options, emit_diagnostics, split_config_warnings
 
 pub fn handle_down(args: DownArgs, config_override: Option<&PathBuf>) -> Result<()> {
     let options = DownOptions {
-        config: config_load_options(config_override, args.skip_discovery),
+        config: config_load_options(config_override, args.skip_discovery, "down")?,
     };
 
     let output = operations::down(options, None)?;

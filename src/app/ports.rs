@@ -12,7 +12,7 @@ use super::common::{config_load_options, emit_diagnostics, split_config_warnings
 
 pub fn handle_ports(args: PortsArgs, config_override: Option<&PathBuf>) -> Result<()> {
     let options = PortsOptions {
-        config: config_load_options(config_override, false),
+        config: config_load_options(config_override, args.skip_discovery, "ports")?,
         verbose: args.verbose,
     };
 

@@ -13,7 +13,7 @@ use super::common::{config_load_options, emit_diagnostics, split_config_warnings
 
 pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> {
     let options = UpOptions {
-        config: config_load_options(config_override, args.skip_discovery),
+        config: config_load_options(config_override, args.skip_discovery, "up")?,
         force: args.force,
     };
 

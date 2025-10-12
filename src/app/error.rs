@@ -13,6 +13,7 @@ pub fn exit_code(err: &Error) -> ExitCode {
         Error::ExplicitConfigMissing { .. } => ExitCode::from(66),
         Error::ConfigDiscoveryFailed { .. } => ExitCode::from(66),
         Error::WorkingDirectoryUnavailable { .. } => ExitCode::from(70),
+        Error::SkipDiscoveryRequiresConfig { .. } => ExitCode::from(64),
         Error::PreflightFailed { .. } => ExitCode::from(70),
         Error::LaunchFailed { .. } => ExitCode::from(70),
         Error::ShutdownFailed { .. } => ExitCode::from(70),
@@ -65,6 +66,10 @@ mod tests {
                 search_root: "root".into()
             }),
             ExitCode::from(66)
+        );
+        assert_eq!(
+            exit_code(&Error::SkipDiscoveryRequiresConfig { command: "status" }),
+            ExitCode::from(64)
         );
         assert_eq!(
             exit_code(&Error::WorkingDirectoryUnavailable {

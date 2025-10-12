@@ -14,7 +14,7 @@ use super::common::{config_load_options, emit_diagnostics, split_config_warnings
 
 pub fn handle_logs(args: LogsArgs, config_override: Option<&PathBuf>) -> Result<()> {
     let options = LogsOptions {
-        config: config_load_options(config_override, false),
+        config: config_load_options(config_override, args.skip_discovery, "logs")?,
         tail: args.tail,
         follow: args.follow,
     };

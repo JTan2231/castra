@@ -51,6 +51,11 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+    #[error(
+        "`castra {command}` with --skip-discovery requires --config <PATH>. \
+         Provide an explicit configuration path or remove --skip-discovery."
+    )]
+    SkipDiscoveryRequiresConfig { command: &'static str },
     #[error("Preflight failed: {message}")]
     PreflightFailed { message: String },
     #[error("Failed to launch VM `{vm}`: {message}")]
