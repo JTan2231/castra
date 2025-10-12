@@ -2,12 +2,14 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
+const VERSION: &str = env!("CASTRA_VERSION");
+
 /// Top-level CLI definition for the `castra` tool.
 #[derive(Debug, Parser)]
 #[command(
     name = "castra",
     author = "Castra Project",
-    version,
+    version = VERSION,
     about = "A user-friendly orchestrator for lightweight QEMU-based sandboxes.",
     long_about = "Castra helps you spin up reproducible, host-friendly QEMU environments.\n\
                   Explore the roadmap in the repo's todo_*.md files for features under active development."
@@ -153,7 +155,7 @@ pub struct BrokerArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::error::ErrorKind;
+    use clap::{CommandFactory, error::ErrorKind};
     use std::path::Path;
 
     #[test]
@@ -278,5 +280,11 @@ mod tests {
         };
         assert!(args.skip_discovery);
         assert!(args.verbose);
+    }
+
+    #[test]
+    fn command_reports_embedded_version_string() {
+        let command = Cli::command();
+        assert_eq!(command.get_version(), Some(env!("CASTRA_VERSION")));
     }
 }
