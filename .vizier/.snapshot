@@ -1,42 +1,46 @@
-SNAPSHOT v0.7.1 — Castra (VM orchestration harness)
+SNAPSHOT v0.7.2 — Castra (VM orchestration harness)
 
-Edits since v0.7
-- Clarified discovery semantics gap: --skip-discovery currently disables only synthetic fallback and still walks upward when --config is omitted (src/app/common.rs:17 → src/core/options.rs:37). TODO updated to require explicit config when skipping discovery; treat missing --config as a usage/config error with clear guidance.
-- Reaffirmed lifecycle gap: shutdown remains TERM→wait→KILL; no ACPI/QMP/guest-agent phase (src/core/runtime.rs:638, :750). TODO acceptance tightened to emit explicit, ordered Events during staged shutdown (ShutdownInitiated→ShutdownEscalation→ShutdownComplete) and surface them in logs/OperationOutput.
-- Broker reachability: status BROKER hardcodes waiting when broker.pid exists; broker greets but no handshake/freshness tracking (src/core/status.rs:45; src/core/broker.rs:64). TODO now mandates a freshness-window-backed reachable flag and exposes last-handshake age/timestamp in StatusOutcome, with bounded initial waits and non-blocking status.
-- Ports active mode: enum includes Active, but summarize() never produces it; CLI lacks --active (src/core/ports.rs:15→30; src/cli.rs:112). TODO updated with acceptance for runtime inspection, script-friendly stable columns, and a new --active flag; summarize() must emit Active where applicable.
-- Managed images: alpine-minimal@v1 lacks kernel/initrd profile and source checksums (src/managed/mod.rs:705, :720). TODO updated to require boot profile and checksums; runtime already honors profiles. Events should include “verified source checksums” prior to transform, and diagnostics must distinguish offline vs mismatch.
-- Versioning/distribution: --version surfaces Cargo-only; MSRV/release docs absent (src/cli.rs:10; docs/*). Add anchor: version string flow is in src/cli.rs and surfaced via clap; no build.rs present. TODO refined for build.rs/env SHA embed and docs; surface MSRV in README and process in docs/RELEASING.md.
-- Library feature gating: lib compiles app unconditionally; breaks embedders when cli feature is off. Anchors: src/lib.rs (pub mod app), src/app/mod.rs (depends on CLI helpers), Cargo.toml features. TODO updated to gate app behind `cli`, trim clap deps when disabled, and update docs/library_usage.md and AGENTS.md.
+Edits since v0.7.1
+- Versioning/distribution: Implemented. build.rs now embeds version as "<semver> (<short SHA>)" via CASTRA_VERSION; src/cli.rs consumes it; tests cover wiring. MSRV documented (Rust 1.77) in README.md; docs/RELEASING.md added with a lightweight release checklist. Thread 9 narrowed to docs polish only (if any).
+- Library feature gating: Implemented. src/lib.rs gates cli/app behind feature "cli"; Cargo.toml marks clap optional and requires feature for the bin; docs/library_usage.md shows default-features = false path. Thread 11 narrowed to updating AGENTS.md with embedding guidance.
+
+Carried forward (unchanged in code, clarified by TODOs)
+- Discovery semantics gap: --skip-discovery currently disables only synthetic fallback and still walks upward when --config is omitted (src/app/common.rs:17 → src/core/options.rs:37). TODO requires explicit --config when skipping discovery; treat missing --config as usage/config error with clear guidance.
+- Lifecycle gap: shutdown remains TERM→wait→KILL; no ACPI/QMP/guest-agent phase (src/core/runtime.rs:638, :750). TODO acceptance: emit ordered Events during staged shutdown (ShutdownInitiated→ShutdownEscalation→ShutdownComplete) and surface in logs/OperationOutput.
+- Broker reachability: status BROKER waits on pid-only; broker greets but no handshake/freshness tracking (src/core/status.rs:45; src/core/broker.rs:64). TODO mandates freshness-window-backed reachable flag and exposes last-handshake age/timestamp in StatusOutcome; bound initial waits and make status non-blocking.
+- Ports active mode: enum includes Active in outcome types, but core/ports::summarize() never produces it; CLI lacks --active (src/core/ports.rs; src/cli.rs: PortsArgs). TODO defines runtime inspection, script-stable columns, and new --active flag; summarize() must emit Active where applicable.
+- Managed images: alpine-minimal@v1 lacks kernel/initrd profile and source checksums/sizes (src/managed/mod.rs: ALPINE_ARTIFACTS sha256=None, size=None; profile None). ImageManager already verifies and logs "source checksum verified" when provided. TODO keeps requirement to add boot profile and checksums; diagnostics must distinguish offline vs mismatch.
 
 Current code state (observable surfaces)
-- CLI and library surfaces remain as in v0.7 snapshot; notable caveats: skip-discovery semantics lax; no broker liveness/freshness signal; no active ports view; shutdown is signal-only; version lacks SHA; app not feature-gated for embedders.
+- CLI version reports semver plus short SHA when built from git; plain semver when not.
+- Feature flags: cli/app modules and binary gated behind feature "cli" (default-on). Library-only builds with --no-default-features succeed.
+- Remaining caveats: skip-discovery semantics lax; no broker freshness; no active ports view; shutdown still signal-only; managed image catalog minimal with no checksums; alpine profile absent.
 
-Narrative state (themes/tensions) — updates
+Narrative state (themes/tensions)
 1) UX-first CLI contract
    - Tighten --skip-discovery: require explicit --config and fail fast otherwise; update help/copy and exit behavior.
 
 2) QEMU backend and VM lifecycle
-   - Unchanged in code; acceptance now explicit for ordered shutdown Events (Initiated→Escalation→Complete) during graceful path.
+   - Add cooperative shutdown via ACPI/QMP/guest-agent before signals with observable, ordered Events.
 
 3) Host communication channel
-   - Unchanged in code; TODO mandates freshness-window-backed `reachable` and exposes last-handshake age/timestamp in StatusOutcome; bounded initial waits.
+   - Implement broker↔guest handshake with freshness and expose age; bound waits; keep status responsive.
 
 6) Networking and connectivity ergonomics
-   - Unchanged in code; TODO specifies `ports --active` behavior, summarize() emitting Active, and output guarantees for scripts.
+   - Provide `ports --active` view fed by runtime inspection; ensure summarize() can label Active.
 
 9) Toolchain baseline and distribution
-   - TODO refined to embed git SHA and document MSRV (README) and release steps (docs/RELEASING.md); anchor build.rs/env piping via src/cli.rs version string.
+   - DONE for version embedding + docs. Follow-ups: keep MSRV in README current; ensure release checklist stays accurate.
 
 11) Library API stability for embedders
-   - Tension captured: feature-gate app to keep embedders lean; docs (library_usage.md, AGENTS.md) to reflect policy.
+   - DONE for gating. Follow-up: update AGENTS.md with a minimal embedding snippet and feature guidance.
 
 Cross-links
-- Each TODO references the threads above and anchors to file/line evidence cited here.
+- TODOs reference these threads and cite file/line anchors above.
 
-Direction of travel (unchanged with emphasis)
-- UX fidelity: enforce explicit-config requirement with --skip-discovery; preserve exit-code discipline and clear guidance.
-- Lifecycle: add cooperative shutdown via ACPI/QMP/guest-agent before signals with observable, ordered Events.
-- Connectivity clarity: implement broker↔guest handshake with freshness and expose age; add ports --active view fed by runtime inspection.
-- Distribution: embed git SHA; document MSRV and release steps.
-- Embedder experience: correct feature gating for app/cli split; keep CLI thin over core.
+Direction of travel
+- UX fidelity: enforce explicit-config requirement with --skip-discovery; improve CLI copy and exit codes.
+- Lifecycle robustness: introduce graceful shutdown phases with Events and logging.
+- Connectivity clarity: broker freshness/handshake and ports active-mode surface.
+- Catalog credibility: add checksums/sizes and optional QEMU boot profile to managed images; sharpen offline vs mismatch diagnostics.
+- Docs hygiene: maintain MSRV and release docs; add embedder guidance to AGENTS.md.

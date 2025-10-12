@@ -29,3 +29,25 @@ Refinement (anchors + clarity)
 
 ---
 
+Status update — build metadata now embedded
+- Evidence: build.rs present and sets CASTRA_VERSION to "<semver> (<short SHA>)" when git is available; src/cli.rs consumes env!("CASTRA_VERSION"). Test `command_reports_embedded_version_string` asserts version wiring.
+
+Impact
+- The version-string half of this thread is satisfied. `castra --version` prints the semver and short SHA in git checkouts; falls back to just semver when SHA is unavailable.
+
+Remaining scope (narrowed)
+- Declare and surface MSRV in README.md (badge/section).
+- Author a lightweight release process in docs/RELEASING.md (tags, CHANGELOG cadence, binary packaging notes). Keep tool choices open.
+
+Acceptance (updated)
+- README contains an explicit MSRV statement.
+- docs/RELEASING.md exists with a minimal, reproducible set of steps to cut a release.
+- No changes needed to CLI version output unless we choose to also expose full SHA via `--verbose` or similar (out of scope for now).
+
+Anchors
+- Docs: README.md, docs/RELEASING.md.
+- Version path: build.rs, src/cli.rs (complete).
+
+
+---
+

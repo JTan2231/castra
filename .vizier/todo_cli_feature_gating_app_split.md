@@ -27,3 +27,22 @@ Acceptance refinement
 
 ---
 
+Status update — feature gating implemented
+- Evidence: src/lib.rs gates `cli` and `app` modules behind `#[cfg(feature = "cli")]`; Cargo.toml sets `default = ["cli"]`, marks `clap` as optional, and requires `cli` feature for the `castra` bin; docs/library_usage.md instructs embedders to use `default-features = false`.
+- Verification: Building with `--no-default-features` compiles the library surfaces only (core, config, error, managed) and excludes the binary and clap.
+
+Impact
+- Primary tension resolved: embedders can depend on castra without CLI surface/deps.
+
+Remaining scope (narrowed)
+- Update AGENTS.md to reflect the feature policy and provide a minimal embedding example.
+
+Acceptance (updated)
+- AGENTS.md contains an embedding snippet and explicitly calls out disabling default features.
+
+Anchors
+- src/lib.rs, Cargo.toml, docs/library_usage.md.
+
+
+---
+
