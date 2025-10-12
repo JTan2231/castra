@@ -147,3 +147,96 @@ pub struct BrokerArgs {
     #[arg(long, value_name = "PATH")]
     pub logfile: PathBuf,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+    use std::path::Path;
+
+    #[test]
+    fn parse_init_defaults() {
+        let cli = Cli::try_parse_from(["castra", "init"]).expect("parse init");
+        let Commands::Init(args) = cli.command.expect("init command present") else {
+            panic!("expected init command");
+        };
+        assert!(!args.force);
+        assert!(args.project_name.is_none());
+        assert!(args.output.is_none());
+        assert!(cli.config.is_none());
+    }
+
+    #[test]
+    fn parse_init_with_flags() {
+        let cli = Cli::try_parse_from([
+            "castra",
+            "--config",
+            "/tmp/castra.toml",
+            "init",
+            "--project-name",
+            "demo",
+            "--output",
+            "foo.toml",
+            "--force",
+        ])
+        .expect("parse init with flags");
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(PathBuf::from("/tmp/castra.toml").as_path())
+        );
+        let Commands::Init(args) = cli.command.expect("init command present") else {
+            panic!("expected init command");
+        };
+        assert!(args.force);
+        assert_eq!(args.project_name.as_deref(), Some("demo"));
+        assert_eq!(args.output.as_deref(), Some(Path::new("foo.toml")));
+    }
+
+    #[test]
+    fn parse_up_flags() {
+        let cli =
+            Cli::try_parse_from(["castra", "up", "--skip-discovery", "--force"]).expect("parse up");
+        let Commands::Up(args) = cli.command.expect("up command present") else {
+            panic!("expected up command");
+        };
+        assert!(args.skip_discovery);
+        assert!(args.force);
+    }
+
+    #[test]
+    fn parse_logs_tail_defaults() {
+        let cli = Cli::try_parse_from(["castra", "logs", "--tail", "50"]).expect("parse logs tail");
+        let Commands::Logs(args) = cli.command.expect("logs command present") else {
+            panic!("expected logs command");
+        };
+        assert_eq!(args.tail, 50);
+        assert!(!args.follow);
+    }
+
+    #[test]
+    fn parse_hidden_broker_command() {
+        let cli = Cli::try_parse_from([
+            "castra",
+            "broker",
+            "--port",
+            "8080",
+            "--pidfile",
+            "/tmp/broker.pid",
+            "--logfile",
+            "/tmp/broker.log",
+        ])
+        .expect("parse broker");
+        let Commands::Broker(args) = cli.command.expect("broker command present") else {
+            panic!("expected broker command");
+        };
+        assert_eq!(args.port, 8080);
+        assert_eq!(args.pidfile, PathBuf::from("/tmp/broker.pid"));
+        assert_eq!(args.logfile, PathBuf::from("/tmp/broker.log"));
+    }
+
+    #[test]
+    fn logs_tail_requires_number() {
+        let err = Cli::try_parse_from(["castra", "logs", "--tail", "abc"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+}

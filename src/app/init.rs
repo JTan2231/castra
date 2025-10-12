@@ -12,6 +12,7 @@ pub fn handle_init(args: InitArgs, config_override: Option<&PathBuf>) -> CliResu
         .project_name
         .clone()
         .unwrap_or_else(|| default_project_name(&target_path));
+    let state_root = crate::config::default_state_root(&project_name, &target_path);
 
     if target_path.exists() && !args.force {
         return Err(CliError::AlreadyInitialized {
@@ -26,14 +27,14 @@ pub fn handle_init(args: InitArgs, config_override: Option<&PathBuf>) -> CliResu
         })?;
     }
 
-    let workdir = target_path
+    let overlay_root = target_path
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".castra");
 
-    fs::create_dir_all(&workdir).map_err(|source| CliError::CreateDir {
-        path: workdir.clone(),
+    fs::create_dir_all(&overlay_root).map_err(|source| CliError::CreateDir {
+        path: overlay_root.clone(),
         source,
     })?;
 
@@ -45,7 +46,11 @@ pub fn handle_init(args: InitArgs, config_override: Option<&PathBuf>) -> CliResu
 
     println!("✔ Created castra project scaffold.");
     println!("  config  → {}", target_path.display());
-    println!("  workdir → {}", workdir.display());
+    println!("  state   → {}", state_root.display());
+    println!(
+        "  local   → {} (opt-in via [project].state_dir)",
+        overlay_root.display()
+    );
     println!();
     println!("Next steps:");
     println!(

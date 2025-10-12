@@ -73,54 +73,7 @@ struct LogSource {
 fn follow_logs(sources: &mut [LogSource]) -> CliResult<()> {
     println!("--- Following logs (press Ctrl-C to stop) ---");
     loop {
-        let mut activity = false;
-        for source in sources.iter_mut() {
-            match fs::File::open(&source.path) {
-                Ok(mut file) => {
-                    if source.offset > 0 {
-                        if let Err(err) = file.seek(SeekFrom::Start(source.offset)) {
-                            return Err(CliError::LogReadFailed {
-                                path: source.path.clone(),
-                                source: err,
-                            });
-                        }
-                    }
-
-                    let mut reader = BufReader::new(file);
-                    let mut buffer = String::new();
-                    loop {
-                        buffer.clear();
-                        let bytes = reader.read_line(&mut buffer).map_err(|err| {
-                            CliError::LogReadFailed {
-                                path: source.path.clone(),
-                                source: err,
-                            }
-                        })?;
-                        if bytes == 0 {
-                            break;
-                        }
-                        source.offset += bytes as u64;
-                        while buffer.ends_with('\n') || buffer.ends_with('\r') {
-                            buffer.pop();
-                        }
-                        if buffer.is_empty() {
-                            println!("{}", source.prefix);
-                        } else {
-                            println!("{} {buffer}", source.prefix);
-                        }
-                        activity = true;
-                    }
-                }
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    return Err(CliError::LogReadFailed {
-                        path: source.path.clone(),
-                        source: err,
-                    });
-                }
-            }
-        }
-
+        let activity = poll_log_sources(sources)?;
         if !activity {
             thread::sleep(Duration::from_millis(250));
         }
@@ -198,4 +151,127 @@ fn read_tail_lines(path: &Path, limit: usize) -> io::Result<Vec<String>> {
     }
 
     Ok(ring.into_iter().collect())
+}
+
+fn poll_log_sources(sources: &mut [LogSource]) -> CliResult<bool> {
+    let mut activity = false;
+    for source in sources.iter_mut() {
+        match fs::File::open(&source.path) {
+            Ok(mut file) => {
+                if source.offset > 0 {
+                    if let Err(err) = file.seek(SeekFrom::Start(source.offset)) {
+                        return Err(CliError::LogReadFailed {
+                            path: source.path.clone(),
+                            source: err,
+                        });
+                    }
+                }
+
+                let mut reader = BufReader::new(file);
+                let mut buffer = String::new();
+                loop {
+                    buffer.clear();
+                    let bytes =
+                        reader
+                            .read_line(&mut buffer)
+                            .map_err(|err| CliError::LogReadFailed {
+                                path: source.path.clone(),
+                                source: err,
+                            })?;
+                    if bytes == 0 {
+                        break;
+                    }
+                    source.offset += bytes as u64;
+                    while buffer.ends_with('\n') || buffer.ends_with('\r') {
+                        buffer.pop();
+                    }
+                    if buffer.is_empty() {
+                        println!("{}", source.prefix);
+                    } else {
+                        println!("{} {buffer}", source.prefix);
+                    }
+                    activity = true;
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(CliError::LogReadFailed {
+                    path: source.path.clone(),
+                    source: err,
+                });
+            }
+        }
+    }
+    Ok(activity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::{NamedTempFile, TempDir};
+
+    #[test]
+    fn read_tail_lines_returns_last_entries() {
+        let file = NamedTempFile::new().unwrap();
+        writeln!(file.as_file(), "one").unwrap();
+        writeln!(file.as_file(), "two").unwrap();
+        writeln!(file.as_file(), "three").unwrap();
+        let lines = read_tail_lines(file.path(), 2).unwrap();
+        assert_eq!(lines, vec!["two".to_string(), "three".to_string()]);
+    }
+
+    #[test]
+    fn read_tail_lines_zero_limit_is_empty() {
+        let file = NamedTempFile::new().unwrap();
+        let lines = read_tail_lines(file.path(), 0).unwrap();
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn emit_log_tail_reports_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("missing.log");
+        let offset = emit_log_tail("[label]", &path, 10).unwrap();
+        assert_eq!(offset, 0);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn format_log_prefix_adds_color_codes() {
+        assert_eq!(format_log_prefix("host-broker", false), "[host-broker]");
+        let colored = format_log_prefix("host-broker", true);
+        assert!(colored.starts_with("\u{1b}[36m[host-broker]"));
+        let serial = format_log_prefix("vm:foo:serial", true);
+        assert!(serial.contains("\u{1b}[35m"));
+        let default = format_log_prefix("vm:foo:qemu", true);
+        assert!(default.contains("\u{1b}[34m"));
+    }
+
+    #[test]
+    fn poll_log_sources_writes_new_lines() {
+        let file = NamedTempFile::new().unwrap();
+        writeln!(file.as_file(), "line1").unwrap();
+        writeln!(file.as_file(), "").unwrap();
+        let mut sources = [LogSource {
+            prefix: "[unit]".into(),
+            path: file.path().to_path_buf(),
+            offset: 0,
+        }];
+        let activity = poll_log_sources(&mut sources).unwrap();
+        assert!(activity);
+        assert!(sources[0].offset > 0);
+    }
+
+    #[test]
+    fn poll_log_sources_without_updates_returns_false() {
+        let file = NamedTempFile::new().unwrap();
+        let mut sources = [LogSource {
+            prefix: "[unit]".into(),
+            path: file.path().to_path_buf(),
+            offset: 0,
+        }];
+        let activity = poll_log_sources(&mut sources).unwrap();
+        assert!(!activity);
+    }
 }

@@ -1326,3 +1326,82 @@ fn find_executable(candidates: &[&str]) -> Option<PathBuf> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::CliError;
+    use std::fs;
+    use std::net::TcpListener;
+    use tempfile::tempdir;
+
+    #[test]
+    fn format_bytes_formats_human_readable_values() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1024), "1.0 KiB");
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MiB");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+    }
+
+    #[test]
+    fn existing_directory_returns_nearest_parent() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("a/b/c");
+        let existing = existing_directory(&nested);
+        assert_eq!(existing, fs::canonicalize(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn available_disk_space_reports_for_known_directory() {
+        let dir = tempdir().unwrap();
+        let mut disks = Disks::new_with_refreshed_list();
+        let space = available_disk_space(&mut disks, dir.path());
+        assert!(space.is_some());
+        if let Some(bytes) = space {
+            assert!(bytes > 0);
+        }
+    }
+
+    #[test]
+    fn ensure_port_is_free_detects_conflicts() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let err = ensure_port_is_free(port, "test").unwrap_err();
+        match err {
+            CliError::PreflightFailed { message } => {
+                assert!(message.contains("already in use"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        drop(listener);
+        ensure_port_is_free(port, "test").expect("port should be free after drop");
+    }
+
+    #[test]
+    fn build_netdev_args_formats_forwards() {
+        let forwards = vec![
+            PortForward {
+                host: 2222,
+                guest: 22,
+                protocol: PortProtocol::Tcp,
+            },
+            PortForward {
+                host: 8080,
+                guest: 80,
+                protocol: PortProtocol::Udp,
+            },
+        ];
+        let args = build_netdev_args(&forwards);
+        assert!(args.contains("user,id=castra-net0"));
+        assert!(args.contains("hostfwd=tcp::2222-:22"));
+        assert!(args.contains("hostfwd=udp::8080-:80"));
+    }
+
+    #[test]
+    fn accelerator_requested_detects_available_accelerator() {
+        let available = vec!["hvf".to_string(), "kvm".to_string()];
+        assert!(accelerator_requested(&available, "accel=hvf:tcg"));
+        assert!(!accelerator_requested(&available, "machine=q35"));
+        assert!(!accelerator_requested(&available, "accel=tcg"));
+    }
+}

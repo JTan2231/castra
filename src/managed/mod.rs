@@ -518,9 +518,7 @@ pub enum TransformStep {
         output: &'static str,
     },
     #[allow(dead_code)]
-    Rename {
-        output: &'static str,
-    },
+    Rename { output: &'static str },
 }
 
 impl TransformStep {
@@ -706,24 +704,20 @@ pub fn lookup_managed_image(id: &str, version: &str) -> Option<&'static ManagedI
     }
 }
 
-static ALPINE_ARTIFACTS: [ManagedArtifactSpec; 1] = [
-    ManagedArtifactSpec {
-        kind: ManagedArtifactKind::RootDisk,
-        final_filename: "rootfs.qcow2",
-        source: ArtifactSource {
-            url: "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/aws_alpine-3.22.2-x86_64-bios-tiny-r0.vhd",
-            sha256: None,
-            size: None,
-        },
-        transformations: &[
-            TransformStep::QemuImgConvert {
-                input_format: "vpc",
-                output_format: "qcow2",
-                output: "rootfs.qcow2",
-            },
-        ],
+static ALPINE_ARTIFACTS: [ManagedArtifactSpec; 1] = [ManagedArtifactSpec {
+    kind: ManagedArtifactKind::RootDisk,
+    final_filename: "rootfs.qcow2",
+    source: ArtifactSource {
+        url: "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/aws_alpine-3.22.2-x86_64-bios-tiny-r0.vhd",
+        sha256: None,
+        size: None,
     },
-];
+    transformations: &[TransformStep::QemuImgConvert {
+        input_format: "vpc",
+        output_format: "qcow2",
+        output: "rootfs.qcow2",
+    }],
+}];
 
 static ALPINE_MINIMAL_V1: ManagedImageSpec = ManagedImageSpec {
     id: "alpine-minimal",
@@ -737,3 +731,185 @@ static ALPINE_MINIMAL_V1: ManagedImageSpec = ManagedImageSpec {
         extra_args: &[],
     },
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::{NamedTempFile, tempdir};
+
+    #[test]
+    fn managed_artifact_kind_describe_matches_variants() {
+        assert_eq!(ManagedArtifactKind::RootDisk.describe(), "root disk");
+        assert_eq!(ManagedArtifactKind::Kernel.describe(), "kernel");
+        assert_eq!(ManagedArtifactKind::Initrd.describe(), "initrd");
+    }
+
+    #[test]
+    fn transform_step_fingerprint_varies_by_variant() {
+        assert_eq!(TransformStep::StripVhdFooter.fingerprint(), "strip_vhd");
+        assert_eq!(
+            TransformStep::QemuImgConvert {
+                input_format: "raw",
+                output_format: "qcow2",
+                output: "disk.qcow2"
+            }
+            .fingerprint(),
+            "convert:raw:qcow2:disk.qcow2"
+        );
+        assert_eq!(
+            TransformStep::Rename {
+                output: "disk.qcow2"
+            }
+            .fingerprint(),
+            "rename:disk.qcow2"
+        );
+    }
+
+    const TEST_PROFILE: QemuProfile = QemuProfile {
+        kernel: None,
+        initrd: None,
+        append: "",
+        machine: None,
+        extra_args: &[],
+    };
+
+    #[test]
+    fn managed_image_spec_fingerprint_changes_with_artifacts() {
+        static ARTIFACTS_A: [ManagedArtifactSpec; 1] = [ManagedArtifactSpec {
+            kind: ManagedArtifactKind::RootDisk,
+            final_filename: "a.img",
+            source: ArtifactSource {
+                url: "https://example.com/a.img",
+                sha256: Some("abc"),
+                size: None,
+            },
+            transformations: &[],
+        }];
+        static ARTIFACTS_B: [ManagedArtifactSpec; 1] = [ManagedArtifactSpec {
+            kind: ManagedArtifactKind::RootDisk,
+            final_filename: "b.img",
+            source: ArtifactSource {
+                url: "https://example.com/a.img",
+                sha256: Some("abc"),
+                size: None,
+            },
+            transformations: &[],
+        }];
+        let spec_a = ManagedImageSpec {
+            id: "demo",
+            version: "1",
+            artifacts: &ARTIFACTS_A,
+            qemu: TEST_PROFILE,
+        };
+        let spec_b = ManagedImageSpec {
+            id: "demo",
+            version: "1",
+            artifacts: &ARTIFACTS_B,
+            qemu: TEST_PROFILE,
+        };
+        let fingerprint_a = spec_a.fingerprint();
+        let fingerprint_b = spec_b.fingerprint();
+        assert_ne!(fingerprint_a, fingerprint_b);
+    }
+
+    #[test]
+    fn lookup_managed_image_finds_known_spec() {
+        let spec = lookup_managed_image("alpine-minimal", "v1").expect("known spec");
+        assert_eq!(spec.id, "alpine-minimal");
+        assert_eq!(spec.version, "v1");
+    }
+
+    #[test]
+    fn save_and_load_manifest_round_trip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("manifest.json");
+        let mut manifest = ImageManifest::default();
+        manifest.spec_digest = Some("digest".into());
+        manifest.artifacts.insert(
+            "disk".into(),
+            ManifestArtifact {
+                final_sha256: "abc".into(),
+                size: 42,
+                updated_at: 123,
+                source_sha256: None,
+            },
+        );
+        save_manifest(&path, &manifest).unwrap();
+        let loaded = load_manifest(&path);
+        assert_eq!(loaded.spec_digest, Some("digest".into()));
+        assert!(loaded.artifacts.contains_key("disk"));
+    }
+
+    #[test]
+    fn timestamp_seconds_returns_positive_value() {
+        assert!(timestamp_seconds() > 0);
+    }
+
+    #[test]
+    fn compute_and_verify_sha256_succeeds() {
+        let file = NamedTempFile::new().unwrap();
+        write!(file.as_file(), "hello").unwrap();
+        let hash = compute_sha256(file.path()).unwrap();
+        assert_eq!(
+            hash,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        verify_checksum(
+            file.path(),
+            "2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824",
+        )
+        .expect("checksum should verify ignoring case");
+    }
+
+    #[test]
+    fn strip_vhd_footer_truncates_file() {
+        let file = NamedTempFile::new().unwrap();
+        file.as_file().write_all(&vec![0u8; 1024]).expect("write");
+        strip_vhd_footer(file.path()).expect("strip footer");
+        let metadata = fs::metadata(file.path()).unwrap();
+        assert_eq!(metadata.len(), 512);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_qemu_img_convert_invokes_stub() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        let script_path = dir.path().join("qemu-img");
+        let args_path = dir.path().join("args.txt");
+        fs::write(
+            &script_path,
+            format!(
+                "#!/bin/sh\nprintf \"%s \" \"$@\" > {}\ncp \"$6\" \"$7\"\n",
+                args_path.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let input = dir.path().join("input.raw");
+        let output = dir.path().join("output.qcow2");
+        fs::write(&input, b"data").unwrap();
+
+        run_qemu_img_convert(&script_path, "raw", "qcow2", &input, &output).unwrap();
+        let logged = fs::read_to_string(&args_path).unwrap();
+        assert!(logged.contains("convert"));
+        assert!(logged.contains("-f raw"));
+        assert!(logged.contains("-O qcow2"));
+        assert!(output.is_file());
+    }
+
+    #[test]
+    fn run_qemu_img_convert_errors_when_missing_binary() {
+        let dir = tempdir().unwrap();
+        let input = dir.path().join("input.raw");
+        let output = dir.path().join("output.qcow2");
+        fs::write(&input, b"data").unwrap();
+        let missing = dir.path().join("missing");
+        let err = run_qemu_img_convert(&missing, "raw", "qcow2", &input, &output).unwrap_err();
+        assert!(err.to_string().contains("Failed to invoke"));
+    }
+}

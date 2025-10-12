@@ -119,3 +119,44 @@ fn broker_timestamp() -> String {
     }
     format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use regex::Regex;
+    use tempfile::tempdir;
+
+    #[test]
+    fn broker_timestamp_produces_hms_format() {
+        let re = Regex::new(r"^\d{2}:\d{2}:\d{2}$").unwrap();
+        assert!(re.is_match(&broker_timestamp()));
+    }
+
+    #[test]
+    fn broker_log_line_writes_expected_format() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("broker.log");
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        broker_log_line(&mut file, "INFO", "test message").unwrap();
+        file.flush().unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("[host-broker]"));
+        assert!(contents.contains("INFO test message"));
+    }
+
+    #[test]
+    fn pidfile_guard_removes_file_on_drop() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("broker.pid");
+        fs::write(&path, "123").unwrap();
+        assert!(path.exists());
+        {
+            let _guard = PidfileGuard { path: path.clone() };
+        }
+        assert!(!path.exists());
+    }
+}

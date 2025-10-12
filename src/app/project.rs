@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::config::{
@@ -8,32 +9,40 @@ use crate::config::{
 use crate::error::{CliError, CliResult};
 
 pub fn emit_config_warnings(warnings: &[String]) {
+    if let Some(message) = format_config_warnings(warnings) {
+        eprint!("{message}");
+    }
+}
+
+fn format_config_warnings(warnings: &[String]) -> Option<String> {
     if warnings.is_empty() {
-        return;
+        return None;
     }
 
     let count = warnings.len();
     let suffix = if count == 1 { "" } else { "s" };
-    eprintln!("Found {count} warning{suffix} while parsing configuration:");
+    let mut buf = String::new();
+    writeln!(
+        buf,
+        "Found {count} warning{suffix} while parsing configuration:"
+    )
+    .unwrap();
     for warning in warnings {
-        eprintln!("  • {warning}");
+        writeln!(buf, "  • {warning}").unwrap();
     }
-    eprintln!("Next checks:");
-    eprintln!("  • Review port mappings via `castra ports`.");
-    eprintln!("  • Inspect VM status with `castra status` once VMs are running.");
-    eprintln!();
-}
-
-pub fn config_root(project: &ProjectConfig) -> PathBuf {
-    project
-        .file_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
+    writeln!(buf, "Next checks:").unwrap();
+    writeln!(buf, "  • Review port mappings via `castra ports`.").unwrap();
+    writeln!(
+        buf,
+        "  • Inspect VM status with `castra status` once VMs are running."
+    )
+    .unwrap();
+    buf.push('\n');
+    Some(buf)
 }
 
 pub fn config_state_root(project: &ProjectConfig) -> PathBuf {
-    config_root(project).join(".castra")
+    project.state_root.clone()
 }
 
 pub fn preferred_config_target(
@@ -67,11 +76,7 @@ pub fn load_or_default_project(
 fn synthesize_default_project(search_root: PathBuf) -> CliResult<ProjectConfig> {
     let synthetic_path = search_root.join("castra.toml");
     let project_name = default_project_name(&synthetic_path);
-    let state_root = synthetic_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".castra");
+    let state_root = crate::config::default_state_root(&project_name, &synthetic_path);
 
     let overlay_path = state_root.join("alpine-minimal-overlay.qcow2");
 
@@ -94,6 +99,7 @@ fn synthesize_default_project(search_root: PathBuf) -> CliResult<ProjectConfig> 
         version: "0.1.0".to_string(),
         project_name,
         vms: vec![vm],
+        state_root,
         workflows: Workflows { init: Vec::new() },
         broker: BrokerConfig {
             port: DEFAULT_BROKER_PORT,
@@ -129,6 +135,7 @@ version = "0.1.0"
 
 [project]
 name = "{project_name}"
+# state_dir = ".castra"  # Uncomment to keep VM state alongside this config
 
 [[vms]]
 name = "devbox"
@@ -189,4 +196,136 @@ fn discover_config(start: &Path) -> Option<PathBuf> {
         cursor = dir.parent().map(Path::to_path_buf);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::CliError;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    #[test]
+    fn emit_config_warnings_prints_bullets() {
+        let output = super::format_config_warnings(&["first".to_string(), "second".to_string()])
+            .expect("warnings should generate output");
+        assert!(output.contains("Found 2 warnings"));
+        assert!(output.contains("  • first"));
+        assert!(output.contains("  • second"));
+    }
+
+    #[test]
+    fn emit_config_warnings_silent_when_empty() {
+        assert!(super::format_config_warnings(&[]).is_none());
+    }
+
+    #[test]
+    fn preferred_config_target_prioritizes_output() {
+        let config = PathBuf::from("config.toml");
+        let output = PathBuf::from("out.toml");
+        let target = preferred_config_target(Some(&config), Some(&output));
+        assert_eq!(target, output);
+
+        let target = preferred_config_target(Some(&config), None);
+        assert_eq!(target, config);
+
+        let target = preferred_config_target(None, None);
+        assert_eq!(target, PathBuf::from("castra.toml"));
+    }
+
+    #[test]
+    fn default_project_name_uses_parent_dir() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("castra.toml");
+        let name = default_project_name(&path);
+        let expected = dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(name, expected);
+    }
+
+    #[test]
+    fn default_project_name_falls_back_to_cwd() {
+        let original = std::env::current_dir().unwrap();
+        let dir = tempdir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let name = default_project_name(Path::new("castra.toml"));
+        std::env::set_current_dir(&original).unwrap();
+        let expected = dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(name, expected);
+    }
+
+    #[test]
+    fn resolve_config_path_respects_override() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("custom.toml");
+        fs::write(&path, "version = \"0.1.0\"").unwrap();
+        let resolved =
+            resolve_config_path(Some(&path), false).expect("explicit path should succeed");
+        assert_eq!(resolved, path);
+    }
+
+    #[test]
+    fn resolve_config_path_errors_when_missing() {
+        let path = PathBuf::from("/tmp/does-not-exist.toml");
+        let err = resolve_config_path(Some(&path), false).unwrap_err();
+        match err {
+            CliError::ExplicitConfigMissing { path: missing } => {
+                assert_eq!(missing, path);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_or_default_project_synthesizes_when_missing() {
+        let dir = tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let project =
+            load_or_default_project(None, false).expect("fallback project should be synthesized");
+        std::env::set_current_dir(&original).unwrap();
+        let expected = dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(project.project_name, expected);
+        assert_eq!(project.vms.len(), 1);
+        assert!(
+            matches!(
+                project.vms[0].base_image,
+                BaseImageSource::Managed(ManagedImageReference { .. })
+            ),
+            "expected managed image in synthesized project"
+        );
+    }
+
+    #[test]
+    fn config_state_root_clones_path() {
+        let project = ProjectConfig {
+            file_path: PathBuf::from("castra.toml"),
+            version: "0.1.0".into(),
+            project_name: "demo".into(),
+            vms: vec![],
+            state_root: PathBuf::from("/state"),
+            workflows: Workflows { init: vec![] },
+            broker: BrokerConfig {
+                port: DEFAULT_BROKER_PORT,
+            },
+            warnings: vec![],
+        };
+        let root = config_state_root(&project);
+        assert_eq!(root, PathBuf::from("/state"));
+    }
 }

@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -72,25 +73,41 @@ pub fn print_status_table(
     rows: &[VmStatusRow],
     broker_state: BrokerProcessState,
 ) {
-    println!(
+    let output = render_status_table(project, rows, broker_state, io::stdout().is_terminal());
+    print!("{output}");
+}
+
+fn render_status_table(
+    project: &ProjectConfig,
+    rows: &[VmStatusRow],
+    broker_state: BrokerProcessState,
+    use_color: bool,
+) -> String {
+    let mut out = String::new();
+    writeln!(
+        out,
         "Project: {} ({})",
         project.project_name,
         project.file_path.display()
-    );
-    println!("Config version: {}", project.version);
-    println!("Broker endpoint: 127.0.0.1:{}", project.broker.port);
+    )
+    .unwrap();
+    writeln!(out, "Config version: {}", project.version).unwrap();
+    writeln!(out, "Broker endpoint: 127.0.0.1:{}", project.broker.port).unwrap();
     match broker_state {
-        BrokerProcessState::Running { pid } => println!("Broker process: listening (pid {pid})."),
-        BrokerProcessState::Offline => println!("Broker process: offline (run `castra up`)."),
+        BrokerProcessState::Running { pid } => {
+            writeln!(out, "Broker process: listening (pid {pid}).").unwrap();
+        }
+        BrokerProcessState::Offline => {
+            writeln!(out, "Broker process: offline (run `castra up`).").unwrap();
+        }
     }
-    println!();
+    out.push('\n');
 
     if rows.is_empty() {
-        println!("No VMs defined in configuration.");
-        return;
+        writeln!(out, "No VMs defined in configuration.").unwrap();
+        return out;
     }
 
-    let use_color = io::stdout().is_terminal();
     let cpu_mem: Vec<String> = rows
         .iter()
         .map(|row| format!("{}/{}", row.cpus, row.memory))
@@ -127,7 +144,8 @@ pub fn print_status_table(
         .unwrap_or(1)
         .max("BROKER".len());
 
-    println!(
+    writeln!(
+        out,
         "{:<vm_width$}  {:<state_width$}  {:>cpu_mem_width$}  {:>uptime_width$}  {:<broker_width$}  {}",
         "VM",
         "STATE",
@@ -140,12 +158,14 @@ pub fn print_status_table(
         cpu_mem_width = cpu_mem_width,
         uptime_width = uptime_width,
         broker_width = broker_width,
-    );
+    )
+    .unwrap();
 
     for (idx, row) in rows.iter().enumerate() {
         let state = style_state(&row.state, state_width, use_color);
         let broker = style_broker(&row.broker, broker_width, use_color);
-        println!(
+        writeln!(
+            out,
             "{:<vm_width$}  {}  {:>cpu_mem_width$}  {:>uptime_width$}  {}  {}",
             row.name,
             state,
@@ -156,15 +176,28 @@ pub fn print_status_table(
             vm_width = vm_width,
             cpu_mem_width = cpu_mem_width,
             uptime_width = uptime_width,
-        );
+        )
+        .unwrap();
     }
 
-    println!();
-    println!(
+    out.push('\n');
+    writeln!(
+        out,
         "Legend: BROKER reachable = host broker handshake OK; waiting = broker up, guest not connected; offline = listener not running."
-    );
-    println!("States: stopped | starting | running | shutting_down | error");
-    println!("Exit codes: 0 on success; non-zero if any VM in error.");
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "States: stopped | starting | running | shutting_down | error"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "Exit codes: 0 on success; non-zero if any VM in error."
+    )
+    .unwrap();
+
+    out
 }
 
 fn format_port_forwards(forwards: &[PortForward]) -> String {
@@ -221,4 +254,128 @@ fn style_broker(status: &str, width: usize, colored: bool) -> String {
         _ => return padded,
     };
     colorize(&padded, code, colored)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        BaseImageSource, BrokerConfig, DEFAULT_BROKER_PORT, ManagedDiskKind, ManagedImageReference,
+        MemorySpec, PortForward, PortProtocol, ProjectConfig, VmDefinition, Workflows,
+    };
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    fn build_project(state_root: &Path) -> ProjectConfig {
+        ProjectConfig {
+            file_path: state_root.join("castra.toml"),
+            version: "0.1.0".into(),
+            project_name: "demo".into(),
+            vms: vec![VmDefinition {
+                name: "vm1".into(),
+                description: None,
+                base_image: BaseImageSource::Managed(ManagedImageReference {
+                    name: "alpine-minimal".into(),
+                    version: "v1".into(),
+                    disk: ManagedDiskKind::RootDisk,
+                }),
+                overlay: state_root.join("vm1-overlay.qcow2"),
+                cpus: 2,
+                memory: MemorySpec::new("2048 MiB", Some(2048 * 1024 * 1024)),
+                port_forwards: vec![
+                    PortForward {
+                        host: 2222,
+                        guest: 22,
+                        protocol: PortProtocol::Tcp,
+                    },
+                    PortForward {
+                        host: 8080,
+                        guest: 80,
+                        protocol: PortProtocol::Tcp,
+                    },
+                ],
+            }],
+            state_root: state_root.to_path_buf(),
+            workflows: Workflows { init: vec![] },
+            broker: BrokerConfig {
+                port: DEFAULT_BROKER_PORT,
+            },
+            warnings: vec![],
+        }
+    }
+
+    #[test]
+    fn collect_vm_status_reports_stopped_vms() {
+        let dir = tempdir().unwrap();
+        let project = build_project(dir.path());
+        let (rows, broker_state, warnings) = collect_vm_status(&project);
+        assert!(warnings.is_empty());
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.name, "vm1");
+        assert_eq!(row.state, "stopped");
+        assert_eq!(row.memory, "2048MiB");
+        assert_eq!(row.forwards, "2222->22/tcp, 8080->80/tcp");
+        assert!(matches!(broker_state, BrokerProcessState::Offline));
+    }
+
+    #[test]
+    fn format_port_forwards_outputs_dash_when_empty() {
+        assert_eq!(format_port_forwards(&[]), "—");
+    }
+
+    #[test]
+    fn format_port_forwards_lists_entries() {
+        let forwards = vec![
+            PortForward {
+                host: 1000,
+                guest: 10,
+                protocol: PortProtocol::Tcp,
+            },
+            PortForward {
+                host: 2000,
+                guest: 20,
+                protocol: PortProtocol::Udp,
+            },
+        ];
+        let formatted = format_port_forwards(&forwards);
+        assert!(formatted.contains("1000->10/tcp"));
+        assert!(formatted.contains("2000->20/udp"));
+    }
+
+    #[test]
+    fn format_uptime_formats_duration() {
+        let uptime = Some(Duration::from_secs(3723));
+        assert_eq!(format_uptime(uptime), "01:02:03");
+        assert_eq!(format_uptime(None), "—");
+    }
+
+    #[test]
+    fn style_state_applies_color_when_enabled() {
+        let styled = style_state("running", 7, true);
+        assert!(styled.contains("\u{1b}[32m"));
+        let plain = style_state("unknown", 7, true);
+        assert_eq!(plain, "unknown");
+    }
+
+    #[test]
+    fn style_broker_applies_color_when_enabled() {
+        let styled = style_broker("waiting", 7, true);
+        assert!(styled.contains("\u{1b}[33m"));
+        let plain = style_broker("other", 7, true);
+        assert!(!plain.contains("\u{1b}"));
+        assert_eq!(plain.trim_end(), "other");
+    }
+
+    #[test]
+    fn print_status_table_emits_expected_rows() {
+        let dir = tempdir().unwrap();
+        let project = build_project(dir.path());
+        let (rows, broker_state, _) = collect_vm_status(&project);
+        let output = super::render_status_table(&project, &rows, broker_state, false);
+        assert!(output.contains("Project: demo"));
+        assert!(output.contains("CPU/MEM"));
+        assert!(output.contains("vm1"));
+        assert!(output.contains("2222->22/tcp"));
+    }
 }

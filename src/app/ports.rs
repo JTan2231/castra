@@ -1,5 +1,6 @@
 use std::cmp;
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use crate::cli::PortsArgs;
@@ -18,15 +19,28 @@ pub fn handle_ports(args: PortsArgs, config_override: Option<&PathBuf>) -> CliRe
 }
 
 pub fn print_port_overview(project: &ProjectConfig, verbose: bool) {
-    println!(
+    let (out, err) = render_port_overview(project, verbose);
+    print!("{out}");
+    if !err.is_empty() {
+        eprint!("{err}");
+    }
+}
+
+fn render_port_overview(project: &ProjectConfig, verbose: bool) -> (String, String) {
+    let mut out = String::new();
+    let mut err = String::new();
+
+    writeln!(
+        out,
         "Project: {} ({})",
         project.project_name,
         project.file_path.display()
-    );
-    println!("Config version: {}", project.version);
-    println!("Broker endpoint: 127.0.0.1:{}", project.broker.port);
-    println!("(start the broker via `castra up` once available)");
-    println!();
+    )
+    .unwrap();
+    writeln!(out, "Config version: {}", project.version).unwrap();
+    writeln!(out, "Broker endpoint: 127.0.0.1:{}", project.broker.port).unwrap();
+    writeln!(out, "(start the broker via `castra up` once available)").unwrap();
+    out.push('\n');
 
     let (conflicts, broker_collision) = project.port_conflicts();
     let conflict_ports: HashSet<u16> = conflicts.iter().map(|c| c.port).collect();
@@ -55,13 +69,16 @@ pub fn print_port_overview(project: &ProjectConfig, verbose: bool) {
     );
 
     if rows.is_empty() {
-        println!(
+        writeln!(
+            out,
             "No port forwards declared in {}.",
             project.file_path.display()
-        );
+        )
+        .unwrap();
     } else {
-        println!("Declared forwards:");
-        println!(
+        writeln!(out, "Declared forwards:").unwrap();
+        writeln!(
+            out,
             "  {vm:<width$}  {:>5}  {:>5}  {:<5}  {}",
             "HOST",
             "GUEST",
@@ -69,7 +86,8 @@ pub fn print_port_overview(project: &ProjectConfig, verbose: bool) {
             "STATUS",
             vm = "VM",
             width = vm_width
-        );
+        )
+        .unwrap();
 
         for (vm_name, host, guest, protocol) in rows {
             let mut status = "declared";
@@ -79,14 +97,16 @@ pub fn print_port_overview(project: &ProjectConfig, verbose: bool) {
                 status = "broker-reserved";
             }
 
-            println!(
+            writeln!(
+                out,
                 "  {vm:<width$}  {:>5}  {:>5}  {:<5}  {status}",
                 host,
                 guest,
                 protocol,
                 vm = vm_name,
                 width = vm_width
-            );
+            )
+            .unwrap();
         }
     }
 
@@ -98,53 +118,137 @@ pub fn print_port_overview(project: &ProjectConfig, verbose: bool) {
         .collect();
 
     if !without_forwards.is_empty() {
-        println!();
-        println!("VMs without host forwards: {}", without_forwards.join(", "));
+        out.push('\n');
+        writeln!(
+            out,
+            "VMs without host forwards: {}",
+            without_forwards.join(", ")
+        )
+        .unwrap();
     }
 
     if verbose {
-        println!();
-        println!("VM details:");
+        out.push('\n');
+        writeln!(out, "VM details:").unwrap();
         for vm in &project.vms {
-            println!("  {}", vm.name);
+            writeln!(out, "  {}", vm.name).unwrap();
             if let Some(desc) = &vm.description {
-                println!("    description: {desc}");
+                writeln!(out, "    description: {desc}").unwrap();
             }
-            println!("    base_image: {}", vm.base_image.describe());
-            println!("    overlay: {}", vm.overlay.display());
-            println!("    cpus: {}", vm.cpus);
-            println!("    memory: {}", vm.memory.original());
+            writeln!(out, "    base_image: {}", vm.base_image.describe()).unwrap();
+            writeln!(out, "    overlay: {}", vm.overlay.display()).unwrap();
+            writeln!(out, "    cpus: {}", vm.cpus).unwrap();
+            writeln!(out, "    memory: {}", vm.memory.original()).unwrap();
             if let Some(bytes) = vm.memory.bytes() {
-                println!("    memory_bytes: {}", bytes);
+                writeln!(out, "    memory_bytes: {}", bytes).unwrap();
             }
             if vm.port_forwards.is_empty() {
-                println!("    port_forwards: (none)");
+                writeln!(out, "    port_forwards: (none)").unwrap();
             }
         }
         if !project.workflows.init.is_empty() {
-            println!();
-            println!("Init workflow steps:");
+            out.push('\n');
+            writeln!(out, "Init workflow steps:").unwrap();
             for step in &project.workflows.init {
-                println!("  - {step}");
+                writeln!(out, "  - {step}").unwrap();
             }
         }
     }
 
     if !conflicts.is_empty() {
-        eprintln!();
+        err.push('\n');
         for conflict in &conflicts {
-            eprintln!(
+            writeln!(
+                err,
                 "Warning: host port {} is declared by multiple VMs: {}.",
                 conflict.port,
                 conflict.vm_names.join(", ")
-            );
+            )
+            .unwrap();
         }
     }
 
     if let Some(collision) = broker_collision {
-        eprintln!(
+        writeln!(
+            err,
             "Warning: host port {} overlaps with the castra broker. Adjust the broker port or the forward.",
             collision.port
+        )
+        .unwrap();
+    }
+
+    (out, err)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::{
+        BaseImageSource, BrokerConfig, ManagedDiskKind, ManagedImageReference, MemorySpec,
+        PortForward, PortProtocol, ProjectConfig, VmDefinition, Workflows,
+    };
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    fn project_with_forwards(
+        root: &Path,
+        forwards_per_vm: Vec<(&str, Vec<PortForward>)>,
+        broker_port: u16,
+    ) -> ProjectConfig {
+        let mut vms = Vec::new();
+        for (name, forwards) in forwards_per_vm {
+            vms.push(VmDefinition {
+                name: name.to_string(),
+                description: None,
+                base_image: BaseImageSource::Managed(ManagedImageReference {
+                    name: "alpine-minimal".into(),
+                    version: "v1".into(),
+                    disk: ManagedDiskKind::RootDisk,
+                }),
+                overlay: root.join(format!("{name}.qcow2")),
+                cpus: 1,
+                memory: MemorySpec::new("1 GiB", Some(1024 * 1024 * 1024)),
+                port_forwards: forwards,
+            });
+        }
+
+        ProjectConfig {
+            file_path: root.join("castra.toml"),
+            version: "0.1.0".into(),
+            project_name: "demo".into(),
+            vms,
+            state_root: root.to_path_buf(),
+            workflows: Workflows { init: vec![] },
+            broker: BrokerConfig { port: broker_port },
+            warnings: vec![],
+        }
+    }
+
+    #[test]
+    fn print_port_overview_reports_absence_when_empty() {
+        let dir = tempdir().unwrap();
+        let project = project_with_forwards(dir.path(), vec![("vm1", vec![])], 7000);
+        let (out, err) = super::render_port_overview(&project, false);
+        assert!(out.contains("No port forwards declared"));
+        assert!(out.contains("VMs without host forwards: vm1"));
+        assert!(err.is_empty());
+    }
+
+    #[test]
+    fn print_port_overview_flags_conflicts_and_broker_collisions() {
+        let dir = tempdir().unwrap();
+        let forwards = vec![PortForward {
+            host: 8080,
+            guest: 80,
+            protocol: PortProtocol::Tcp,
+        }];
+        let project = project_with_forwards(
+            dir.path(),
+            vec![("vm1", forwards.clone()), ("vm2", forwards)],
+            8080,
         );
+        let (out, err) = super::render_port_overview(&project, false);
+        assert!(out.contains("conflict"));
+        assert!(err.contains("Warning: host port 8080 is declared by multiple VMs"));
+        assert!(err.contains("overlaps with the castra broker"));
     }
 }
