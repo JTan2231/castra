@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::Result;
 use crate::cli::DownArgs;
 use crate::core::diagnostics::Severity;
-use crate::core::events::Event;
+use crate::core::events::{Event, ShutdownMethod, ShutdownOutcome, ShutdownSignal};
 use crate::core::operations;
 use crate::core::options::DownOptions;
 use crate::core::project::format_config_warnings;
@@ -36,6 +36,37 @@ fn render_down(events: &[Event]) {
                 Severity::Warning => eprintln!("Warning: {text}"),
                 Severity::Error => eprintln!("Error: {text}"),
             },
+            Event::ShutdownInitiated { vm, method } => match method {
+                ShutdownMethod::Graceful => {
+                    println!("→ {vm}: sent graceful shutdown request (ACPI/QMP).");
+                }
+            },
+            Event::ShutdownEscalation { vm, signal } => match signal {
+                ShutdownSignal::Sigterm => {
+                    println!("→ {vm}: escalating to SIGTERM.");
+                }
+                ShutdownSignal::Sigkill => {
+                    println!("→ {vm}: escalating to SIGKILL.");
+                }
+            },
+            Event::ShutdownComplete {
+                vm,
+                outcome,
+                changed,
+            } => {
+                if !changed {
+                    println!("→ {vm}: already stopped.");
+                } else {
+                    match outcome {
+                        ShutdownOutcome::Graceful => {
+                            println!("→ {vm}: stopped (graceful).");
+                        }
+                        ShutdownOutcome::Forced => {
+                            println!("→ {vm}: stopped (forced).");
+                        }
+                    }
+                }
+            }
             Event::BrokerStopped { changed } => {
                 if !changed {
                     println!("→ broker: already stopped.");

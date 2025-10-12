@@ -35,11 +35,27 @@ pub enum Event {
         /// Operating system process identifier.
         pid: u32,
     },
-    /// Notification that a VM changed shutdown status. `stopped` indicates whether the VM is now halted.
-    VmShutdown {
+    /// Notification that a coordinated shutdown was initiated for a VM.
+    ShutdownInitiated {
         /// Name of the VM.
         vm: String,
-        /// Whether a change occurred (`true` if the VM transitioned state, `false` if it was already stopped).
+        /// Method used to initiate the shutdown sequence.
+        method: ShutdownMethod,
+    },
+    /// Notification that the shutdown path is escalating to a stronger signal.
+    ShutdownEscalation {
+        /// Name of the VM.
+        vm: String,
+        /// Signal that was sent to the process.
+        signal: ShutdownSignal,
+    },
+    /// Notification that a VM completed its shutdown sequence.
+    ShutdownComplete {
+        /// Name of the VM.
+        vm: String,
+        /// Outcome of the shutdown path (graceful vs forced).
+        outcome: ShutdownOutcome,
+        /// Whether the VM transitioned state (`true` if it was running, `false` if already stopped).
         changed: bool,
     },
     /// The broker process started listening.
@@ -54,6 +70,60 @@ pub enum Event {
         /// Whether a change occurred (`true` if the broker was terminated, `false` if it was already offline).
         changed: bool,
     },
+}
+
+/// Strategy used to initiate a shutdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownMethod {
+    /// Cooperative shutdown via guest-aware channel (e.g., ACPI/QMP).
+    Graceful,
+}
+
+impl ShutdownMethod {
+    /// Human-friendly label for rendering.
+    pub fn describe(self) -> &'static str {
+        match self {
+            ShutdownMethod::Graceful => "graceful (ACPI)",
+        }
+    }
+}
+
+/// Signals used when escalating shutdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownSignal {
+    /// POSIX SIGTERM.
+    Sigterm,
+    /// POSIX SIGKILL.
+    Sigkill,
+}
+
+impl ShutdownSignal {
+    /// Human-friendly label for rendering.
+    pub fn describe(self) -> &'static str {
+        match self {
+            ShutdownSignal::Sigterm => "SIGTERM",
+            ShutdownSignal::Sigkill => "SIGKILL",
+        }
+    }
+}
+
+/// Result of the shutdown sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownOutcome {
+    /// The VM exited cleanly after the graceful attempt.
+    Graceful,
+    /// The VM required signals (TERM/KILL) to exit.
+    Forced,
+}
+
+impl ShutdownOutcome {
+    /// Human-friendly label for rendering.
+    pub fn describe(self) -> &'static str {
+        match self {
+            ShutdownOutcome::Graceful => "graceful",
+            ShutdownOutcome::Forced => "forced",
+        }
+    }
 }
 
 /// Handle that identifies a managed image specification without leaking internal references.

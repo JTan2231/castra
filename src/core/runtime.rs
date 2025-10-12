@@ -2,7 +2,11 @@ use std::cmp;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, ErrorKind};
+#[cfg(unix)]
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -19,10 +23,10 @@ use crate::managed::{
     ImageManager, ManagedArtifactEvent, ManagedArtifactKind, ManagedImagePaths, ManagedImageSpec,
     lookup_managed_image,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::diagnostics::{Diagnostic, Severity};
-use super::events::Event;
+use super::events::{Event, ShutdownMethod, ShutdownOutcome, ShutdownSignal};
 
 pub struct RuntimeContext {
     pub state_root: PathBuf,
@@ -43,6 +47,9 @@ const DISK_WARN_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
 const DISK_FAIL_THRESHOLD: u64 = 500 * 1024 * 1024;
 const MEMORY_WARN_HEADROOM: u64 = 1 * 1024 * 1024 * 1024;
 const MEMORY_FAIL_HEADROOM: u64 = 512 * 1024 * 1024;
+const GRACEFUL_SHUTDOWN_WAIT_SECS: u64 = 20;
+const SIGTERM_WAIT_SECS: u64 = 10;
+const SIGKILL_WAIT_SECS: u64 = 5;
 
 #[derive(Debug)]
 pub struct AssetPreparation {
@@ -432,6 +439,15 @@ pub fn launch_vm(
         let _ = fs::remove_file(&pidfile);
     }
 
+    #[cfg(unix)]
+    let qmp_socket = {
+        let path = qmp_socket_path(&context.state_root, &vm.name);
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+        path
+    };
+
     let log_path = context.log_root.join(format!("{}.log", vm.name));
     let log_file = fs::OpenOptions::new()
         .create(true)
@@ -498,6 +514,12 @@ pub fn launch_vm(
         .arg(format!("file:{}", serial_path.display()))
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_clone));
+
+    #[cfg(unix)]
+    {
+        let qmp_arg = format!("unix:{},server=on,wait=off", qmp_socket.display());
+        command.arg("-qmp").arg(qmp_arg);
+    }
 
     let hvf_available = context.accelerators.iter().any(|accel| accel == "hvf");
     let kvm_available = context.accelerators.iter().any(|accel| accel == "kvm");
@@ -597,12 +619,10 @@ pub fn shutdown_vm(
 ) -> Result<bool> {
     let pidfile = state_root.join(format!("{}.pid", vm.name));
     if !pidfile.is_file() {
-        events.push(Event::Message {
-            severity: Severity::Info,
-            text: format!("→ {}: already stopped.", vm.name),
-        });
-        events.push(Event::VmShutdown {
+        cleanup_qmp_socket(state_root, &vm.name);
+        events.push(Event::ShutdownComplete {
             vm: vm.name.clone(),
+            outcome: ShutdownOutcome::Graceful,
             changed: false,
         });
         return Ok(false);
@@ -628,8 +648,10 @@ pub fn shutdown_vm(
             ),
         ));
         let _ = fs::remove_file(&pidfile);
-        events.push(Event::VmShutdown {
+        cleanup_qmp_socket(state_root, &vm.name);
+        events.push(Event::ShutdownComplete {
             vm: vm.name.clone(),
+            outcome: ShutdownOutcome::Graceful,
             changed: false,
         });
         return Ok(false);
@@ -643,6 +665,50 @@ pub fn shutdown_vm(
             vm.name
         ),
     })?;
+
+    match attempt_graceful_shutdown(state_root, &vm.name, events) {
+        GracefulTrigger::Initiated => {
+            if wait_for_process_exit(pid, Duration::from_secs(GRACEFUL_SHUTDOWN_WAIT_SECS))
+                .map_err(|err| Error::ShutdownFailed {
+                    vm: vm.name.clone(),
+                    message: format!(
+                        "Error while waiting for pid {pid} during graceful shutdown: {err}"
+                    ),
+                })?
+            {
+                if let Err(err) = fs::remove_file(&pidfile) {
+                    if err.kind() != ErrorKind::NotFound {
+                        return Err(Error::ShutdownFailed {
+                            vm: vm.name.clone(),
+                            message: format!(
+                                "VM stopped but failed to remove pidfile {}: {err}",
+                                pidfile.display()
+                            ),
+                        });
+                    }
+                }
+                cleanup_qmp_socket(state_root, &vm.name);
+                events.push(Event::ShutdownComplete {
+                    vm: vm.name.clone(),
+                    outcome: ShutdownOutcome::Graceful,
+                    changed: true,
+                });
+                return Ok(true);
+            }
+        }
+        GracefulTrigger::Unavailable => {}
+        GracefulTrigger::Failed(message) => {
+            diagnostics.push(
+                Diagnostic::new(
+                    Severity::Warning,
+                    format!("Failed graceful shutdown for VM `{}`: {message}", vm.name),
+                )
+                .with_help(
+                    "Ensure QEMU launched with QMP support or allow Castra to manage the VM lifecycle.",
+                ),
+            );
+        }
+    }
 
     let term = unsafe { libc::kill(pid, libc::SIGTERM) };
     if term != 0 {
@@ -659,8 +725,10 @@ pub fn shutdown_vm(
                 ),
             ));
             let _ = fs::remove_file(&pidfile);
-            events.push(Event::VmShutdown {
+            cleanup_qmp_socket(state_root, &vm.name);
+            events.push(Event::ShutdownComplete {
                 vm: vm.name.clone(),
+                outcome: ShutdownOutcome::Graceful,
                 changed: false,
             });
             return Ok(false);
@@ -672,21 +740,21 @@ pub fn shutdown_vm(
         });
     }
 
-    events.push(Event::Message {
-        severity: Severity::Info,
-        text: format!("→ {}: sent SIGTERM to pid {}.", vm.name, pid),
+    events.push(Event::ShutdownEscalation {
+        vm: vm.name.clone(),
+        signal: ShutdownSignal::Sigterm,
     });
-    if !wait_for_process_exit(pid, Duration::from_secs(10)).map_err(|err| {
+    if !wait_for_process_exit(pid, Duration::from_secs(SIGTERM_WAIT_SECS)).map_err(|err| {
         Error::ShutdownFailed {
             vm: vm.name.clone(),
             message: format!("Error while waiting for pid {pid} to exit: {err}"),
         }
     })? {
-        events.push(Event::Message {
-            severity: Severity::Warning,
-            text: format!("→ {}: escalating to SIGKILL (pid {}).", vm.name, pid),
-        });
         let kill_res = unsafe { libc::kill(pid, libc::SIGKILL) };
+        events.push(Event::ShutdownEscalation {
+            vm: vm.name.clone(),
+            signal: ShutdownSignal::Sigkill,
+        });
         if kill_res != 0 {
             let errno = io::Error::last_os_error()
                 .raw_os_error()
@@ -699,7 +767,7 @@ pub fn shutdown_vm(
             }
         }
 
-        if !wait_for_process_exit(pid, Duration::from_secs(5)).map_err(|err| {
+        if !wait_for_process_exit(pid, Duration::from_secs(SIGKILL_WAIT_SECS)).map_err(|err| {
             Error::ShutdownFailed {
                 vm: vm.name.clone(),
                 message: format!("Error while waiting for pid {pid} after SIGKILL: {err}"),
@@ -723,9 +791,10 @@ pub fn shutdown_vm(
             });
         }
     }
-
-    events.push(Event::VmShutdown {
+    cleanup_qmp_socket(state_root, &vm.name);
+    events.push(Event::ShutdownComplete {
         vm: vm.name.clone(),
+        outcome: ShutdownOutcome::Forced,
         changed: true,
     });
     Ok(true)
@@ -1019,6 +1088,160 @@ fn broker_handshake_dir(context: &RuntimeContext) -> PathBuf {
 
 pub(crate) fn broker_handshake_dir_from_root(state_root: &Path) -> PathBuf {
     state_root.join("handshakes")
+}
+
+#[derive(Debug)]
+enum GracefulTrigger {
+    Initiated,
+    Unavailable,
+    Failed(String),
+}
+
+fn attempt_graceful_shutdown(
+    state_root: &Path,
+    vm_name: &str,
+    events: &mut Vec<Event>,
+) -> GracefulTrigger {
+    #[cfg(unix)]
+    {
+        let socket = qmp_socket_path(state_root, vm_name);
+        match send_qmp_powerdown(&socket) {
+            Ok(()) => {
+                events.push(Event::ShutdownInitiated {
+                    vm: vm_name.to_string(),
+                    method: ShutdownMethod::Graceful,
+                });
+                GracefulTrigger::Initiated
+            }
+            Err(GracefulShutdownError::Unavailable) => GracefulTrigger::Unavailable,
+            Err(GracefulShutdownError::Io(err)) => GracefulTrigger::Failed(format!(
+                "QMP connection error via {} while powering down `{vm_name}`: {err}",
+                socket.display(),
+                vm_name = vm_name
+            )),
+            Err(GracefulShutdownError::Protocol(reason)) => GracefulTrigger::Failed(reason),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (state_root, vm_name, events);
+        GracefulTrigger::Unavailable
+    }
+}
+
+fn cleanup_qmp_socket(state_root: &Path, vm_name: &str) {
+    #[cfg(unix)]
+    {
+        let socket = qmp_socket_path(state_root, vm_name);
+        if socket.exists() {
+            let _ = fs::remove_file(socket);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (state_root, vm_name);
+    }
+}
+
+#[cfg(unix)]
+fn qmp_socket_path(state_root: &Path, vm_name: &str) -> PathBuf {
+    state_root.join(format!("{}.qmp", vm_name))
+}
+
+#[cfg(unix)]
+enum GracefulShutdownError {
+    Unavailable,
+    Io(io::Error),
+    Protocol(String),
+}
+
+fn send_qmp_powerdown(socket: &Path) -> std::result::Result<(), GracefulShutdownError> {
+    if !socket.exists() {
+        return Err(GracefulShutdownError::Unavailable);
+    }
+
+    let mut stream = UnixStream::connect(&socket).map_err(map_qmp_connect_error)?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(GracefulShutdownError::Io)?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(GracefulShutdownError::Io)?;
+    let mut reader = BufReader::new(stream.try_clone().map_err(GracefulShutdownError::Io)?);
+
+    let message = read_qmp_message(&mut reader)?;
+    if message.get("QMP").is_none() {
+        return Err(GracefulShutdownError::Protocol(format!(
+            "Unexpected QMP greeting from {}",
+            socket.display()
+        )));
+    }
+
+    send_qmp_command(&mut stream, "qmp_capabilities")?;
+    wait_for_qmp_ok(&mut reader)?;
+    send_qmp_command(&mut stream, "system_powerdown")?;
+    wait_for_qmp_ok(&mut reader)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn map_qmp_connect_error(err: io::Error) -> GracefulShutdownError {
+    match err.kind() {
+        io::ErrorKind::NotFound
+        | io::ErrorKind::ConnectionRefused
+        | io::ErrorKind::AddrNotAvailable
+        | io::ErrorKind::PermissionDenied => GracefulShutdownError::Unavailable,
+        _ => GracefulShutdownError::Io(err),
+    }
+}
+
+#[cfg(unix)]
+fn send_qmp_command(
+    stream: &mut UnixStream,
+    command: &str,
+) -> std::result::Result<(), GracefulShutdownError> {
+    let payload = json!({ "execute": command });
+    let mut data = serde_json::to_string(&payload)
+        .map_err(|err| GracefulShutdownError::Protocol(err.to_string()))?;
+    data.push('\n');
+    stream
+        .write_all(data.as_bytes())
+        .map_err(GracefulShutdownError::Io)
+}
+
+#[cfg(unix)]
+fn read_qmp_message(
+    reader: &mut BufReader<UnixStream>,
+) -> std::result::Result<Value, GracefulShutdownError> {
+    let mut line = String::new();
+    let bytes = reader
+        .read_line(&mut line)
+        .map_err(GracefulShutdownError::Io)?;
+    if bytes == 0 {
+        return Err(GracefulShutdownError::Protocol(
+            "QMP connection closed unexpectedly.".to_string(),
+        ));
+    }
+    serde_json::from_str(&line).map_err(|err| GracefulShutdownError::Protocol(err.to_string()))
+}
+
+#[cfg(unix)]
+fn wait_for_qmp_ok(
+    reader: &mut BufReader<UnixStream>,
+) -> std::result::Result<(), GracefulShutdownError> {
+    loop {
+        let message = read_qmp_message(reader)?;
+        if message.get("return").is_some() {
+            return Ok(());
+        }
+        if let Some(err) = message.get("error") {
+            return Err(GracefulShutdownError::Protocol(format!(
+                "QMP error response: {}",
+                err
+            )));
+        }
+        // Ignore asynchronous events.
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
