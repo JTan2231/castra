@@ -2,8 +2,8 @@ SNAPSHOT v0.7.1 — Castra (VM orchestration harness)
 
 Edits since v0.7
 - Clarified discovery semantics gap: --skip-discovery currently disables only synthetic fallback and still walks upward when --config is omitted (src/app/common.rs:17 → src/core/options.rs:37). New TODO added to require explicit config when skipping discovery.
-- Reaffirmed lifecycle gap: shutdown remains TERM→wait→KILL; no ACPI/QMP/guest-agent phase (src/core/runtime.rs:638, :750). TODO acceptance tightened to emit explicit Events during staged shutdown.
-- Broker reachability: status BROKER hardcodes waiting when broker.pid exists; broker greets but no handshake/freshness tracking (src/core/status.rs:45; src/core/broker.rs:64). TODO updated to require real reachable state with a freshness window.
+- Reaffirmed lifecycle gap: shutdown remains TERM→wait→KILL; no ACPI/QMP/guest-agent phase (src/core/runtime.rs:638, :750). TODO acceptance tightened to emit explicit, ordered Events during staged shutdown.
+- Broker reachability: status BROKER hardcodes waiting when broker.pid exists; broker greets but no handshake/freshness tracking (src/core/status.rs:45; src/core/broker.rs:64). TODO updated to require real reachable state with a freshness window and include last-handshake age in StatusOutcome.
 - Ports active mode: enum includes Active, but summarize() never produces it; CLI lacks --active (src/core/ports.rs:15→30; src/cli.rs:112). TODO updated with acceptance for runtime inspection and script-friendly output.
 - Managed images: alpine-minimal@v1 lacks kernel/initrd profile and source checksums (src/managed/mod.rs:705, :720). TODO updated to require boot profile and checksums; runtime already honors profiles.
 - Versioning/distribution: --version surfaces Cargo-only; MSRV/release docs absent (src/cli.rs:10; docs/*). TODO acceptance refined for build.rs SHA embed and docs.
@@ -17,26 +17,26 @@ Narrative state (themes/tensions) — updates
    - Addendum: tighten --skip-discovery to require explicit config; update help/copy and exit behavior.
 
 2) QEMU backend and VM lifecycle
-   - Unchanged in code; acceptance for graceful phase now explicit in TODO.
+   - Unchanged in code; acceptance now explicit for ordered shutdown Events (Initiated→Escalation→Complete) during graceful path.
 
 3) Host communication channel
-   - Unchanged in code; TODO now mandates freshness-window-backed reachable.
+   - Unchanged in code; TODO now mandates freshness-window-backed `reachable` and exposes last-handshake age in StatusOutcome for UIs.
 
 6) Networking and connectivity ergonomics
-   - Unchanged in code; TODO now specifies --active behavior and output guarantees.
+   - Unchanged in code; TODO specifies `ports --active` behavior and output guarantees.
 
 9) Toolchain baseline and distribution
    - TODO refined to embed git SHA and document MSRV/release.
 
 11) Library API stability for embedders
-   - New tension captured: feature-gate app to keep embedders lean; docs to reflect policy.
+   - Tension captured: feature-gate app to keep embedders lean; docs to reflect policy.
 
 Cross-links
 - Each TODO references the threads above and anchors to file/line evidence cited here.
 
 Direction of travel (unchanged with emphasis)
 - UX fidelity: enforce explicit-config requirement with --skip-discovery; preserve exit-code discipline and clear guidance.
-- Lifecycle: add cooperative shutdown via ACPI/QMP/guest-agent before signals with observable Events.
-- Connectivity clarity: implement broker↔guest handshake with freshness; add ports --active view fed by runtime inspection.
+- Lifecycle: add cooperative shutdown via ACPI/QMP/guest-agent before signals with observable, ordered Events.
+- Connectivity clarity: implement broker↔guest handshake with freshness and expose age; add ports --active view fed by runtime inspection.
 - Distribution: embed git SHA; document MSRV and release steps.
 - Embedder experience: correct feature gating for app/cli split; keep CLI thin over core.
