@@ -49,3 +49,20 @@ Anchors + events clarity
 
 ---
 
+Thread 2 — QEMU backend and VM lifecycle. Snapshot v0.7.2 reference.
+
+Tension
+- Shutdown path uses TERM→wait→KILL only; lacks cooperative phases (ACPI/QMP/guest-agent), risking data loss and poor UX.
+
+Change (product-level)
+- Introduce multi-phase graceful shutdown before signals with observable Events and configurable timeouts.
+- Event sequence: ShutdownInitiated → ShutdownEscalation (with reason) → ShutdownComplete (success/failure) emitted to logs and OperationOutput.
+- Document sane defaults and configuration knobs.
+
+Acceptance criteria
+- `castra down` attempts ACPI power button or equivalent, then escalates to QMP/agent if available before signals; timeouts are honored.
+- Logs and OperationOutput show the ordered events with timestamps.
+- If graceful path is unavailable or times out, signal-based fallback occurs and is explicitly logged.
+
+Anchors
+- src/core/runtime.rs (lifecycle); src/core/events.rs; src/core/options.rs (timeouts/config); src/app/down.rs (user-facing copy).

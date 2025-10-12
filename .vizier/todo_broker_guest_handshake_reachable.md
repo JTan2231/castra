@@ -58,3 +58,23 @@ Anchors addition
 
 ---
 
+Thread 3 — Host communication channel. Snapshot v0.7.2 reference.
+
+Tension
+- `status` reflects only broker PID existence; there is no handshake freshness, causing misleading "healthy" even when the guest/broker link is stale.
+
+Evidence
+- src/core/status.rs:45; src/core/broker.rs:64 — status waits on pid-only, no age/freshness tracked.
+
+Change (product-level)
+- Add non-blocking freshness to status. A bounded initial probe (<500ms) is allowed on first call; subsequent calls must be non-blocking and report staleness via age.
+- Surface fields: reachable: bool; last_handshake_age_ms: u64 in the status output/JSON.
+- CLI help/legend explains semantics of reachable and age.
+
+Acceptance criteria
+- Running `castra status` shortly after broker restart shows reachable=true and age≈0..500ms; repeated calls show age increasing without blocking.
+- If broker is down or handshake not observed within probe window, reachable=false and age reports time since last successful handshake (or null/"-" if none), with clear legend.
+- JSON output includes fields with stable names. Text UI shows age in human units and a legend line.
+
+Anchors
+- src/core/status.rs; src/core/broker.rs; src/app/status.rs (help/legend).

@@ -1,47 +1,32 @@
 SNAPSHOT v0.7.2 — Castra (VM orchestration harness)
 
-Edits since v0.7.1
-- Versioning/distribution: COMPLETE. build.rs embeds version as "<semver> (<short SHA>)" via CASTRA_VERSION; src/cli.rs consumes it; README.md now declares MSRV (Rust 1.77) and docs/RELEASING.md provides a lightweight release checklist. Thread 9 closed; keep MSRV statement current as ongoing hygiene, not an open thread.
-- Library feature gating: COMPLETE. src/lib.rs gates cli/app behind feature "cli"; Cargo.toml marks clap optional and requires feature for the bin; docs/library_usage.md shows default-features = false path. Remaining doc follow-up lives under Thread 11 (AGENTS.md guidance). TODO scope narrowed to docs-only (updated).
-- Housekeeping: Deduplicated lingering TODOs; canonicalized docs-only follow-up under todo_cli_feature_gating_app_split.md.
+Edits since last snapshot
+- Normalized TODO set: deduplicated and reconstituted five active TODOs with clear thread ties and anchors. No code behavior changes captured; this is a planning hygiene pass.
 
-Carried forward (active threads; snapshot-aligned clarifications)
-- Discovery semantics gap (Thread 1): --skip-discovery currently disables only synthetic fallback and still walks upward when --config is omitted (src/app/common.rs:17 → src/core/options.rs:37). TODO tightened: when --skip-discovery is set without --config, commands fail fast via standard usage/config error path; help text now explicitly states the pairing and includes an example. No FS walking occurs when the flag is set.
-- Lifecycle gap (Thread 2): shutdown remains TERM→wait→KILL; no ACPI/QMP/guest-agent phase (src/core/runtime.rs:638, :750). TODO acceptance calls for ordered Events (ShutdownInitiated→ShutdownEscalation→ShutdownComplete) observable in logs and OperationOutput; sane, configurable timeouts documented.
-- Broker reachability (Thread 3): status BROKER waits on pid-only; broker greets but no handshake/freshness tracking (src/core/status.rs:45; src/core/broker.rs:64). TODO clarifies non-blocking status: initial bounded wait (<500ms) allowed, subsequent calls reflect staleness via age growth. Field names stabilized: reachable: bool; last_handshake_age_ms: u64. Help/legend to explain semantics.
-- Ports active mode (Thread 6): enum includes Active in outcome types, but core/ports::summarize() never produces it; CLI lacks --active (src/core/ports.rs; src/cli.rs: PortsArgs). TODO locks output contract: columns identical between default and --active; STATUS content varies; performance target <200ms; degrade gracefully if backend inspection unavailable; help updated.
-- Managed images (Thread 10): alpine-minimal@v1 lacks kernel/initrd profile and source checksums/sizes (src/managed/mod.rs: ALPINE_ARTIFACTS sha256=None, size=None; profile None). ImageManager already verifies and logs "source checksum verified" when provided. TODO adds boot profile hooks and source checksums; diagnostics distinguish offline vs mismatch; events "verified source checksums" and "applied boot profile"; cache handling guidance clarified.
+Active threads (unchanged intent, clarified acceptance)
+- Thread 1 — Discovery semantics gap: `--skip-discovery` now framed to require `--config` or fail fast; acceptance clarifies CLI copy, exit behavior, and zero FS walking. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs.
+- Thread 2 — Lifecycle gap: define multi‑phase graceful shutdown before signals with ordered Events and configurable timeouts; acceptance calls for observable logs and OperationOutput sequence. Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
+- Thread 3 — Broker reachability: status must expose non‑blocking freshness via reachable bool and last_handshake_age_ms; initial bounded probe allowed, help/legend updated. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs.
+- Thread 6 — Ports active mode: add `--active` view; keep columns stable; performance target <200ms; graceful degradation note. Anchors: src/core/ports.rs; src/app/ports.rs or src/app/mod.rs; src/core/runtime.rs.
+- Thread 10 — Managed images: add checksums/sizes and optional Alpine boot profile; emit verification/profile events; sharpen diagnostics and docs. Anchors: src/managed/mod.rs; src/core/logs.rs/reporter.rs; docs.
 
 Current code state (observable surfaces)
-- CLI version reports semver plus short SHA when built from git; plain semver when not.
-- Feature flags: cli/app modules and binary gated behind feature "cli" (default-on). Library-only builds with --no-default-features succeed.
-- Remaining caveats: skip-discovery semantics lax; no broker freshness; no active ports view; shutdown still signal-only; managed image catalog minimal with no checksums; alpine profile absent.
+- Versioning embeds semver + short SHA; feature-gated CLI/app behind `cli` (default on). Library builds with --no-default-features succeed.
+- Known gaps: skip-discovery lax; no broker freshness; no active ports view; shutdown is signal-only; managed images lack checksums and Alpine boot profile.
 
-Narrative state (themes/tensions)
-1) UX-first CLI contract
-   - Enforce explicit-config requirement with --skip-discovery; improve help/copy and exit behavior.
-
-2) QEMU backend and VM lifecycle
-   - Add cooperative shutdown via ACPI/QMP/guest-agent before signals with observable, ordered Events and documented timeouts.
-
-3) Host communication channel
-   - Implement broker↔guest handshake with freshness; expose age; keep status responsive and non-blocking.
-
-6) Networking and connectivity ergonomics
-   - Provide `ports --active` view fed by runtime inspection; ensure summarize() can label Active while keeping columns stable.
-
-10) Seamless Alpine Bootstrap
-   - Expand catalog with checksums/sizes and optional QEMU boot profile; sharpen diagnostics and events; clarify cache behavior.
-
-11) Library API stability for embedders
-   - DONE for gating. Docs-only follow-up: update AGENTS.md with a minimal embedding snippet and feature guidance; cross-link library_usage.md and MSRV.
-
-Cross-links
-- TODOs reference these threads and cite file/line anchors above.
+Narrative themes
+1) UX-first CLI contract → enforce explicit-config with skip-discovery; crisp help and failures.
+2) Robust VM lifecycle → cooperative shutdown phases with events and timeouts.
+3) Clear connectivity signals → broker handshake freshness, non-blocking status.
+6) Networking clarity → ports --active with stable columns and fast path.
+10) Trustworthy bootstrap → managed image verification + Alpine boot profile with clear diagnostics.
 
 Direction of travel
-- UX fidelity: finalize explicit-config enforcement for --skip-discovery; ship copy and tests.
-- Lifecycle robustness: introduce graceful shutdown phases with Events and logging.
-- Connectivity clarity: broker freshness/handshake and ports active-mode surface.
-- Catalog credibility: add checksums/sizes and optional QEMU boot profile to managed images; sharpen offline vs mismatch diagnostics and cache guidance.
-- Docs hygiene: maintain MSRV and release docs; add embedder guidance to AGENTS.md (docs-only).
+- Land skip-discovery contract; ship help/tests.
+- Implement graceful shutdown phases and events.
+- Add broker freshness and age to status.
+- Expose ports --active; wire runtime inspection hook.
+- Fill managed image checksums and Alpine boot profile; document cache/profile.
+
+Cross-links
+- Each TODO cites this snapshot (v0.7.2) and anchors for implementation context.

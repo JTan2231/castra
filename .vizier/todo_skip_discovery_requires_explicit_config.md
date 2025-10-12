@@ -27,3 +27,19 @@ Acceptance clarification
 
 ---
 
+Thread 1 — UX-first CLI contract. Snapshot v0.7.2 reference.
+
+Tension
+- `--skip-discovery` still triggers upward search when `--config` is omitted, violating user expectations for explicitness.
+
+Change (product-level)
+- When `--skip-discovery` is present without `--config`, commands that require a project config fail fast with a clear usage/config error and actionable guidance. No filesystem walking occurs.
+
+Acceptance criteria
+- `castra status --skip-discovery` (no --config) exits with usage/config error; message explains that `--config <path>` is required when discovery is skipped and provides an example.
+- Same behavior for `up`, `down`, `ports`, and `logs`.
+- With `--skip-discovery --config <path>`, no directory walking is performed (verified by a unit/integration test along the CLI/library path).
+- Help text for `--skip-discovery` and `--config` reflects the stricter semantics.
+
+Anchors
+- src/app/common.rs; src/core/options.rs; src/cli.rs (flag help/copy).

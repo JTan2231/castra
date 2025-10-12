@@ -29,3 +29,20 @@ Snapshot reference bumped to v0.7.1. Clarify that events should include "verifie
 
 ---
 
+Thread 10 — Seamless Alpine Bootstrap. Snapshot v0.7.2 reference.
+
+Tension
+- Managed image catalog lacks source checksums/sizes and an optional boot profile for alpine-minimal@v1, weakening verification and first-boot reliability.
+
+Change (product-level)
+- Provide source checksums and sizes for managed artifacts; log and event "verified source checksums" when provided.
+- Add optional boot profile (kernel/initrd/cmdline) for alpine-minimal@v1; emit event "applied boot profile" when used.
+- Diagnostics distinguish offline/unavailable from checksum mismatch; cache guidance clarified.
+
+Acceptance criteria
+- On fetch/use, logs include checksum verification success; mismatch produces a clear error that suggests cache purge/update.
+- When boot profile exists, first boot proceeds without manual overrides; event is emitted.
+- docs/library_usage.md or LIBRARY.md explains cache behavior and profile intent.
+
+Anchors
+- src/managed/mod.rs (catalog); src/core/logs.rs or reporter.rs (events/logs); docs (cache/profile notes).

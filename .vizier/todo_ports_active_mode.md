@@ -32,3 +32,20 @@ Acceptance addition
 
 ---
 
+Thread 6 — Networking and connectivity ergonomics. Snapshot v0.7.2 reference.
+
+Tension
+- Users cannot view runtime-active port bindings; summarize() never yields Active and CLI lacks a flag.
+
+Change (product-level)
+- Add `--active` mode to `ports` that inspects runtime to classify each declared mapping as Active/Inactive; keep columns identical to default view. STATUS cell varies only.
+- Degrade gracefully with an inline note if backend inspection is unavailable.
+
+Acceptance criteria
+- `castra ports` (default) shows Declared view identical to today.
+- `castra ports --active` shows same columns; STATUS values become Active/Inactive with a short reason if available.
+- End-to-end latency target <200ms for small projects; if exceeded or unsupported, a single note explains fallback without failing.
+- Help text documents scripting stability: columns stable across modes.
+
+Anchors
+- src/core/ports.rs (summarize); src/app/ports.rs or src/app/mod.rs (CLI flag/help); src/core/runtime.rs for inspection hook.
