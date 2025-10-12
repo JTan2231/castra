@@ -1,82 +1,42 @@
-SNAPSHOT v0.7 — Castra (VM orchestration harness)
+SNAPSHOT v0.7.1 — Castra (VM orchestration harness)
 
-Project promise
-- Orchestrate multiple virtual machines on a single host for agent workloads.
-- QEMU is the sole virtualization backend (initially).
-- The host acts as the primary communication channel for agents interacting with VMs.
-- UX is at a premium: fast, legible, low-friction CLI with sensible defaults and clear status.
+Edits since v0.7
+- Clarified discovery semantics gap: --skip-discovery currently disables only synthetic fallback and still walks upward when --config is omitted (src/app/common.rs:17 → src/core/options.rs:37). New TODO added to require explicit config when skipping discovery.
+- Reaffirmed lifecycle gap: shutdown remains TERM→wait→KILL; no ACPI/QMP/guest-agent phase (src/core/runtime.rs:638, :750). TODO acceptance tightened to emit explicit Events during staged shutdown.
+- Broker reachability: status BROKER hardcodes waiting when broker.pid exists; broker greets but no handshake/freshness tracking (src/core/status.rs:45; src/core/broker.rs:64). TODO updated to require real reachable state with a freshness window.
+- Ports active mode: enum includes Active, but summarize() never produces it; CLI lacks --active (src/core/ports.rs:15→30; src/cli.rs:112). TODO updated with acceptance for runtime inspection and script-friendly output.
+- Managed images: alpine-minimal@v1 lacks kernel/initrd profile and source checksums (src/managed/mod.rs:705, :720). TODO updated to require boot profile and checksums; runtime already honors profiles.
+- Versioning/distribution: --version surfaces Cargo-only; MSRV/release docs absent (src/cli.rs:10; docs/*). TODO acceptance refined for build.rs SHA embed and docs.
+- Library feature gating: lib compiles app unconditionally; breaks embedders when cli feature is off. New TODO added to gate app behind `cli` and update docs.
 
 Current code state (observable surfaces)
-- Rust CLI binary (clap).
-  - Subcommands: init, up, down, status, ports, logs; hidden broker.
-  - Global: --config PATH; discovery searches upward for castra.toml; --skip-discovery honored on up/down/status. Empty invocation prints help and exits 64. Help/version exit 0.
-  - Exit codes: usage 64; config/path 66; parse/invalid 65; IO/launch/shutdown/preflight 70–74 via CliError.exit_code.
-  - init: writes castra.toml and .castra/ workdir scaffold with next-steps copy.
-  - ports: loads config, prints warning summary, detects duplicate host ports and broker-port collision; prints declared forwards table with STATUS (declared | conflict | broker-reserved); --verbose prints per-VM details and workflow steps.
-  - logs: tails broker and per-VM qemu/serial files; prefixes [host-broker] | [vm:<name>:qemu] | [vm:<name>:serial]; respects --tail N and --follow with graceful gaps; color only on TTY.
-  - status: prints table (VM | STATE | CPU/MEM | UPTIME | BROKER | FORWARDS); colors on TTY only. STATE derived from pidfile/process checks; UPTIME from pidfile mtime. BROKER shows waiting when broker listening, offline otherwise; legend includes reachable for future handshake.
-  - up:
-    • Resolves config; if discovery fails (and not skipped), synthesizes a default in-memory project using a managed Alpine VM (no file is written).
-    • Preflight: host CPU/memory headroom (warn/fail thresholds), free-disk checks for state/logs/overlay dirs, host port conflict checks (including broker), qemu-system presence; --force bypass for fail conditions (warns).
-    • Ensures per-VM overlay (via qemu-img when available; otherwise prints manual command).
-    • Starts host broker (hidden broker subcommand) writing .castra/broker.pid and logs to .castra/logs/broker.log; idempotent if already running.
-    • Managed images: ImageManager ensures assets under .castra/images/<id>/<version>/; for alpine-minimal@v1 downloads a VHD and converts via qemu-img (vpc→qcow2) to rootfs.qcow2; emits progress/cache-hit lines; persists a manifest with final checksums.
-    • Launches each VM via qemu-system with user-mode NAT and hostfwd rules; writes .castra/<vm>.pid; logs QEMU stdout/stderr to .castra/logs/<vm>.log and serial to <vm>-serial.log.
-- Library API surface:
-  - castra::core::operations exposes programmatic entry points for init/up/down/status/ports/logs returning OperationOutput<T> with diagnostics and events. CLI is a thin adapter over these. Docs: docs/library_usage.md.
-- Configuration: TOML; required fields validated; unknown fields warned with path context; relative paths resolved against config dir. Default broker.port = 7070. Warning summary emitted once per command with next-steps hints. VM base image can be either a path or a managed image reference (managed_image = { name, version, disk }).
-- Managed images: static catalog in src/managed with alpine-minimal@v1; ImageManager handles fetch/resume, transform (qemu-img), manifest (JSON), and logging to .castra/logs/image-manager.log. QEMU profile hooks are present but Alpine v1 does not inject a kernel.
-- QEMU acceleration: detects supported accelerators via `qemu-system -accel help` and adds `-accel hvf` on macOS or `-accel kvm` on Linux when available; falls back cleanly; `-cpu host` when accel engaged. Boot overrides (kernel/initrd/append/machine) are supported when provided by a managed profile.
-- Broker: hidden subcommand; binds 127.0.0.1:<port>, writes broker.pid, logs with timestamped lines, greets connections; status shows listening vs offline.
+- CLI and library surfaces remain as in v0.7 snapshot; see prior section. Notable caveats: skip-discovery semantics lax; no broker reachability signal; no active ports view; shutdown is signal-only.
 
-Narrative state (active themes and tensions)
+Narrative state (themes/tensions) — updates
 1) UX-first CLI contract
-   - Promise: predictable commands, crisp copy, consistent exit codes.
-   - State: Help and copy aligned; exit policy consistent. Keep per-command help synced as features evolve. CLI long_about references todo_*.md files; keep TODOs current in repo root to match.
+   - Addendum: tighten --skip-discovery to require explicit config; update help/copy and exit behavior.
 
 2) QEMU backend and VM lifecycle
-   - Promise: reliable start/stop; guest-cooperative shutdown.
-   - State: Start/stop implemented with TERM→KILL; ACPI-first path not yet wired; no QMP.
+   - Unchanged in code; acceptance for graceful phase now explicit in TODO.
 
 3) Host communication channel
-   - Promise: broker reachable; surface guest reachability.
-   - State: Broker listener implemented with line-based greeting and logging; status shows listening vs offline; no guest handshake yet to mark reachable.
-
-4) Project configuration and discovery
-   - Promise: readable config with actionable diagnostics; sane defaults on first run.
-   - State: Parser validates with warnings; discovery and --config implemented. When discovery fails (and not skipped), castra synthesizes a default project targeting the managed Alpine image, enabling zero-config `up`.
-
-5) VM images and storage hygiene
-   - Promise: safe, predictable storage layout.
-   - State: Overlays created as needed; runtime and logs live under .castra (logs at .castra/logs, pidfiles at .castra/). Managed images cached under .castra/images/<image>/<version> with a manifest; image-manager logs to .castra/logs/image-manager.log. Potential split run/ vs logs/ remains open.
+   - Unchanged in code; TODO now mandates freshness-window-backed reachable.
 
 6) Networking and connectivity ergonomics
-   - Promise: predictable NAT + forwards; clarity on declared vs active.
-   - State: NAT + hostfwd on launch; ports lists declared forwards and flags conflicts and broker reservation; runtime inspection of active forwards not yet; STATUS column includes placeholders for future active state.
-
-7) Observability and status legibility
-   - Promise: legible status and logs with color-on-tty.
-   - State: Status and logs implemented per copy; BROKER shows waiting/offline; width calcs avoid ragged columns; truncation/long-name handling minimal but acceptable.
-
-8) Safety and resource limits
-   - Promise: avoid host overload, provide overrides with care.
-   - State: CPU/mem/disk/port preflight implemented with thresholds, friendly messages, and --force escape hatch. Signals inside castra not yet wired for graceful self-termination; relies on child process management.
+   - Unchanged in code; TODO now specifies --active behavior and output guarantees.
 
 9) Toolchain baseline and distribution
-   - Promise: surface git SHA; document MSRV and release path.
-   - State: --version uses Cargo semver only; git SHA/MSRV/releasing docs still TBD.
-
-10) Seamless Alpine Bootstrap
-   - Promise: zero-config `castra up` boots a managed Alpine VM; built-in catalog drives asset fetch/transform; clear progress; compatible with user-provided QCOWs.
-   - State: Phase 1–2 delivered. Catalog and ImageManager implemented with alpine-minimal@v1; default-project fallback in place; events printed during `up`; manifest recorded; cache hits verified via final checksums. Phase 3 (kernel/initrd injection/profile) is scaffolded but unused for Alpine v1. Checksums/sizes for source artifacts are not yet populated in the catalog; offline/error copy can be tightened.
+   - TODO refined to embed git SHA and document MSRV/release.
 
 11) Library API stability for embedders
-   - Promise: stable, typed operations for programmatic use with durable event/diagnostic contracts.
-   - State: operations/options/outcomes/events exported; initial docs added (docs/library_usage.md). API surface is new; stabilization and versioning policy not documented yet.
+   - New tension captured: feature-gate app to keep embedders lean; docs to reflect policy.
 
-Direction of travel
-- Complete Seamless Alpine Bootstrap: (3) wire QEMU profile injection for images that provide kernels; (4) enrich catalog entries with source checksums/sizes and improve offline/error paths and CLI copy. Maintain copy/exit-code discipline and keep warning/observability polish high.
-- Harden lifecycle: add ACPI/QMP-assisted graceful shutdown before TERM/KILL while preserving idempotence and timeouts.
-- Connectivity clarity: implement a broker↔guest handshake to mark VM BROKER state as reachable; consider a ports --active view to contrast declared vs active forwards.
-- Versioning/distribution: include git SHA in --version, document MSRV and release workflow.
-- Library API: document stability expectations and keep CLI a thin adapter over castra::core to prevent drift.
+Cross-links
+- Each TODO references the threads above and anchors to file/line evidence cited here.
+
+Direction of travel (unchanged with emphasis)
+- UX fidelity: enforce explicit-config requirement with --skip-discovery; preserve exit-code discipline and clear guidance.
+- Lifecycle: add cooperative shutdown via ACPI/QMP/guest-agent before signals with observable Events.
+- Connectivity clarity: implement broker↔guest handshake with freshness; add ports --active view fed by runtime inspection.
+- Distribution: embed git SHA; document MSRV and release steps.
+- Embedder experience: correct feature gating for app/cli split; keep CLI thin over core.
