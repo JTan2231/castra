@@ -422,6 +422,8 @@ mod tests {
             project_name: "test".to_string(),
             vms: vec![VmDefinition {
                 name: "devbox".to_string(),
+                role_name: "devbox".to_string(),
+                replica_index: 0,
                 description: None,
                 base_image: BaseImageSource::Path(PathBuf::from("base.qcow2")),
                 overlay: state_root.join("devbox-overlay.qcow2"),

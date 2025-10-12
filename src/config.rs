@@ -19,12 +19,21 @@ impl BaseImageSource {
     pub fn describe(&self) -> String {
         match self {
             BaseImageSource::Path(path) => path.display().to_string(),
-            BaseImageSource::Managed(reference) => format!(
-                "managed:{}@{} ({})",
-                reference.name,
-                reference.version,
-                reference.disk.describe()
-            ),
+            BaseImageSource::Managed(reference) => {
+                let mut descriptor = format!(
+                    "managed:{}@{} ({})",
+                    reference.name,
+                    reference.version,
+                    reference.disk.describe()
+                );
+                if let Some(checksum) = &reference.checksum {
+                    descriptor.push_str(&format!(", checksum={checksum}"));
+                }
+                if let Some(size) = reference.size_bytes {
+                    descriptor.push_str(&format!(", size={size}B"));
+                }
+                descriptor
+            }
         }
     }
 }
@@ -34,6 +43,8 @@ pub struct ManagedImageReference {
     pub name: String,
     pub version: String,
     pub disk: ManagedDiskKind,
+    pub checksum: Option<String>,
+    pub size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +121,8 @@ impl ProjectConfig {
 #[derive(Debug, Clone)]
 pub struct VmDefinition {
     pub name: String,
+    pub role_name: String,
+    pub replica_index: usize,
     pub description: Option<String>,
     pub base_image: BaseImageSource,
     pub overlay: PathBuf,
@@ -257,10 +270,27 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
                                 "cpus",
                                 "memory",
                                 "port_forwards",
+                                "count",
+                                "instances",
                             ],
                             &format!("[[vms]] #{idx}"),
                             &mut warnings,
                         );
+
+                        if let Some(managed_image) = vm_table.get("managed_image") {
+                            if let toml::Value::Table(managed_table) = managed_image {
+                                warn_table(
+                                    managed_table,
+                                    &["name", "version", "disk", "checksum", "size_bytes"],
+                                    &format!("[[vms]] #{idx}.managed_image"),
+                                    &mut warnings,
+                                );
+                            } else {
+                                warnings.push(format!(
+                                    "`managed_image` on [[vms]] entry #{idx} must be a table."
+                                ));
+                            }
+                        }
 
                         if let Some(port_forwards) = vm_table.get("port_forwards") {
                             if let toml::Value::Array(tables) = port_forwards {
@@ -282,6 +312,91 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
                                 warnings.push(
                                     "`port_forwards` must be an array of tables.".to_string(),
                                 );
+                            }
+                        }
+
+                        if let Some(instances) = vm_table.get("instances") {
+                            if let toml::Value::Array(instance_entries) = instances {
+                                for (inst_idx, instance) in instance_entries.iter().enumerate() {
+                                    if let toml::Value::Table(instance_table) = instance {
+                                        warn_table(
+                                            instance_table,
+                                            &[
+                                                "id",
+                                                "description",
+                                                "base_image",
+                                                "managed_image",
+                                                "overlay",
+                                                "cpus",
+                                                "memory",
+                                                "port_forwards",
+                                            ],
+                                            &format!("[[vms.instances]] #{inst_idx}"),
+                                            &mut warnings,
+                                        );
+
+                                        if let Some(managed_image) =
+                                            instance_table.get("managed_image")
+                                        {
+                                            if let toml::Value::Table(managed_table) = managed_image
+                                            {
+                                                warn_table(
+                                                    managed_table,
+                                                    &[
+                                                        "name",
+                                                        "version",
+                                                        "disk",
+                                                        "checksum",
+                                                        "size_bytes",
+                                                    ],
+                                                    &format!(
+                                                        "[[vms.instances]] #{inst_idx}.managed_image"
+                                                    ),
+                                                    &mut warnings,
+                                                );
+                                            } else {
+                                                warnings.push(format!(
+                                                    "`managed_image` on [[vms.instances]] entry #{inst_idx} must be a table."
+                                                ));
+                                            }
+                                        }
+
+                                        if let Some(port_forwards) =
+                                            instance_table.get("port_forwards")
+                                        {
+                                            if let toml::Value::Array(tables) = port_forwards {
+                                                for (pf_idx, pf) in tables.iter().enumerate() {
+                                                    if let toml::Value::Table(pf_table) = pf {
+                                                        warn_table(
+                                                            pf_table,
+                                                            &["host", "guest", "protocol"],
+                                                            &format!(
+                                                                "[[vms.instances.port_forwards]] #{pf_idx}"
+                                                            ),
+                                                            &mut warnings,
+                                                        );
+                                                    } else {
+                                                        warnings.push(format!(
+                                                            "[[vms.instances.port_forwards]] entry #{pf_idx} must be a table."
+                                                        ));
+                                                    }
+                                                }
+                                            } else {
+                                                warnings.push(
+                                                    "`port_forwards` under [[vms.instances]] must be an array of tables."
+                                                        .to_string(),
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        warnings.push(format!(
+                                            "[[vms.instances]] entry #{inst_idx} must be a table."
+                                        ));
+                                    }
+                                }
+                            } else {
+                                warnings
+                                    .push("`instances` must be an array of tables.".to_string());
                             }
                         }
                     } else {
@@ -328,6 +443,287 @@ fn warn_table(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum SchemaKind {
+    Legacy,
+    MultiInstance,
+}
+
+impl SchemaKind {
+    fn supports_multi_instance(self) -> bool {
+        matches!(self, SchemaKind::MultiInstance)
+    }
+}
+
+fn classify_schema_version(raw: &str) -> Result<(SchemaKind, bool), String> {
+    let (major, minor, _patch) = parse_version_components(raw).ok_or_else(|| {
+        format!(
+            "Configuration version `{raw}` is not a valid semantic version (expected formats like \"0.2.0\")."
+        )
+    })?;
+
+    match (major, minor) {
+        (0, 1) => Ok((SchemaKind::Legacy, false)),
+        (0, 2) => Ok((SchemaKind::MultiInstance, false)),
+        (0, m) if m > 2 => Ok((SchemaKind::MultiInstance, true)),
+        (m, _) if m > 0 => Ok((SchemaKind::MultiInstance, true)),
+        _ => Err(format!(
+            "Configuration version `{raw}` is not supported; use at least \"0.1.0\"."
+        )),
+    }
+}
+
+fn parse_version_components(raw: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = raw.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+fn parse_image_source(
+    path: &Path,
+    context: &str,
+    config_root: &Path,
+    base_image: Option<PathBuf>,
+    managed_image: Option<RawManagedImage>,
+) -> Result<BaseImageSource, Error> {
+    match (base_image, managed_image) {
+        (Some(path_buf), None) => Ok(BaseImageSource::Path(resolve_path(config_root, path_buf))),
+        (None, Some(managed)) => Ok(BaseImageSource::Managed(build_managed_reference(
+            path, context, managed,
+        )?)),
+        (Some(_), Some(_)) => Err(invalid_config(
+            path,
+            format!(
+                "{context} declares both `base_image` and `managed_image`. Choose a single source."
+            ),
+        )),
+        (None, None) => Err(invalid_config(
+            path,
+            format!("{context} must declare either `base_image` or `managed_image`."),
+        )),
+    }
+}
+
+fn build_managed_reference(
+    path: &Path,
+    context: &str,
+    managed: RawManagedImage,
+) -> Result<ManagedImageReference, Error> {
+    let name = managed.name.ok_or_else(|| {
+        invalid_config(
+            path,
+            format!("{context} declares `managed_image` but is missing required field `name`."),
+        )
+    })?;
+    let version = managed.version.ok_or_else(|| {
+        invalid_config(
+            path,
+            format!("{context} declares `managed_image` but is missing required field `version`."),
+        )
+    })?;
+    let disk = ManagedDiskKind::parse(managed.disk).map_err(|message| {
+        invalid_config(
+            path,
+            format!("{context} declares `managed_image` with invalid `disk`: {message}"),
+        )
+    })?;
+
+    let checksum = managed
+        .checksum
+        .map(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Err(invalid_config(
+                    path,
+                    format!("{context} declares `managed_image.checksum` but the value is empty."),
+                ));
+            }
+            if !trimmed.contains(':') {
+                return Err(invalid_config(
+                    path,
+                    format!(
+                        "{context} declares `managed_image.checksum` without an algorithm prefix (expected `sha256:<digest>`)."
+                    ),
+                ));
+            }
+            Ok(trimmed.to_string())
+        })
+        .transpose()?;
+
+    let size_bytes = managed
+        .size_bytes
+        .map(|value| {
+            if value == 0 {
+                return Err(invalid_config(
+                    path,
+                    format!(
+                        "{context} declares `managed_image.size_bytes = 0`; specify a positive size."
+                    ),
+                ));
+            }
+            Ok(value)
+        })
+        .transpose()?;
+
+    Ok(ManagedImageReference {
+        name,
+        version,
+        disk,
+        checksum,
+        size_bytes,
+    })
+}
+
+fn parse_port_forwards_list(
+    path: &Path,
+    scope: &str,
+    raw_forwards: &[RawPortForward],
+    warnings: &mut Vec<String>,
+) -> Result<Vec<PortForward>, Error> {
+    let mut forwards = Vec::with_capacity(raw_forwards.len());
+    for forward in raw_forwards {
+        let host = forward.host.ok_or_else(|| {
+            invalid_config(
+                path,
+                format!(
+                    "Port forward on {scope} is missing required `host` port. Example: `host = 2222`."
+                ),
+            )
+        })?;
+        if host == 0 {
+            return Err(invalid_config(
+                path,
+                format!("Port forward on {scope} must use a host port between 1 and 65535."),
+            ));
+        }
+
+        let guest = forward.guest.ok_or_else(|| {
+            invalid_config(
+                path,
+                format!(
+                    "Port forward on {scope} is missing required `guest` port. Example: `guest = 22`."
+                ),
+            )
+        })?;
+        if guest == 0 {
+            return Err(invalid_config(
+                path,
+                format!("Port forward on {scope} must use a guest port between 1 and 65535."),
+            ));
+        }
+
+        let protocol_raw = forward.protocol.clone();
+        let protocol = protocol_raw
+            .as_deref()
+            .map(PortProtocol::from_str)
+            .unwrap_or(Some(PortProtocol::Tcp))
+            .ok_or_else(|| {
+                invalid_config(
+                    path,
+                    format!(
+                        "Port forward on {scope} has unsupported protocol `{}`. Supported values: `tcp`, `udp`.",
+                        protocol_raw.unwrap()
+                    ),
+                )
+            })?;
+
+        forwards.push(PortForward {
+            host,
+            guest,
+            protocol,
+        });
+    }
+
+    let mut guest_port_usage: HashMap<(u16, PortProtocol), usize> = HashMap::new();
+    for forward in &forwards {
+        let counter = guest_port_usage
+            .entry((forward.guest, forward.protocol))
+            .or_default();
+        *counter += 1;
+    }
+    for ((guest_port, protocol), count) in guest_port_usage {
+        if count > 1 {
+            warnings.push(format!(
+                "{scope} declares {count} forwards for guest port {guest_port}/{protocol}; consider consolidating."
+            ));
+        }
+    }
+
+    Ok(forwards)
+}
+
+fn parse_replica_index(role_name: &str, id: &str) -> Result<usize, String> {
+    let prefix = format!("{role_name}-");
+    if !id.starts_with(&prefix) {
+        return Err(format!(
+            "Replica override id `{id}` must match `<{role_name}>-<index>`."
+        ));
+    }
+
+    let suffix = &id[prefix.len()..];
+    if suffix.is_empty() {
+        return Err(format!(
+            "Replica override id `{id}` is missing the numeric `<index>` portion."
+        ));
+    }
+
+    let index: usize = suffix
+        .parse()
+        .map_err(|_| format!("Replica override id `{id}` contains a non-numeric index."))?;
+
+    let canonical = format!("{role_name}-{index}");
+    if canonical != id {
+        return Err(format!(
+            "Replica override id `{id}` must not include leading zeros; expected `{canonical}`."
+        ));
+    }
+
+    Ok(index)
+}
+
+fn derive_overlay_for_instance(
+    base: &Path,
+    index: usize,
+    total: usize,
+    multi_enabled: bool,
+) -> PathBuf {
+    if !multi_enabled || total <= 1 || index == 0 {
+        return base.to_path_buf();
+    }
+
+    if let Some(file_name) = base.file_name() {
+        if let Some(name) = file_name.to_str() {
+            let (stem, ext) = split_file_name(name);
+            let new_file = if let Some(ext) = ext {
+                format!("{stem}-{index}.{ext}")
+            } else {
+                format!("{stem}-{index}")
+            };
+            return base.with_file_name(new_file);
+        }
+
+        let mut os_name = file_name.to_os_string();
+        os_name.push(format!("-{index}"));
+        return base.with_file_name(PathBuf::from(os_name));
+    }
+
+    base.join(format!("{index}"))
+}
+
+fn split_file_name(name: &str) -> (&str, Option<&str>) {
+    if let Some((stem, ext)) = name.rsplit_once('.') {
+        if !stem.is_empty() {
+            return (stem, Some(ext));
+        }
+    }
+    (name, None)
+}
+
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     version: Option<String>,
@@ -362,6 +758,10 @@ struct RawVm {
     memory: Option<String>,
     #[serde(default, rename = "port_forwards")]
     port_forwards: Vec<RawPortForward>,
+    #[serde(default)]
+    count: Option<u32>,
+    #[serde(default)]
+    instances: Vec<RawVmInstance>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -373,11 +773,51 @@ struct RawPortForward {
 }
 
 #[derive(Debug, Deserialize)]
+struct RawVmInstance {
+    id: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    base_image: Option<PathBuf>,
+    #[serde(default)]
+    managed_image: Option<RawManagedImage>,
+    #[serde(default)]
+    overlay: Option<PathBuf>,
+    #[serde(default)]
+    cpus: Option<u32>,
+    #[serde(default)]
+    memory: Option<String>,
+    #[serde(default, rename = "port_forwards")]
+    port_forwards: Option<Vec<RawPortForward>>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RawManagedImage {
     name: Option<String>,
     version: Option<String>,
     #[serde(default)]
     disk: Option<String>,
+    #[serde(default)]
+    checksum: Option<String>,
+    #[serde(default)]
+    size_bytes: Option<u64>,
+}
+
+#[derive(Debug)]
+struct InstanceOverride {
+    id: String,
+    data: InstanceOverrideData,
+}
+
+#[derive(Debug)]
+struct InstanceOverrideData {
+    description: Option<String>,
+    base_image: Option<PathBuf>,
+    managed_image: Option<RawManagedImage>,
+    overlay: Option<PathBuf>,
+    cpus: Option<u32>,
+    memory: Option<String>,
+    port_forwards: Option<Vec<RawPortForward>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -397,20 +837,30 @@ impl RawConfig {
         path: &Path,
         warnings: &mut Vec<String>,
     ) -> Result<ProjectConfig, Error> {
-        let version = self.version.ok_or_else(|| {
+        let RawConfig {
+            version,
+            project,
+            vms,
+            workflows,
+            broker,
+        } = self;
+
+        let version = version.ok_or_else(|| {
             invalid_config(
                 path,
                 "Missing required top-level field `version`. Example: `version = \"0.1.0\"`.",
             )
         })?;
 
-        if version != "0.1.0" {
+        let (schema, warn_future) =
+            classify_schema_version(&version).map_err(|message| invalid_config(path, message))?;
+        if warn_future {
             warnings.push(format!(
                 "Configuration version `{version}` is not fully supported yet; proceeding anyway."
             ));
         }
 
-        let project = self.project.ok_or_else(|| {
+        let project = project.ok_or_else(|| {
             invalid_config(
                 path,
                 "Missing required table `[project]`. Example:\n\
@@ -439,7 +889,7 @@ impl RawConfig {
             .map(|dir| resolve_path(&project_root, dir))
             .unwrap_or_else(|| default_state_root(&project_name, path));
 
-        if self.vms.is_empty() {
+        if vms.is_empty() {
             return Err(invalid_config(
                 path,
                 "At least one `[[vms]]` entry is required. Example:\n\
@@ -452,206 +902,320 @@ impl RawConfig {
         }
 
         let root_dir = project_root.clone();
+        let supports_multi = schema.supports_multi_instance();
 
-        let mut seen_vm_names = HashSet::new();
-        let mut vms = Vec::with_capacity(self.vms.len());
+        let mut seen_roles = HashSet::new();
+        let mut seen_instances = HashSet::new();
+        let mut expanded_vms = Vec::new();
 
-        for vm in self.vms {
-            let name = vm.name.ok_or_else(|| {
+        for vm in vms {
+            let RawVm {
+                name,
+                description,
+                base_image,
+                managed_image,
+                overlay,
+                cpus,
+                memory,
+                port_forwards,
+                count,
+                instances,
+            } = vm;
+
+            let role_name = name.ok_or_else(|| {
                 invalid_config(
                     path,
                     "Each `[[vms]]` entry must define `name`. Example: `name = \"devbox\"`.",
                 )
             })?;
 
-            if !seen_vm_names.insert(name.clone()) {
+            if !seen_roles.insert(role_name.clone()) {
                 return Err(invalid_config(
                     path,
                     format!(
-                        "Duplicate VM name `{name}` detected. Each VM must have a unique `name`."
+                        "Duplicate VM role `{role_name}` detected. Each role must have a unique `name`."
                     ),
                 ));
             }
 
-            let base_image = match (vm.base_image, vm.managed_image) {
-                (Some(path), None) => BaseImageSource::Path(resolve_path(&root_dir, path)),
-                (None, Some(managed)) => {
-                    let name = managed.name.ok_or_else(|| {
-                        invalid_config(
-                            path,
-                            format!(
-                                "VM `{name}` declares `managed_image` but is missing required field `name`."
-                            ),
-                        )
-                    })?;
-                    let version = managed.version.ok_or_else(|| {
-                        invalid_config(
-                            path,
-                            format!(
-                                "VM `{name}` declares `managed_image` but is missing required field `version`."
-                            ),
-                        )
-                    })?;
-                    let disk = ManagedDiskKind::parse(managed.disk).map_err(|message| {
-                        invalid_config(
-                            path,
-                            format!(
-                                "VM `{name}` declares `managed_image` with invalid `disk`: {message}"
-                            ),
-                        )
-                    })?;
-                    BaseImageSource::Managed(ManagedImageReference {
-                        name,
-                        version,
-                        disk,
-                    })
-                }
-                (Some(_), Some(_)) => {
-                    return Err(invalid_config(
-                        path,
-                        format!(
-                            "VM `{name}` declares both `base_image` and `managed_image`. Choose one operand."
-                        ),
-                    ));
-                }
-                (None, None) => {
-                    return Err(invalid_config(
-                        path,
-                        format!("VM `{name}` must declare either `base_image` or `managed_image`."),
-                    ));
-                }
-            };
+            if !supports_multi && (count.is_some() || !instances.is_empty()) {
+                return Err(invalid_config(
+                    path,
+                    format!(
+                        "VM `{role_name}` uses replica fields but config version `{version}` only supports single-instance roles. \
+                         Remove `count`/`[[vms.instances]]` or set `version = \"0.2.0\"`."
+                    ),
+                ));
+            }
 
-            let overlay = vm.overlay.ok_or_else(|| {
+            let count_value = count.unwrap_or(1);
+            if count_value == 0 {
+                return Err(invalid_config(
+                    path,
+                    format!("VM `{role_name}` declares `count = 0`. Specify at least one replica."),
+                ));
+            }
+            if !supports_multi && count_value != 1 {
+                return Err(invalid_config(
+                    path,
+                    format!(
+                        "VM `{role_name}` declares `count = {count_value}` but config version `{version}` only supports single-instance roles."
+                    ),
+                ));
+            }
+            let count_usize = count_value as usize;
+
+            let base_image = parse_image_source(
+                path,
+                &format!("VM `{role_name}`"),
+                &root_dir,
+                base_image,
+                managed_image,
+            )?;
+
+            let overlay = overlay.ok_or_else(|| {
                 invalid_config(
                     path,
                     format!(
-                        "VM `{name}` is missing required field `overlay`. Example: `overlay = \".castra/{name}-overlay.qcow2\"`."
+                        "VM `{role_name}` is missing required field `overlay`. Example: `overlay = \".castra/{role_name}-overlay.qcow2\"`."
                     ),
                 )
             })?;
-            let overlay = resolve_overlay_path(&root_dir, &state_root, overlay);
+            let base_overlay = resolve_overlay_path(&root_dir, &state_root, overlay);
 
-            let cpus = vm.cpus.unwrap_or(2);
-            if cpus == 0 {
+            let base_cpus = cpus.unwrap_or(2);
+            if base_cpus == 0 {
                 return Err(invalid_config(
                     path,
-                    format!("VM `{name}` must request at least one CPU. Example: `cpus = 2`."),
+                    format!("VM `{role_name}` must request at least one CPU. Example: `cpus = 2`."),
                 ));
             }
 
-            let memory = vm.memory.unwrap_or_else(|| "2048 MiB".to_string());
-            let memory_spec = parse_memory(&memory).map_err(|msg| {
+            let memory_string = memory.unwrap_or_else(|| "2048 MiB".to_string());
+            let base_memory = parse_memory(&memory_string).map_err(|msg| {
                 invalid_config(
                     path,
                     format!(
-                        "VM `{name}` has invalid memory specification `{memory}`: {msg}. \
+                        "VM `{role_name}` has invalid memory specification `{memory_string}`: {msg}. \
                          Example values: `2048 MiB`, `2 GiB`."
                     ),
                 )
             })?;
 
-            let mut forwards = Vec::with_capacity(vm.port_forwards.len());
-            for forward in vm.port_forwards {
-                let host = forward.host.ok_or_else(|| {
-                    invalid_config(
-                        path,
-                        format!(
-                            "Port forward on VM `{name}` is missing required `host` port. Example: `host = 2222`."
-                        ),
-                    )
-                })?;
-                if host == 0 {
-                    return Err(invalid_config(
-                        path,
-                        format!(
-                            "Port forward on VM `{name}` must use a host port between 1 and 65535."
-                        ),
-                    ));
-                }
+            let base_description = description;
 
-                let guest = forward.guest.ok_or_else(|| {
-                    invalid_config(
-                        path,
-                        format!(
-                            "Port forward on VM `{name}` is missing required `guest` port. Example: `guest = 22`."
-                        ),
-                    )
-                })?;
-                if guest == 0 {
-                    return Err(invalid_config(
-                        path,
-                        format!(
-                            "Port forward on VM `{name}` must use a guest port between 1 and 65535."
-                        ),
-                    ));
-                }
+            let base_forwards = parse_port_forwards_list(
+                path,
+                &format!("VM `{role_name}`"),
+                &port_forwards,
+                warnings,
+            )?;
 
-                let protocol = forward
-                    .protocol
-                    .as_deref()
-                    .map(PortProtocol::from_str)
-                    .unwrap_or(Some(PortProtocol::Tcp))
-                    .ok_or_else(|| {
+            let mut overrides = HashMap::new();
+            if supports_multi {
+                for raw_override in instances {
+                    let RawVmInstance {
+                        id,
+                        description,
+                        base_image,
+                        managed_image,
+                        overlay,
+                        cpus,
+                        memory,
+                        port_forwards,
+                    } = raw_override;
+
+                    let id = id.ok_or_else(|| {
                         invalid_config(
                             path,
                             format!(
-                                "Port forward on VM `{name}` has unsupported protocol `{}`. Supported values: `tcp`, `udp`.",
-                                forward.protocol.unwrap()
+                                "Replica override under VM `{role_name}` is missing `id`. Expected `id = \"{role_name}-0\"`, etc."
                             ),
                         )
                     })?;
 
-                forwards.push(PortForward {
-                    host,
-                    guest,
-                    protocol,
-                });
-            }
+                    let index = parse_replica_index(&role_name, &id)
+                        .map_err(|msg| invalid_config(path, msg))?;
 
-            // Check duplicate guest ports per VM to help debugging.
-            let mut guest_port_usage: HashMap<(u16, PortProtocol), usize> = HashMap::new();
-            for forward in &forwards {
-                let counter = guest_port_usage
-                    .entry((forward.guest, forward.protocol))
-                    .or_default();
-                *counter += 1;
-            }
-            for ((guest_port, protocol), count) in guest_port_usage {
-                if count > 1 {
-                    warnings.push(format!(
-                        "VM `{name}` declares {count} forwards for guest port {guest_port}/{protocol}; consider consolidating."
-                    ));
+                    if index >= count_usize {
+                        return Err(invalid_config(
+                            path,
+                            format!(
+                                "Replica override `{id}` exceeds declared `count = {count_value}` for VM `{role_name}`."
+                            ),
+                        ));
+                    }
+
+                    if overrides
+                        .insert(
+                            index,
+                            InstanceOverride {
+                                id,
+                                data: InstanceOverrideData {
+                                    description,
+                                    base_image,
+                                    managed_image,
+                                    overlay,
+                                    cpus,
+                                    memory,
+                                    port_forwards,
+                                },
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err(invalid_config(
+                            path,
+                            format!(
+                                "Replica override `{role_name}-{index}` declared multiple times. Each replica can only appear once."
+                            ),
+                        ));
+                    }
                 }
             }
 
-            vms.push(VmDefinition {
-                name,
-                description: vm.description,
-                base_image,
-                overlay,
-                cpus,
-                memory: memory_spec,
-                port_forwards: forwards,
-            });
+            for idx in 0..count_usize {
+                let instance_name = if supports_multi {
+                    format!("{role_name}-{idx}")
+                } else {
+                    role_name.clone()
+                };
+
+                if !seen_instances.insert(instance_name.clone()) {
+                    return Err(invalid_config(
+                        path,
+                        format!("Duplicate VM name `{instance_name}` detected after expansion."),
+                    ));
+                }
+
+                let (description, image_source, cpus, memory_spec, overlay_path, forwards) =
+                    if let Some(InstanceOverride { id, data }) = overrides.remove(&idx) {
+                        let InstanceOverrideData {
+                            description,
+                            base_image: override_base_image,
+                            managed_image: override_managed_image,
+                            overlay: override_overlay,
+                            cpus: override_cpus,
+                            memory: override_memory,
+                            port_forwards: override_forwards,
+                        } = data;
+
+                        let image_source = match (override_base_image, override_managed_image) {
+                            (None, None) => base_image.clone(),
+                            (base_image, managed_image) => parse_image_source(
+                                path,
+                                &format!("Replica `{id}`"),
+                                &root_dir,
+                                base_image,
+                                managed_image,
+                            )?,
+                        };
+
+                        let overlay_path = override_overlay
+                            .map(|overlay| resolve_overlay_path(&root_dir, &state_root, overlay))
+                            .unwrap_or_else(|| {
+                                derive_overlay_for_instance(
+                                    &base_overlay,
+                                    idx,
+                                    count_usize,
+                                    supports_multi,
+                                )
+                            });
+
+                        let cpus = override_cpus.unwrap_or(base_cpus);
+                        if cpus == 0 {
+                            return Err(invalid_config(
+                                path,
+                                format!("Replica `{id}` must request at least one CPU."),
+                            ));
+                        }
+
+                        let memory_spec = match override_memory {
+                            Some(value) => parse_memory(&value).map_err(|msg| {
+                                invalid_config(
+                                    path,
+                                    format!(
+                                        "Replica `{id}` has invalid memory specification `{value}`: {msg}. \
+                                         Example values: `2048 MiB`, `2 GiB`."
+                                    ),
+                                )
+                            })?,
+                            None => base_memory.clone(),
+                        };
+
+                        let description = description.or_else(|| base_description.clone());
+
+                        let forwards = match override_forwards {
+                            Some(raw) => parse_port_forwards_list(
+                                path,
+                                &format!("Replica `{id}`"),
+                                &raw,
+                                warnings,
+                            )?,
+                            None => base_forwards.clone(),
+                        };
+
+                        (
+                            description,
+                            image_source,
+                            cpus,
+                            memory_spec,
+                            overlay_path,
+                            forwards,
+                        )
+                    } else {
+                        (
+                            base_description.clone(),
+                            base_image.clone(),
+                            base_cpus,
+                            base_memory.clone(),
+                            derive_overlay_for_instance(
+                                &base_overlay,
+                                idx,
+                                count_usize,
+                                supports_multi,
+                            ),
+                            base_forwards.clone(),
+                        )
+                    };
+
+                expanded_vms.push(VmDefinition {
+                    name: instance_name,
+                    role_name: role_name.clone(),
+                    replica_index: idx,
+                    description,
+                    base_image: image_source,
+                    overlay: overlay_path,
+                    cpus,
+                    memory: memory_spec,
+                    port_forwards: forwards,
+                });
+            }
+
+            if let Some(extra) = overrides.into_values().next() {
+                return Err(invalid_config(
+                    path,
+                    format!(
+                        "Replica override `{}` was not applied. Verify the ID matches `<{role_name}>-<index>` within the declared count.",
+                        extra.id
+                    ),
+                ));
+            }
         }
 
         let workflows = Workflows {
-            init: self.workflows.init,
+            init: workflows.init,
         };
 
         let broker = BrokerConfig {
-            port: self
-                .broker
-                .and_then(|b| b.port)
-                .unwrap_or(DEFAULT_BROKER_PORT),
+            port: broker.and_then(|b| b.port).unwrap_or(DEFAULT_BROKER_PORT),
         };
 
         Ok(ProjectConfig {
             file_path: path.to_path_buf(),
             version,
             project_name,
-            vms,
+            vms: expanded_vms,
             state_root,
             workflows,
             broker,
@@ -818,6 +1382,20 @@ state_dir = ".castra"
         )
     }
 
+    fn minimal_config_v02(contents: &str) -> String {
+        format!(
+            r#"
+version = "0.2.0"
+
+[project]
+name = "demo"
+state_dir = ".castra/state"
+
+{contents}
+"#
+        )
+    }
+
     #[test]
     fn load_config_with_local_base_image() {
         let dir = tempdir().unwrap();
@@ -839,6 +1417,9 @@ memory = "2048 MiB"
         assert_eq!(config.project_name, "demo");
         assert_eq!(config.vms.len(), 1);
         let vm = &config.vms[0];
+        assert_eq!(vm.name, "devbox");
+        assert_eq!(vm.role_name, "devbox");
+        assert_eq!(vm.replica_index, 0);
         match &vm.base_image {
             BaseImageSource::Path(path) => {
                 assert_eq!(
@@ -888,15 +1469,350 @@ memory = "512 MiB"
 
         let config = load_project_config(&path).expect("load managed config");
         let vm = &config.vms[0];
+        assert_eq!(vm.name, "alpine");
+        assert_eq!(vm.role_name, "alpine");
+        assert_eq!(vm.replica_index, 0);
         match &vm.base_image {
             BaseImageSource::Managed(reference) => {
                 assert_eq!(reference.name, "alpine-minimal");
                 assert_eq!(reference.version, "v1");
                 assert!(matches!(reference.disk, ManagedDiskKind::RootDisk));
+                assert!(reference.checksum.is_none());
+                assert!(reference.size_bytes.is_none());
             }
             _ => panic!("expected managed image source"),
         }
         assert_eq!(vm.memory.bytes(), Some(512 * 1024 * 1024));
+    }
+
+    #[test]
+    fn load_config_expands_multi_instance_role() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config_v02(
+                r#"
+[[vms]]
+name = "api"
+base_image = "images/api-base.qcow2"
+overlay = ".castra/api/overlay.qcow2"
+cpus = 2
+memory = "2048 MiB"
+count = 3
+
+  [[vms.port_forwards]]
+  host = 8080
+  guest = 8080
+"#,
+            ),
+        );
+
+        let config = load_project_config(&path).expect("load multi-instance config");
+        assert_eq!(config.vms.len(), 3);
+        let expected = ["api-0", "api-1", "api-2"];
+        let state_root = dir.path().join(".castra/state");
+        assert_eq!(config.state_root, state_root);
+
+        for (idx, vm) in config.vms.iter().enumerate() {
+            assert_eq!(vm.name, expected[idx]);
+            assert_eq!(vm.role_name, "api");
+            assert_eq!(vm.replica_index, idx);
+            match &vm.base_image {
+                BaseImageSource::Path(path) => {
+                    assert_eq!(path, &dir.path().join("images/api-base.qcow2"));
+                }
+                other => panic!("unexpected image source: {other:?}"),
+            }
+            let expected_overlay = match idx {
+                0 => state_root.join("api/overlay.qcow2"),
+                1 => state_root.join("api/overlay-1.qcow2"),
+                2 => state_root.join("api/overlay-2.qcow2"),
+                _ => unreachable!(),
+            };
+            assert_eq!(vm.overlay, expected_overlay);
+            assert_eq!(vm.cpus, 2);
+            assert_eq!(vm.port_forwards.len(), 1);
+            assert_eq!(vm.port_forwards[0].host, 8080);
+        }
+    }
+
+    #[test]
+    fn load_config_applies_instance_overrides() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config_v02(
+                r#"
+[[vms]]
+name = "api"
+managed_image = { name = "alpine-minimal", version = "v1", disk = "root", checksum = "sha256:abcd", size_bytes = 1024 }
+overlay = ".castra/api/overlay.qcow2"
+cpus = 2
+memory = "2048 MiB"
+count = 2
+
+  [[vms.port_forwards]]
+  host = 8080
+  guest = 8080
+
+  [[vms.instances]]
+  id = "api-1"
+  cpus = 4
+  memory = "4096 MiB"
+  overlay = ".castra/api/custom-1.qcow2"
+
+    [[vms.instances.port_forwards]]
+    host = 9000
+    guest = 9000
+    protocol = "tcp"
+"#,
+            ),
+        );
+
+        let config = load_project_config(&path).expect("load overrides config");
+        assert_eq!(config.vms.len(), 2);
+        let state_root = dir.path().join(".castra/state");
+
+        let primary = &config.vms[0];
+        assert_eq!(primary.name, "api-0");
+        assert_eq!(primary.overlay, state_root.join("api/overlay.qcow2"));
+        assert_eq!(primary.cpus, 2);
+        assert_eq!(primary.memory.original(), "2048 MiB");
+        assert_eq!(primary.port_forwards.len(), 1);
+        assert_eq!(primary.port_forwards[0].host, 8080);
+
+        let replica = &config.vms[1];
+        assert_eq!(replica.name, "api-1");
+        assert_eq!(replica.cpus, 4);
+        assert_eq!(replica.memory.original(), "4096 MiB");
+        assert_eq!(replica.overlay, state_root.join("api/custom-1.qcow2"));
+        assert_eq!(replica.port_forwards.len(), 1);
+        assert_eq!(replica.port_forwards[0].host, 9000);
+
+        match &replica.base_image {
+            BaseImageSource::Managed(reference) => {
+                assert_eq!(reference.name, "alpine-minimal");
+                assert_eq!(reference.version, "v1");
+                assert_eq!(reference.checksum.as_deref(), Some("sha256:abcd"));
+                assert_eq!(reference.size_bytes, Some(1024));
+            }
+            other => panic!("unexpected image source: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_config_rejects_override_with_mismatched_id() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config_v02(
+                r#"
+[[vms]]
+name = "api"
+base_image = "images/api-base.qcow2"
+overlay = ".castra/api/overlay.qcow2"
+cpus = 2
+memory = "2048 MiB"
+count = 1
+
+  [[vms.instances]]
+  id = "api-01"
+  cpus = 4
+"#,
+            ),
+        );
+
+        let err = load_project_config(&path).expect_err("override id must match pattern");
+        match err {
+            Error::InvalidConfig { message, .. } => {
+                assert!(
+                    message.contains("leading zeros"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_config_rejects_override_out_of_range() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config_v02(
+                r#"
+[[vms]]
+name = "api"
+base_image = "images/api-base.qcow2"
+overlay = ".castra/api/overlay.qcow2"
+cpus = 2
+memory = "2048 MiB"
+count = 1
+
+  [[vms.instances]]
+  id = "api-1"
+  cpus = 4
+"#,
+            ),
+        );
+
+        let err = load_project_config(&path).expect_err("index must be in range");
+        match err {
+            Error::InvalidConfig { message, .. } => {
+                assert!(
+                    message.contains("exceeds declared `count"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_config_rejects_count_zero() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config_v02(
+                r#"
+[[vms]]
+name = "api"
+base_image = "images/api-base.qcow2"
+overlay = ".castra/api/overlay.qcow2"
+cpus = 2
+memory = "2048 MiB"
+count = 0
+"#,
+            ),
+        );
+
+        let err = load_project_config(&path).expect_err("count must be positive");
+        match err {
+            Error::InvalidConfig { message, .. } => {
+                assert!(
+                    message.contains("count = 0"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_config_rejects_replicas_on_legacy_schema() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config(
+                r#"
+[[vms]]
+name = "api"
+base_image = "images/api-base.qcow2"
+overlay = ".castra/api/overlay.qcow2"
+cpus = 2
+memory = "2048 MiB"
+count = 2
+"#,
+            ),
+        );
+
+        let err = load_project_config(&path).expect_err("legacy schema should reject count");
+        match err {
+            Error::InvalidConfig { message, .. } => {
+                assert!(
+                    message.contains("only supports single-instance"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_config_validates_managed_checksum_format() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config_v02(
+                r#"
+[[vms]]
+name = "api"
+managed_image = { name = "alpine", version = "v1", checksum = "deadbeef", size_bytes = 1024 }
+overlay = ".castra/api/overlay.qcow2"
+cpus = 2
+memory = "2048 MiB"
+"#,
+            ),
+        );
+
+        let err = load_project_config(&path).expect_err("checksum must include algorithm");
+        match err {
+            Error::InvalidConfig { message, .. } => {
+                assert!(
+                    message.contains("checksum"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_config_validates_managed_size_bytes_positive() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config_v02(
+                r#"
+[[vms]]
+name = "api"
+managed_image = { name = "alpine", version = "v1", checksum = "sha256:abc", size_bytes = 0 }
+overlay = ".castra/api/overlay.qcow2"
+cpus = 2
+memory = "2048 MiB"
+"#,
+            ),
+        );
+
+        let err = load_project_config(&path).expect_err("size_bytes must be positive");
+        match err {
+            Error::InvalidConfig { message, .. } => {
+                assert!(
+                    message.contains("size_bytes"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_config_warns_on_future_version() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &format!(
+                r#"
+version = "0.3.0"
+
+[project]
+name = "demo"
+state_dir = ".castra/state"
+
+[[vms]]
+name = "devbox"
+base_image = "images/devbox.qcow2"
+overlay = ".castra/devbox.qcow2"
+cpus = 2
+memory = "2048 MiB"
+"#
+            ),
+        );
+
+        let config = load_project_config(&path).expect("load future config");
+        assert_eq!(config.vms.len(), 1);
+        assert!(!config.warnings.is_empty());
+        assert!(config.warnings[0].contains("not fully supported"));
     }
 
     #[test]
@@ -927,7 +1843,7 @@ memory = "1 GiB"
         match err {
             Error::InvalidConfig { message, .. } => {
                 assert!(
-                    message.contains("Duplicate VM name"),
+                    message.contains("Duplicate VM role"),
                     "unexpected message: {message}"
                 );
             }

@@ -83,20 +83,24 @@ pub fn default_project_name(target_path: &Path) -> String {
 pub fn default_config_contents(project_name: &str) -> String {
     format!(
         r#"# Castra project configuration
-# Visit todo_project_config_and_discovery.md for the roadmap.
-version = "0.1.0"
+# See CONFIG.md for the full schema reference.
+version = "0.2.0"
 
 [project]
 name = "{project_name}"
-# state_dir = ".castra"  # Uncomment to keep VM state alongside this config
+# state_dir = ".castra/state"  # Uncomment to keep VM state alongside this config
+
+[broker]
+# port = 7070
 
 [[vms]]
 name = "devbox"
 description = "Primary development VM"
 base_image = "images/devbox-base.qcow2"
-overlay = ".castra/devbox-overlay.qcow2"
+overlay = ".castra/devbox/overlay.qcow2"
 cpus = 2
 memory = "2048 MiB"
+# count = 1  # Increase to scale replicas: devbox-0, devbox-1, ...
 
   [[vms.port_forwards]]
   host = 2222
@@ -144,12 +148,16 @@ fn synthesize_default_project(search_root: PathBuf) -> ProjectConfig {
     let overlay_path = state_root.join("alpine-minimal-overlay.qcow2");
 
     let vm = VmDefinition {
-        name: "alpine".to_string(),
+        name: "alpine-0".to_string(),
+        role_name: "alpine".to_string(),
+        replica_index: 0,
         description: Some("Managed Alpine Linux guest".to_string()),
         base_image: BaseImageSource::Managed(ManagedImageReference {
             name: "alpine-minimal".to_string(),
             version: "v1".to_string(),
             disk: ManagedDiskKind::RootDisk,
+            checksum: None,
+            size_bytes: None,
         }),
         overlay: overlay_path,
         cpus: 2,
@@ -159,7 +167,7 @@ fn synthesize_default_project(search_root: PathBuf) -> ProjectConfig {
 
     ProjectConfig {
         file_path: synthetic_path,
-        version: "0.1.0".to_string(),
+        version: "0.2.0".to_string(),
         project_name,
         vms: vec![vm],
         state_root,

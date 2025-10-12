@@ -145,6 +145,8 @@ mod tests {
     fn sample_project(state_root: &std::path::Path) -> ProjectConfig {
         let vm = VmDefinition {
             name: "devbox".to_string(),
+            role_name: "devbox".to_string(),
+            replica_index: 0,
             description: None,
             base_image: BaseImageSource::Path("base.qcow2".into()),
             overlay: state_root.join("overlays/devbox.qcow2"),

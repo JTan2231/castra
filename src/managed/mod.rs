@@ -775,51 +775,29 @@ pub fn lookup_managed_image(id: &str, version: &str) -> Option<&'static ManagedI
     }
 }
 
-static ALPINE_ARTIFACTS: [ManagedArtifactSpec; 3] = [
-    ManagedArtifactSpec {
-        kind: ManagedArtifactKind::RootDisk,
-        final_filename: "rootfs.qcow2",
-        source: ArtifactSource {
-            url: "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/aws_alpine-3.22.2-x86_64-bios-tiny-r0.vhd",
-            sha256: Some("8f58945cd972f31b8a7e3116d2b33cdb4298e6b3c0609c0bfd083964678afffb"),
-            size: Some(127_926_784),
-        },
-        transformations: &[TransformStep::QemuImgConvert {
-            input_format: "vpc",
-            output_format: "qcow2",
-            output: "rootfs.qcow2",
-        }],
+static ALPINE_ARTIFACTS: [ManagedArtifactSpec; 1] = [ManagedArtifactSpec {
+    kind: ManagedArtifactKind::RootDisk,
+    final_filename: "rootfs.qcow2",
+    source: ArtifactSource {
+        url: "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/aws_alpine-3.22.2-x86_64-bios-tiny-r0.vhd",
+        sha256: Some("8f58945cd972f31b8a7e3116d2b33cdb4298e6b3c0609c0bfd083964678afffb"),
+        size: Some(127_926_784),
     },
-    ManagedArtifactSpec {
-        kind: ManagedArtifactKind::Kernel,
-        final_filename: "vmlinuz-lts",
-        source: ArtifactSource {
-            url: "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/netboot/vmlinuz-lts",
-            sha256: Some("6eb498e1898d138e8a493eae901a580ddc3c1c105bd9ddc84cb9f820855958e7"),
-            size: Some(13_624_320),
-        },
-        transformations: &[],
-    },
-    ManagedArtifactSpec {
-        kind: ManagedArtifactKind::Initrd,
-        final_filename: "initramfs-lts",
-        source: ArtifactSource {
-            url: "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/netboot/initramfs-lts",
-            sha256: Some("e82c5c2d4a6372f25e53fcbad4defe7b10bbf8be766b6e571291fd5ebcf9e383"),
-            size: Some(26_335_797),
-        },
-        transformations: &[],
-    },
-];
+    transformations: &[TransformStep::QemuImgConvert {
+        input_format: "vpc",
+        output_format: "qcow2",
+        output: "rootfs.qcow2",
+    }],
+}];
 
 static ALPINE_MINIMAL_V1: ManagedImageSpec = ManagedImageSpec {
     id: "alpine-minimal",
     version: "v1",
     artifacts: &ALPINE_ARTIFACTS,
     qemu: QemuProfile {
-        kernel: Some(ManagedArtifactKind::Kernel),
-        initrd: Some(ManagedArtifactKind::Initrd),
-        append: "console=ttyS0 root=/dev/vda modules=virtio_pci,virtio_blk,virtio_console,virtio_net,ext4 quiet",
+        kernel: None,
+        initrd: None,
+        append: "",
         machine: None,
         extra_args: &[],
     },
@@ -912,16 +890,10 @@ mod tests {
         let spec = lookup_managed_image("alpine-minimal", "v1").expect("known spec");
         assert_eq!(spec.id, "alpine-minimal");
         assert_eq!(spec.version, "v1");
-        assert!(matches!(
-            spec.qemu.kernel,
-            Some(ManagedArtifactKind::Kernel)
-        ));
-        assert!(matches!(
-            spec.qemu.initrd,
-            Some(ManagedArtifactKind::Initrd)
-        ));
-        assert!(!spec.qemu.append.is_empty());
-        assert_eq!(spec.artifacts.len(), 3);
+        assert!(spec.qemu.kernel.is_none());
+        assert!(spec.qemu.initrd.is_none());
+        assert!(spec.qemu.append.is_empty());
+        assert_eq!(spec.artifacts.len(), 1);
     }
 
     #[test]
