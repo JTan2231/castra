@@ -19,3 +19,11 @@ Snapshot reference bumped to v0.7.1. Clarify exit behavior: treat missing --conf
 
 ---
 
+Anchor addition
+- src/cli.rs: help text for `--skip-discovery` and `--config` must be updated to describe the stricter semantics and required pairing.
+
+Acceptance clarification
+- Commands fail fast without attempting upward directory walking when `--skip-discovery` is present and `--config` is missing; copy includes an example invocation with `--config <path>`.
+
+---
+

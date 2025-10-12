@@ -22,3 +22,10 @@ Snapshot reference bumped to v0.7.1. Acceptance unchanged; note that README top-
 
 ---
 
+Refinement (anchors + clarity)
+- Anchors: src/cli.rs (version string path via clap/command), Cargo.toml (no build.rs present today). Note: build mechanism is currently absent; embedding SHA likely requires build.rs or env var plumbing.
+- Acceptance nuance: when built without VCS metadata (e.g., crates.io tarball), `castra --version` must omit SHA cleanly while preserving a stable format (`<semver>` or `<semver> (<sha>)`).
+- Docs anchors: README (MSRV badge/section) and docs/RELEASING.md (new).
+
+---
+

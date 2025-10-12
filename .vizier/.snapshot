@@ -6,11 +6,11 @@ Edits since v0.7
 - Broker reachability: status BROKER hardcodes waiting when broker.pid exists; broker greets but no handshake/freshness tracking (src/core/status.rs:45; src/core/broker.rs:64). TODO now mandates a freshness-window-backed reachable flag and exposes last-handshake age/timestamp in StatusOutcome, with bounded initial waits and non-blocking status.
 - Ports active mode: enum includes Active, but summarize() never produces it; CLI lacks --active (src/core/ports.rs:15→30; src/cli.rs:112). TODO updated with acceptance for runtime inspection, script-friendly stable columns, and a new --active flag; summarize() must emit Active where applicable.
 - Managed images: alpine-minimal@v1 lacks kernel/initrd profile and source checksums (src/managed/mod.rs:705, :720). TODO updated to require boot profile and checksums; runtime already honors profiles. Events should include “verified source checksums” prior to transform, and diagnostics must distinguish offline vs mismatch.
-- Versioning/distribution: --version surfaces Cargo-only; MSRV/release docs absent (src/cli.rs:10; docs/*). TODO refined for build.rs/env SHA embed and docs; surface MSRV in README and process in docs/RELEASING.md.
-- Library feature gating: lib compiles app unconditionally; breaks embedders when cli feature is off. TODO updated to gate app behind `cli`, trim clap dependencies when disabled, and update docs/library_usage.md and AGENTS.md.
+- Versioning/distribution: --version surfaces Cargo-only; MSRV/release docs absent (src/cli.rs:10; docs/*). Add anchor: version string flow is in src/cli.rs and surfaced via clap; no build.rs present. TODO refined for build.rs/env SHA embed and docs; surface MSRV in README and process in docs/RELEASING.md.
+- Library feature gating: lib compiles app unconditionally; breaks embedders when cli feature is off. Anchors: src/lib.rs (pub mod app), src/app/mod.rs (depends on CLI helpers), Cargo.toml features. TODO updated to gate app behind `cli`, trim clap deps when disabled, and update docs/library_usage.md and AGENTS.md.
 
 Current code state (observable surfaces)
-- CLI and library surfaces remain as in v0.7 snapshot; notable caveats: skip-discovery semantics lax; no broker liveness/freshness signal; no active ports view; shutdown is signal-only; version lacks SHA; app not feature-gated.
+- CLI and library surfaces remain as in v0.7 snapshot; notable caveats: skip-discovery semantics lax; no broker liveness/freshness signal; no active ports view; shutdown is signal-only; version lacks SHA; app not feature-gated for embedders.
 
 Narrative state (themes/tensions) — updates
 1) UX-first CLI contract
@@ -26,7 +26,7 @@ Narrative state (themes/tensions) — updates
    - Unchanged in code; TODO specifies `ports --active` behavior, summarize() emitting Active, and output guarantees for scripts.
 
 9) Toolchain baseline and distribution
-   - TODO refined to embed git SHA and document MSRV (README) and release steps (docs/RELEASING.md).
+   - TODO refined to embed git SHA and document MSRV (README) and release steps (docs/RELEASING.md); anchor build.rs/env piping via src/cli.rs version string.
 
 11) Library API stability for embedders
    - Tension captured: feature-gate app to keep embedders lean; docs (library_usage.md, AGENTS.md) to reflect policy.

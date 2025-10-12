@@ -49,3 +49,12 @@ Scope and anchors (non-prescriptive)
 
 ---
 
+Field naming + status behavior
+- StatusOutcome fields: include `reachable: bool` and either `last_handshake_age_ms: u64` or `last_handshake_ts: SystemTime`. Names should be script-friendly.
+- Bounded initial wait: status may wait briefly on first observation but must not block unrelated operations; subsequent calls are non-blocking and reflect staleness via age growth.
+
+Anchors addition
+- src/core/status.rs (StatusOutcome extension) and src/app/status.rs (rendering new fields).
+
+---
+

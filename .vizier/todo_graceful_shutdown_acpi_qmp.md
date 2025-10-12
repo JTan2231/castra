@@ -43,3 +43,9 @@ Acceptance criteria
 Scope and anchors (non-prescriptive)
 - Anchors: src/core/runtime.rs (shutdown path), src/app/down.rs (messages), src/core/events.rs (Event variants), tests around status transitions.
 - Keep mechanism open (QMP system_powerdown, ACPI inject, or monitor command) to fit supported platforms.
+Anchors + events clarity
+- src/core/events.rs: introduce specific variants `ShutdownInitiated(Graceful)`, `ShutdownEscalation(SIGTERM|SIGKILL)`, `ShutdownComplete(Graceful|Forced)`; wire through reporter/logs.
+- Keep mechanism open (QMP/system_powerdown vs ACPI inject), but ensure Events are emitted in order and surfaced in OperationOutput.
+
+---
+

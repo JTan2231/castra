@@ -23,3 +23,12 @@ Snapshot reference bumped to v0.7.1. Preserve acceptance and anchors; emphasize 
 
 ---
 
+Anchors refinement
+- src/core/ports.rs: enum includes `Active`, but `summarize()` never produces it; adjust summary path to emit `Active` where applicable.
+- src/cli.rs: introduce `--active` flag under `ports` subcommand; keep columns stable across modes.
+
+Acceptance addition
+- `castra ports --active` exit code and output format are stable for scripting; columns/headers do not change order vs default mode (content of STATUS column changes to reflect Active/Inactive).
+
+---
+

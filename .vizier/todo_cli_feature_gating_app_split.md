@@ -17,3 +17,13 @@ Snapshot reference bumped to v0.7.1. Keep mechanism open; acceptance unchanged. 
 
 ---
 
+Anchors
+- src/lib.rs (unconditional `pub mod app`) and src/app/mod.rs (CLI-coupled helpers).
+- Cargo.toml features section; clap and presentation-only deps should sit behind `cli`.
+
+Acceptance refinement
+- Building with `--no-default-features` removes clap and other CLI-only crates from the dependency graph (verified via `cargo tree -e features`).
+- docs/AGENTS.md updated alongside docs/library_usage.md to show embedding without `cli` and minimal feature sets.
+
+---
+
