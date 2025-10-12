@@ -21,7 +21,7 @@ pub struct Cli {
         short,
         long = "config",
         value_name = "PATH",
-        help = "Override auto-discovery and load configuration from PATH"
+        help = "Override auto-discovery and load configuration from PATH. Pair with --skip-discovery to disable filesystem walking."
     )]
     pub config: Option<PathBuf>,
 
@@ -35,7 +35,7 @@ pub enum Commands {
     Init(InitArgs),
     /// Boot the configured virtual machines.
     Up(UpArgs),
-    /// Shut down running virtual machines.
+    /// Shut down running virtual machines. Attempts a graceful ACPI/QMP powerdown for up to 20s before signals.
     Down(DownArgs),
     /// Inspect the state of managed virtual machines.
     Status(StatusArgs),
@@ -77,7 +77,10 @@ pub struct InitArgs {
 #[derive(Debug, Args, Default)]
 pub struct UpArgs {
     /// Only use the explicit --config path instead of searching parent directories.
-    #[arg(long, help = "Skip config discovery. Requires --config PATH when set.")]
+    #[arg(
+        long,
+        help = "Skip config discovery; requires --config <PATH> (e.g. --config ./castra.toml)."
+    )]
     pub skip_discovery: bool,
 
     /// Proceed even if host resource headroom checks fail (use with caution).
@@ -91,21 +94,30 @@ pub struct UpArgs {
 #[derive(Debug, Args, Default)]
 pub struct DownArgs {
     /// Only use the explicit --config path instead of searching parent directories.
-    #[arg(long, help = "Skip config discovery. Requires --config PATH when set.")]
+    #[arg(
+        long,
+        help = "Skip config discovery; requires --config <PATH> (e.g. --config ./castra.toml)."
+    )]
     pub skip_discovery: bool,
 }
 
 #[derive(Debug, Args, Default)]
 pub struct StatusArgs {
     /// Only use the explicit --config path instead of searching parent directories.
-    #[arg(long, help = "Skip config discovery. Requires --config PATH when set.")]
+    #[arg(
+        long,
+        help = "Skip config discovery; requires --config <PATH> (e.g. --config ./castra.toml)."
+    )]
     pub skip_discovery: bool,
 }
 
 #[derive(Debug, Args, Default)]
 pub struct PortsArgs {
     /// Only use the explicit --config path instead of searching parent directories.
-    #[arg(long, help = "Skip config discovery. Requires --config PATH when set.")]
+    #[arg(
+        long,
+        help = "Skip config discovery; requires --config <PATH> (e.g. --config ./castra.toml)."
+    )]
     pub skip_discovery: bool,
 
     /// Verbose output including planned but inactive forwards.
@@ -118,7 +130,7 @@ pub struct PortsArgs {
     /// Inspect runtime state and surface forwards that are currently active.
     #[arg(
         long,
-        help = "Mark forwards as active only when their VM is running via pidfiles"
+        help = "Mark forwards as active only when their VM is running; columns remain stable for scripting."
     )]
     pub active: bool,
 }
@@ -126,7 +138,10 @@ pub struct PortsArgs {
 #[derive(Debug, Args, Default)]
 pub struct LogsArgs {
     /// Only use the explicit --config path instead of searching parent directories.
-    #[arg(long, help = "Skip config discovery. Requires --config PATH when set.")]
+    #[arg(
+        long,
+        help = "Skip config discovery; requires --config <PATH> (e.g. --config ./castra.toml)."
+    )]
     pub skip_discovery: bool,
 
     /// Follow logs in real time.

@@ -1,6 +1,7 @@
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::Result;
 use crate::cli::StatusArgs;
@@ -52,22 +53,24 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
         }
     }
 
-    match (&outcome.last_handshake, outcome.broker_reachable) {
-        (Some(handshake), true) => {
+    let handshake_age = outcome.last_handshake_age_ms.map(Duration::from_millis);
+
+    match (outcome.last_handshake_vm.as_deref(), outcome.reachable) {
+        (Some(vm), true) => {
             writeln!(
                 out,
                 "Broker reachability: reachable (last handshake {} ago from {}).",
-                format_uptime(Some(handshake.age)),
-                handshake.vm
+                format_uptime(handshake_age),
+                vm
             )
             .unwrap();
         }
-        (Some(handshake), false) => {
+        (Some(vm), false) => {
             writeln!(
                 out,
                 "Broker reachability: waiting (last handshake {} ago from {}).",
-                format_uptime(Some(handshake.age)),
-                handshake.vm
+                format_uptime(handshake_age),
+                vm
             )
             .unwrap();
             writeln!(
@@ -78,7 +81,16 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
             .unwrap();
         }
         (None, true) => {
-            writeln!(out, "Broker reachability: reachable.").unwrap();
+            if let Some(age) = handshake_age {
+                writeln!(
+                    out,
+                    "Broker reachability: reachable (last handshake {} ago).",
+                    format_uptime(Some(age))
+                )
+                .unwrap();
+            } else {
+                writeln!(out, "Broker reachability: reachable.").unwrap();
+            }
         }
         (None, false) => {
             writeln!(
@@ -184,6 +196,12 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
     writeln!(
         out,
         "Legend: BROKER reachable = host broker handshake OK; waiting = broker up, guest not connected; offline = listener not running."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "Handshake age reflects hh:mm:ss since the last guest hello; entries older than {} flip reachability to waiting.",
+        format_uptime(Some(HANDSHAKE_FRESHNESS))
     )
     .unwrap();
     writeln!(

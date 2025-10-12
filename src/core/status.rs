@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::config::{PortForward, PortProtocol, ProjectConfig};
 
 use super::diagnostics::{Diagnostic, Severity};
-use super::outcome::{BrokerHandshake, BrokerReachability, VmStatusRow};
+use super::outcome::{BrokerReachability, VmStatusRow};
 use super::project::config_state_root;
 use super::runtime::{
     BrokerProcessState, broker_handshake_dir_from_root, inspect_broker_state, inspect_vm_state,
@@ -21,8 +21,15 @@ pub struct StatusSnapshot {
     pub rows: Vec<VmStatusRow>,
     pub broker_state: BrokerProcessState,
     pub diagnostics: Vec<Diagnostic>,
-    pub broker_reachable: bool,
+    pub reachable: bool,
     pub last_handshake: Option<BrokerHandshake>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrokerHandshake {
+    pub vm: String,
+    pub timestamp: SystemTime,
+    pub age: Duration,
 }
 
 pub fn collect_status(project: &ProjectConfig) -> StatusSnapshot {
@@ -45,7 +52,7 @@ pub fn collect_status(project: &ProjectConfig) -> StatusSnapshot {
             .with_help("Handshake records are stored under the castra state root; clear corrupted files and allow guests to reconnect.")
     }));
 
-    let mut broker_reachable = false;
+    let mut reachable = false;
     let mut last_handshake: Option<BrokerHandshake> = None;
     let now = SystemTime::now();
 
@@ -68,7 +75,7 @@ pub fn collect_status(project: &ProjectConfig) -> StatusSnapshot {
         );
 
         if matches!(reachability, BrokerReachability::Reachable) {
-            broker_reachable = true;
+            reachable = true;
         }
 
         if let Some(ts) = timestamp {
@@ -111,7 +118,7 @@ pub fn collect_status(project: &ProjectConfig) -> StatusSnapshot {
         rows,
         broker_state,
         diagnostics,
-        broker_reachable,
+        reachable,
         last_handshake,
     }
 }
@@ -349,7 +356,7 @@ mod tests {
 
         assert!(snapshot.diagnostics.is_empty());
         assert_eq!(snapshot.rows.len(), 1);
-        assert!(snapshot.broker_reachable);
+        assert!(snapshot.reachable);
         assert!(matches!(
             snapshot.rows[0].broker_reachability,
             BrokerReachability::Reachable
@@ -374,7 +381,7 @@ mod tests {
 
         let snapshot = collect_status(&project);
 
-        assert!(!snapshot.broker_reachable);
+        assert!(!snapshot.reachable);
         assert!(matches!(
             snapshot.rows[0].broker_reachability,
             BrokerReachability::Waiting
@@ -398,7 +405,7 @@ mod tests {
 
         let snapshot = collect_status(&project);
 
-        assert!(!snapshot.broker_reachable);
+        assert!(!snapshot.reachable);
         assert!(snapshot.last_handshake.is_none());
         assert!(matches!(
             snapshot.rows[0].broker_reachability,

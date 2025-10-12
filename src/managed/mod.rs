@@ -80,6 +80,12 @@ impl ManagedArtifactEvent {
     }
 }
 
+#[derive(Debug, Clone)]
+enum CacheState {
+    Missing,
+    Stale(PathBuf),
+}
+
 impl ImageManager {
     pub fn new(storage_root: PathBuf, log_root: PathBuf, qemu_img: Option<PathBuf>) -> Self {
         let log_path = log_root.join("image-manager.log");
@@ -134,6 +140,12 @@ impl ImageManager {
                 }
             }
 
+            let cache_state = if final_path.is_file() {
+                CacheState::Stale(final_path.clone())
+            } else {
+                CacheState::Missing
+            };
+
             self.push_event(
                 spec,
                 &mut events,
@@ -141,13 +153,13 @@ impl ImageManager {
                 format!("{}: refreshing cached artifact.", artifact.kind.describe()),
             );
 
-            let download_path = self.download_artifact(spec, &image_root, artifact, &mut events)?;
+            let download_path =
+                self.download_artifact(spec, &image_root, artifact, &cache_state, &mut events)?;
             if let Some(expected) = artifact.source.sha256 {
                 if let Err(err) = verify_checksum(&download_path, expected) {
-                    let _ = fs::remove_file(&download_path);
                     return Err(Error::PreflightFailed {
                         message: format!(
-                            "Checksum mismatch for {} (expected {expected}). Removed {} to force a fresh download: {err}",
+                            "Checksum mismatch for {} (expected {expected}). Remove {} and retry: {err}",
                             artifact.source.url,
                             download_path.display()
                         ),
@@ -157,7 +169,7 @@ impl ImageManager {
                     spec,
                     &mut events,
                     artifact.kind,
-                    "source checksum verified.",
+                    "verified source checksums.",
                 );
             }
 
@@ -269,6 +281,7 @@ impl ImageManager {
         spec: &ManagedImageSpec,
         image_root: &Path,
         artifact: &ManagedArtifactSpec,
+        cache_state: &CacheState,
         events: &mut Vec<ManagedArtifactEvent>,
     ) -> Result<PathBuf> {
         let partial = image_root.join(format!("{}.partial", artifact.final_filename));
@@ -297,7 +310,7 @@ impl ImageManager {
 
         let response = request
             .call()
-            .map_err(|err| Self::map_download_error(&artifact.source.url, err))?;
+            .map_err(|err| Self::map_download_error(&artifact.source.url, err, cache_state))?;
 
         if start > 0 && response.status() == 200 {
             // Server ignored the Range header; start fresh.
@@ -380,7 +393,7 @@ impl ImageManager {
         Ok(partial)
     }
 
-    fn map_download_error(url: &str, err: UreqError) -> Error {
+    fn map_download_error(url: &str, err: UreqError, cache_state: &CacheState) -> Error {
         match err {
             UreqError::Status(status, response) => {
                 let status_text = response.status_text().to_string();
@@ -402,25 +415,37 @@ impl ImageManager {
                     | UreqErrorKind::Io
                     | UreqErrorKind::ProxyConnect => (
                         format!("Network unavailable while downloading {url}"),
-                        "Restore connectivity or prefetch managed images before retrying `castra up`.",
+                        Self::offline_hint(cache_state),
                     ),
                     UreqErrorKind::InvalidProxyUrl | UreqErrorKind::ProxyUnauthorized => (
                         format!("Proxy configuration blocked the download of {url}"),
-                        "Review CAStra proxy settings or environment variables to proceed.",
+                        "Review Castra proxy settings or environment variables to proceed."
+                            .to_string(),
                     ),
                     UreqErrorKind::InsecureRequestHttpsOnly => (
                         format!("Download rejected due to HTTPS-only policy for {url}"),
-                        "Use an HTTPS endpoint or relax the https-only setting if intentional.",
+                        "Use an HTTPS endpoint or relax the https-only setting if intentional."
+                            .to_string(),
                     ),
                     _ => (
                         format!("Failed to download {url}"),
-                        "Retry once the remote endpoint is reachable.",
+                        "Retry once the remote endpoint is reachable.".to_string(),
                     ),
                 };
                 Error::PreflightFailed {
                     message: format!("{base}: {detail}. {hint}"),
                 }
             }
+        }
+    }
+
+    fn offline_hint(cache_state: &CacheState) -> String {
+        match cache_state {
+            CacheState::Missing => "No verified cache exists; operation cannot proceed offline—connect to the internet or prefetch the image before retrying `castra up`.".to_string(),
+            CacheState::Stale(path) => format!(
+                "Cached artifact at {} could not be verified; remove it or restore connectivity so Castra can refresh it (operation cannot proceed offline).",
+                path.display()
+            ),
         }
     }
 

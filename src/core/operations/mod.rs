@@ -161,7 +161,7 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
                     reporter.emit(Event::Message {
                         severity: Severity::Info,
                         text: format!(
-                            "→ {}@{}: applied {} boot profile for VM `{}`.",
+                            "→ {}@{}: applied boot profile ({}) for VM `{}`.",
                             handle.id, handle.version, profile_label, vm.name
                         ),
                     });
@@ -307,7 +307,7 @@ pub fn status(
         rows,
         broker_state: broker_state_raw,
         diagnostics: mut status_diags,
-        broker_reachable,
+        reachable,
         last_handshake,
     } = status_core::collect_status(&project);
     diagnostics.append(&mut status_diags);
@@ -317,14 +317,23 @@ pub fn status(
         BrokerProcessState::Offline => super::outcome::BrokerState::Offline,
     };
 
+    let (last_handshake_vm, last_handshake_age_ms) = match last_handshake {
+        Some(handshake) => {
+            let age_ms = handshake.age.as_millis().min(u128::from(u64::MAX)) as u64;
+            (Some(handshake.vm), Some(age_ms))
+        }
+        None => (None, None),
+    };
+
     let outcome = StatusOutcome {
         project_path: project.file_path.clone(),
         project_name: project.project_name.clone(),
         config_version: project.version.clone(),
         broker_port: project.broker.port,
         broker_state,
-        broker_reachable,
-        last_handshake,
+        reachable,
+        last_handshake_vm,
+        last_handshake_age_ms,
         rows,
     };
 
