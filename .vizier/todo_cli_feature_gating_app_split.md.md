@@ -22,3 +22,22 @@ Acceptance (docs-focused)
 
 ---
 
+Scope tightened to docs-only follow-up.
+
+- Context (Thread 11: Library API stability for embedders; Snapshot v0.7.2): Code gating is DONE; remaining work is documentation alignment.
+
+Acceptance criteria
+- AGENTS.md: add a minimal embedding example showing how to depend on castra as a library with default-features = false and feature = ["cli"] when binary is desired. Cross-link to docs/library_usage.md.
+- README.md: brief note pointing embedders to AGENTS.md and library_usage.md. Reiterate MSRV statement (Rust 1.77) as informational, not a task.
+- No code changes required; this TODO closes when docs PR merges.
+
+Anchors
+- docs/library_usage.md (existing guidance)
+- AGENTS.md (to be updated)
+- README.md (brief pointer)
+
+Notes
+- Do not prescribe crate/module layouts; keep examples minimal and feature-focused.
+
+---
+
