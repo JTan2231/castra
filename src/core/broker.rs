@@ -1241,6 +1241,22 @@ mod tests {
     }
 
     #[test]
+    fn handshake_log_message_includes_denial_reason() {
+        let outcome = HandshakeSessionOutcome::denied("missing-capability");
+        let addr: std::net::SocketAddr = "127.0.0.1:54321".parse().unwrap();
+        let message = handshake_log_message(
+            1_700_000_002,
+            "devbox",
+            Some(addr),
+            &vec!["bus-v1".to_string()],
+            SessionKind::Guest,
+            &outcome,
+        );
+        assert!(message.contains("session_outcome=denied"));
+        assert!(message.contains("reason=missing-capability"));
+    }
+
+    #[test]
     fn append_handshake_event_persists_json_record() {
         let dir = tempdir().unwrap();
         let outcome = HandshakeSessionOutcome::denied("missing-capability");
