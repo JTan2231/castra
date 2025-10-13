@@ -279,8 +279,14 @@ fn load_handshake_records(dir: &Path) -> (HashMap<String, HandshakeRecord>, Vec<
             }
         };
 
-        let vm = stored
-            .vm
+        let StoredHandshakeFile {
+            vm,
+            timestamp,
+            capabilities,
+        } = stored;
+        let _ = capabilities;
+
+        let vm = vm
             .unwrap_or_else(|| fallback_identity(&path))
             .trim()
             .to_string();
@@ -292,13 +298,13 @@ fn load_handshake_records(dir: &Path) -> (HashMap<String, HandshakeRecord>, Vec<
             continue;
         }
 
-        let timestamp = match UNIX_EPOCH.checked_add(Duration::from_secs(stored.timestamp)) {
+        let timestamp = match UNIX_EPOCH.checked_add(Duration::from_secs(timestamp)) {
             Some(time) => time,
             None => {
                 warnings.push(format!(
                     "Handshake file {} contains an out-of-range timestamp {}.",
                     path.display(),
-                    stored.timestamp
+                    timestamp
                 ));
                 continue;
             }
@@ -333,6 +339,8 @@ struct HandshakeRecord {
 struct StoredHandshakeFile {
     vm: Option<String>,
     timestamp: u64,
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 
 #[cfg(test)]
