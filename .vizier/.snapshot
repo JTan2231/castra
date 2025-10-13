@@ -1,9 +1,9 @@
 SNAPSHOT v0.7.9 — Castra (VM orchestration harness)
 
 Edits since last snapshot
+- Housekeeping: Removed duplicate TODO files to eliminate parallel threads: kept canonical broker_handshake_events.md.md and castra_bus_subscribe_heartbeat.md.md; deleted the duplicate non-.md.md variants. No behavioral/code changes.
 - Thread 3 (broker reachability): Implemented deterministic handshake success evidence — standardized log line and structured Event; capabilities normalized. Legend/docs updated. Remaining: denial-path test + example snippets.
 - Thread 13 (Castra Bus): Delivered subscribe handling, durable publish acks, heartbeat tracking with 60s timeout, session timeout/cleanup, and non-blocking BUS status signals. Status UI gains BUS and BUS AGE columns; BUS.md updated. Remaining: explicit back-pressure observability and a few edge-case tests.
-- Housekeeping: Narrowed scopes in related TODOs to reflect delivered behavior; shifted remaining acceptance to observability/docs/tests.
 
 Active threads (intent + acceptance)
 - Thread 1 — Discovery semantics gap [tests/docs pending]: `--skip-discovery` requires explicit config/path; zero filesystem walking when set; enforce across status/up/down/ports/logs/bus and clean. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs; CLEAN.md cross-link.
