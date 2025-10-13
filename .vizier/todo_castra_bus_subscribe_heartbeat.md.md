@@ -1,3 +1,5 @@
+
+
 Update (Snapshot v0.7.9): Core subscribe/ack/heartbeat shipped.
 
 - Delivered: Session subscribe handling, durable publish acks, heartbeat tracking with 60s timeout, session timeout/cleanup, and non-blocking BUS status signals (`bus_subscribed`, `last_publish_age_ms`, `last_heartbeat_age_ms`). Status UI shows BUS and BUS AGE columns; BUS.md updated.
@@ -16,6 +18,7 @@ Pointers unchanged
 - src/app/bus.rs; src/cli.rs (host UX)
 
 Thread link: Thread 13 — Castra Bus.
+
 
 ---
 
