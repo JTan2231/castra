@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::options::BrokerOptions;
 use crate::error::{Error, Result};
@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{self, Value};
 
 const BUS_MAX_FRAME_SIZE: usize = 64 * 1024;
+const BUS_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
+const BUS_MAX_SUBSCRIPTIONS: usize = 16;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -36,14 +38,6 @@ impl HandshakeDetails {
         self.capabilities
             .iter()
             .any(|value| value.eq_ignore_ascii_case(capability))
-    }
-
-    fn capability_note(&self) -> String {
-        if self.capabilities.is_empty() {
-            String::new()
-        } else {
-            format!(" capabilities={}", self.capabilities.join(","))
-        }
     }
 }
 
@@ -157,13 +151,24 @@ pub fn run(options: &BrokerOptions) -> Result<()> {
                 match process_handshake(&mut stream, options.handshake_dir.as_path()) {
                     Ok(details) => {
                         let vm_name = details.vm.clone();
+                        let capabilities_display = if details.capabilities.is_empty() {
+                            "-".to_string()
+                        } else {
+                            details.capabilities.join(",")
+                        };
+                        let session_label = if details.has_capability("bus-v1") {
+                            "session=bus"
+                        } else {
+                            "session=declined(reason=missing-capability)"
+                        };
                         broker_log_line(
                             &log,
                             "INFO",
                             &format!(
-                                "handshake success from {addr}: vm={vm}{caps}",
+                                "handshake success from {addr}: vm={vm} capabilities=[{caps}] {session}",
                                 vm = vm_name,
-                                caps = details.capability_note()
+                                caps = capabilities_display,
+                                session = session_label
                             ),
                         )?;
                         if details.has_capability("bus-v1") {
@@ -192,8 +197,16 @@ pub fn run(options: &BrokerOptions) -> Result<()> {
                             let logger = log.clone();
                             let session_vm = vm_name.clone();
                             let bus_dir = bus_log_dir.clone();
+                            let handshake_dir = options.handshake_dir.clone();
                             thread::spawn(move || {
-                                handle_bus_session(stream, session_vm, session, bus_dir, logger);
+                                handle_bus_session(
+                                    stream,
+                                    session_vm,
+                                    session,
+                                    bus_dir,
+                                    handshake_dir,
+                                    logger,
+                                );
                             });
                             continue;
                         }
@@ -389,6 +402,8 @@ fn parse_handshake_line(line: &str) -> HandshakeResult<HandshakeDetails> {
         }
     }
 
+    capabilities.sort_unstable_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+
     Ok(HandshakeDetails {
         vm: vm.to_string(),
         capabilities,
@@ -396,28 +411,46 @@ fn parse_handshake_line(line: &str) -> HandshakeResult<HandshakeDetails> {
 }
 
 fn persist_handshake(handshake_dir: &Path, vm: &str, capabilities: &[String]) -> io::Result<()> {
-    fs::create_dir_all(handshake_dir)?;
-    let filename = format!("{}.json", sanitize_vm_name(vm));
-    let path = handshake_dir.join(filename);
-    let tmp = path.with_extension("json.tmp");
-    let record = StoredHandshake {
+    let mut record = StoredHandshake {
         vm: vm.to_string(),
         timestamp: unix_timestamp_seconds(),
         capabilities: capabilities.to_vec(),
+        bus: None,
     };
-    let payload = serde_json::to_vec_pretty(&record)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-    fs::write(&tmp, payload)?;
-    fs::rename(&tmp, &path)?;
-    Ok(())
+    if capabilities
+        .iter()
+        .any(|cap| cap.eq_ignore_ascii_case("bus-v1"))
+    {
+        record.bus = Some(StoredBusState {
+            protocol: Some("bus-v1".to_string()),
+            ..StoredBusState::default()
+        });
+    }
+    save_handshake_record(handshake_dir, &record)
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct StoredHandshake {
     vm: String,
     timestamp: u64,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bus: Option<StoredBusState>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+struct StoredBusState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    subscribed_topics: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_publish_ts: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_heartbeat_ts: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_subscribe_ts: Option<u64>,
 }
 
 fn unix_timestamp_seconds() -> u64 {
@@ -444,6 +477,61 @@ fn sanitize_vm_name(name: &str) -> String {
     sanitized
 }
 
+fn handshake_record_path(handshake_dir: &Path, vm: &str) -> PathBuf {
+    handshake_dir.join(format!("{}.json", sanitize_vm_name(vm)))
+}
+
+fn load_handshake_record(handshake_dir: &Path, vm: &str) -> io::Result<Option<StoredHandshake>> {
+    let path = handshake_record_path(handshake_dir, vm);
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let record = serde_json::from_slice::<StoredHandshake>(&bytes).map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid handshake JSON: {err}"),
+                )
+            })?;
+            Ok(Some(record))
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+fn save_handshake_record(handshake_dir: &Path, record: &StoredHandshake) -> io::Result<()> {
+    fs::create_dir_all(handshake_dir)?;
+    let path = handshake_record_path(handshake_dir, &record.vm);
+    let tmp = path.with_extension("json.tmp");
+    let payload = serde_json::to_vec_pretty(record).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to encode handshake: {err}"),
+        )
+    })?;
+    fs::write(&tmp, payload)?;
+    fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+fn update_handshake_record<F>(
+    handshake_dir: &Path,
+    vm: &str,
+    mut update: F,
+) -> io::Result<StoredHandshake>
+where
+    F: FnMut(&mut StoredHandshake),
+{
+    let mut record = load_handshake_record(handshake_dir, vm)?.unwrap_or_else(|| StoredHandshake {
+        vm: vm.to_string(),
+        timestamp: unix_timestamp_seconds(),
+        capabilities: Vec::new(),
+        bus: None,
+    });
+    update(&mut record);
+    save_handshake_record(handshake_dir, &record)?;
+    Ok(record)
+}
+
 type BusResult<T> = std::result::Result<T, BusError>;
 
 fn generate_session_token() -> String {
@@ -457,9 +545,13 @@ fn handle_bus_session(
     vm: String,
     session: String,
     bus_log_dir: PathBuf,
+    handshake_dir: PathBuf,
     logger: Arc<Mutex<fs::File>>,
 ) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut last_heartbeat = Instant::now();
+    let mut subscribed_topics: Vec<String> = Vec::new();
+
     if let Ok(addr) = stream.peer_addr() {
         let _ = broker_log_line(
             &logger,
@@ -477,39 +569,177 @@ fn handle_bus_session(
         );
     }
 
+    if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
+        let now = unix_timestamp_seconds();
+        let bus = record.bus.get_or_insert_with(StoredBusState::default);
+        if bus.protocol.is_none() {
+            bus.protocol = Some("bus-v1".to_string());
+        }
+        bus.last_heartbeat_ts = Some(now);
+        bus.subscribed_topics.clear();
+        bus.last_subscribe_ts = None;
+    }) {
+        let _ = broker_log_line(
+            &logger,
+            "WARN",
+            &format!("failed to initialize bus state for `{vm}`: {err}", vm = vm),
+        );
+    }
+
     loop {
         match read_bus_frame(&mut stream) {
             Ok(frame) => match frame.kind.as_str() {
                 "publish" => {
-                    if let Err(err) = handle_publish(&vm, &frame, &bus_log_dir) {
+                    let topic_label = frame.topic.as_deref().unwrap_or("broadcast");
+                    match handle_publish(&vm, &frame, &bus_log_dir) {
+                        Ok(()) => {
+                            if let Err(err) =
+                                update_handshake_record(&handshake_dir, &vm, |record| {
+                                    let now = unix_timestamp_seconds();
+                                    let bus =
+                                        record.bus.get_or_insert_with(StoredBusState::default);
+                                    bus.last_publish_ts = Some(now);
+                                })
+                            {
+                                let _ = broker_log_line(
+                                    &logger,
+                                    "WARN",
+                                    &format!(
+                                        "failed to record publish timestamp for `{vm}`: {err}",
+                                        vm = vm
+                                    ),
+                                );
+                            }
+                            let _ = broker_log_line(
+                                &logger,
+                                "INFO",
+                                &format!("bus publish from `{vm}` topic={topic_label}"),
+                            );
+                            if let Err(err) =
+                                send_ack(&mut stream, "publish", frame.topic.as_deref(), "ok", None)
+                            {
+                                let _ = broker_log_line(
+                                    &logger,
+                                    "WARN",
+                                    &format!(
+                                        "failed to acknowledge publish for `{vm}`: {err}",
+                                        vm = vm
+                                    ),
+                                );
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            let reason = err.to_string();
+                            let _ = broker_log_line(
+                                &logger,
+                                "WARN",
+                                &format!(
+                                    "failed to persist bus publish from `{vm}`: {reason}",
+                                    vm = vm
+                                ),
+                            );
+                            let _ = send_ack(
+                                &mut stream,
+                                "publish",
+                                frame.topic.as_deref(),
+                                "error",
+                                Some(reason.as_str()),
+                            );
+                            break;
+                        }
+                    }
+                }
+                "heartbeat" => {
+                    last_heartbeat = Instant::now();
+                    if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
+                        let now = unix_timestamp_seconds();
+                        let bus = record.bus.get_or_insert_with(StoredBusState::default);
+                        bus.last_heartbeat_ts = Some(now);
+                    }) {
                         let _ = broker_log_line(
                             &logger,
                             "WARN",
-                            &format!("failed to persist bus publish from `{vm}`: {err}", vm = vm),
+                            &format!("failed to record heartbeat for `{vm}`: {err}", vm = vm),
+                        );
+                    }
+                    if let Err(err) = send_ack(&mut stream, "heartbeat", None, "ok", None) {
+                        let _ = broker_log_line(
+                            &logger,
+                            "WARN",
+                            &format!("failed to acknowledge heartbeat for `{vm}`: {err}", vm = vm),
                         );
                         break;
                     }
-                    let _ = broker_log_line(
-                        &logger,
-                        "INFO",
-                        &format!(
-                            "bus publish from `{vm}` topic={}",
-                            frame.topic.as_deref().unwrap_or("broadcast")
-                        ),
-                    );
-                }
-                "heartbeat" => {
-                    // Heartbeats keep the session fresh; avoid log spam but confirm trace on debug severity.
                 }
                 "subscribe" => {
-                    let _ = broker_log_line(
-                        &logger,
-                        "INFO",
-                        &format!(
-                            "`{vm}` requested bus subscription to {:?} (not implemented)",
-                            frame.topic
-                        ),
-                    );
+                    let topic = frame.topic.as_deref().map(str::trim);
+                    let Some(topic) = topic.filter(|value| !value.is_empty()) else {
+                        let _ = broker_log_line(
+                            &logger,
+                            "WARN",
+                            &format!("`{vm}` sent subscribe without topic"),
+                        );
+                        let _ = send_ack(
+                            &mut stream,
+                            "subscribe",
+                            None,
+                            "error",
+                            Some("missing topic"),
+                        );
+                        continue;
+                    };
+                    if !subscribed_topics
+                        .iter()
+                        .any(|existing| existing.eq_ignore_ascii_case(topic))
+                    {
+                        if subscribed_topics.len() >= BUS_MAX_SUBSCRIPTIONS {
+                            let reason =
+                                format!("subscription limit {BUS_MAX_SUBSCRIPTIONS} exceeded");
+                            let _ = broker_log_line(
+                                &logger,
+                                "WARN",
+                                &format!("`{vm}` exceeded subscription limit"),
+                            );
+                            let _ = send_ack(
+                                &mut stream,
+                                "subscribe",
+                                Some(topic),
+                                "error",
+                                Some(reason.as_str()),
+                            );
+                            continue;
+                        }
+                        subscribed_topics.push(topic.to_string());
+                        subscribed_topics
+                            .sort_unstable_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+                    }
+                    if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
+                        let now = unix_timestamp_seconds();
+                        let bus = record.bus.get_or_insert_with(StoredBusState::default);
+                        bus.subscribed_topics = subscribed_topics.clone();
+                        bus.last_subscribe_ts = Some(now);
+                    }) {
+                        let _ = broker_log_line(
+                            &logger,
+                            "WARN",
+                            &format!("failed to record subscription for `{vm}`: {err}", vm = vm),
+                        );
+                    } else {
+                        let _ = broker_log_line(
+                            &logger,
+                            "INFO",
+                            &format!("`{vm}` subscribed to {:?}", subscribed_topics),
+                        );
+                    }
+                    if let Err(err) = send_ack(&mut stream, "subscribe", Some(topic), "ok", None) {
+                        let _ = broker_log_line(
+                            &logger,
+                            "WARN",
+                            &format!("failed to acknowledge subscribe for `{vm}`: {err}", vm = vm),
+                        );
+                        break;
+                    }
                 }
                 other => {
                     let _ = broker_log_line(
@@ -519,7 +749,17 @@ fn handle_bus_session(
                     );
                 }
             },
-            Err(BusError::Timeout) => continue,
+            Err(BusError::Timeout) => {
+                if last_heartbeat.elapsed() >= BUS_HEARTBEAT_TIMEOUT {
+                    let _ = broker_log_line(
+                        &logger,
+                        "WARN",
+                        &format!("bus session for `{vm}` timed out waiting for heartbeat"),
+                    );
+                    break;
+                }
+                continue;
+            }
             Err(BusError::Io(err)) => {
                 let _ = broker_log_line(
                     &logger,
@@ -538,6 +778,19 @@ fn handle_bus_session(
                 break;
             }
         }
+    }
+
+    if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
+        if let Some(bus) = record.bus.as_mut() {
+            bus.subscribed_topics.clear();
+            bus.last_subscribe_ts = None;
+        }
+    }) {
+        let _ = broker_log_line(
+            &logger,
+            "WARN",
+            &format!("failed to clear subscription state for `{vm}`: {err}"),
+        );
     }
 
     let _ = broker_log_line(
@@ -585,6 +838,42 @@ fn append_shared_bus_log(dir: &Path, line: &str) -> BusResult<()> {
     file.write_all(line.as_bytes()).map_err(BusError::Io)?;
     file.write_all(b"\n").map_err(BusError::Io)?;
     Ok(())
+}
+
+fn send_bus_frame(stream: &mut TcpStream, value: &Value) -> BusResult<()> {
+    let payload = serde_json::to_vec(value).map_err(|err| BusError::Protocol(err.to_string()))?;
+    if payload.len() > BUS_MAX_FRAME_SIZE {
+        return Err(BusError::Protocol(format!(
+            "outgoing frame length {} exceeds max {}",
+            payload.len(),
+            BUS_MAX_FRAME_SIZE
+        )));
+    }
+    let len = (payload.len() as u32).to_be_bytes();
+    stream.write_all(&len).map_err(BusError::Io)?;
+    stream.write_all(&payload).map_err(BusError::Io)?;
+    stream.flush().map_err(BusError::Io)?;
+    Ok(())
+}
+
+fn send_ack(
+    stream: &mut TcpStream,
+    ack_kind: &str,
+    topic: Option<&str>,
+    status: &str,
+    reason: Option<&str>,
+) -> BusResult<()> {
+    let mut map = serde_json::Map::new();
+    map.insert("type".to_string(), Value::String("ack".to_string()));
+    map.insert("ack".to_string(), Value::String(ack_kind.to_string()));
+    map.insert("status".to_string(), Value::String(status.to_string()));
+    if let Some(topic) = topic {
+        map.insert("topic".to_string(), Value::String(topic.to_string()));
+    }
+    if let Some(reason) = reason {
+        map.insert("reason".to_string(), Value::String(reason.to_string()));
+    }
+    send_bus_frame(stream, &Value::Object(map))
 }
 
 fn read_bus_frame(stream: &mut TcpStream) -> BusResult<BusFrame> {

@@ -63,6 +63,11 @@
 - **Security**: the bus runs on localhost; rely on VM identity for channel isolation. Future work could add shared secrets or TLS if needed.
 - **Failure modes**: guest disconnects invalidate its subscription and mark reachability as stale. Broker restarts purge sessions; guests must reconnect automatically.
 
+## Status Signals
+- `castra status` now includes `BUS` and `BUS AGE` columns. Guests advertising `bus-v1` report whether they are currently subscribed (`subscribed`), have an open bus handshake without an active subscription (`idle`), or are operating in handshake-only mode (`—`).
+- Library/JSON consumers receive the same data via `VmStatusRow.bus_subscribed`, `last_publish_age`, and `last_heartbeat_age` durations, alongside existing broker reachability metrics.
+- Heartbeats are required every 60 seconds; missing heartbeats age the session out and clear subscription state. Publish frames are acknowledged only after durable persistence, providing back-pressure when the broker cannot keep up.
+
 ## Incremental Delivery
 1. Extend broker to maintain long-lived sessions and expose a framed bus API while keeping current handshake behavior (Thread 3 acceptance).
 2. Ship a guest agent update that upgrades to the bus protocol; validate reachability and freshness stay accurate.

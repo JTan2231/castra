@@ -7,7 +7,7 @@ use crate::Result;
 use crate::cli::StatusArgs;
 use crate::core::operations;
 use crate::core::options::StatusOptions;
-use crate::core::outcome::{BrokerState, StatusOutcome};
+use crate::core::outcome::{BrokerState, StatusOutcome, VmStatusRow};
 use crate::core::project::format_config_warnings;
 use crate::core::status::{HANDSHAKE_FRESHNESS, format_uptime};
 
@@ -114,6 +114,18 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
         .map(|row| row.broker_reachability.as_str())
         .collect();
 
+    let bus_labels: Vec<String> = outcome
+        .rows
+        .iter()
+        .map(|row| bus_state_label(row).to_string())
+        .collect();
+
+    let bus_age: Vec<String> = outcome
+        .rows
+        .iter()
+        .map(|row| bus_age_display(row))
+        .collect();
+
     let cpu_mem: Vec<String> = outcome
         .rows
         .iter()
@@ -156,20 +168,38 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
         .unwrap_or(1)
         .max("BROKER".len());
 
+    let bus_width = bus_labels
+        .iter()
+        .map(|value| value.len())
+        .max()
+        .unwrap_or(1)
+        .max("BUS".len());
+
+    let bus_age_width = bus_age
+        .iter()
+        .map(|value| value.len())
+        .max()
+        .unwrap_or(1)
+        .max("BUS AGE".len());
+
     writeln!(
         out,
-        "{:<vm_width$}  {:<state_width$}  {:>cpu_mem_width$}  {:>uptime_width$}  {:<broker_width$}  {}",
+        "{:<vm_width$}  {:<state_width$}  {:>cpu_mem_width$}  {:>uptime_width$}  {:<broker_width$}  {:<bus_width$}  {:<bus_age_width$}  {}",
         "VM",
         "STATE",
         "CPU/MEM",
         "UPTIME",
         "BROKER",
+        "BUS",
+        "BUS AGE",
         "FORWARDS",
         vm_width = vm_width,
         state_width = state_width,
         cpu_mem_width = cpu_mem_width,
         uptime_width = uptime_width,
         broker_width = broker_width,
+        bus_width = bus_width,
+        bus_age_width = bus_age_width,
     )
     .unwrap();
 
@@ -178,16 +208,20 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
         let broker = style_broker(broker_labels[idx], broker_width, use_color);
         writeln!(
             out,
-            "{:<vm_width$}  {}  {:>cpu_mem_width$}  {:>uptime_width$}  {}  {}",
+            "{:<vm_width$}  {}  {:>cpu_mem_width$}  {:>uptime_width$}  {}  {:<bus_width$}  {:<bus_age_width$}  {}",
             row.name,
             state,
             cpu_mem[idx],
             format_uptime(row.uptime),
             broker,
+            bus_labels[idx].as_str(),
+            bus_age[idx].as_str(),
             row.forwards,
             vm_width = vm_width,
             cpu_mem_width = cpu_mem_width,
             uptime_width = uptime_width,
+            bus_width = bus_width,
+            bus_age_width = bus_age_width,
         )
         .unwrap();
     }
@@ -196,6 +230,11 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
     writeln!(
         out,
         "Legend: BROKER reachable = host broker handshake OK; waiting = broker up, guest not connected; offline = listener not running."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "Legend: BUS subscribed = guest listens for host broadcasts; idle = bus handshake alive without active subscription. BUS AGE reports time since last publish/heartbeat observed."
     )
     .unwrap();
     writeln!(
@@ -216,6 +255,31 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
     .unwrap();
 
     out
+}
+
+fn bus_state_label(row: &VmStatusRow) -> &'static str {
+    if row.bus_subscribed {
+        "subscribed"
+    } else if row.last_publish_age.is_some() || row.last_heartbeat_age.is_some() {
+        "idle"
+    } else {
+        "—"
+    }
+}
+
+fn bus_age_display(row: &VmStatusRow) -> String {
+    let mut parts = Vec::new();
+    if let Some(age) = row.last_publish_age {
+        parts.push(format!("pub {}", format_uptime(Some(age))));
+    }
+    if let Some(age) = row.last_heartbeat_age {
+        parts.push(format!("hb {}", format_uptime(Some(age))));
+    }
+    if parts.is_empty() {
+        "—".to_string()
+    } else {
+        parts.join(" / ")
+    }
 }
 
 fn style_state(state: &str, width: usize, use_color: bool) -> String {

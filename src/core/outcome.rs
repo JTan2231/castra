@@ -131,6 +131,9 @@ pub struct VmStatusRow {
     pub uptime: Option<Duration>,
     pub broker_reachability: BrokerReachability,
     pub handshake_age: Option<Duration>,
+    pub bus_subscribed: bool,
+    pub last_publish_age: Option<Duration>,
+    pub last_heartbeat_age: Option<Duration>,
     pub forwards: String,
 }
 

@@ -74,6 +74,9 @@ pub fn collect_status(project: &ProjectConfig) -> StatusSnapshot {
             &mut diagnostics,
         );
 
+        let (bus_subscribed, last_publish_age, last_heartbeat_age) =
+            bus_state_for_vm(record.as_ref(), now, vm.name.as_str(), &mut diagnostics);
+
         if matches!(reachability, BrokerReachability::Reachable) {
             reachable = true;
         }
@@ -97,6 +100,9 @@ pub fn collect_status(project: &ProjectConfig) -> StatusSnapshot {
             uptime,
             broker_reachability: reachability,
             handshake_age,
+            bus_subscribed,
+            last_publish_age,
+            last_heartbeat_age,
             forwards: format_port_forwards(&vm.port_forwards),
         });
     }
@@ -212,6 +218,62 @@ fn broker_reachability_for_vm(
     }
 }
 
+fn bus_state_for_vm(
+    record: Option<&HandshakeRecord>,
+    now: SystemTime,
+    vm_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (bool, Option<Duration>, Option<Duration>) {
+    let Some(record) = record else {
+        return (false, None, None);
+    };
+
+    let Some(bus) = &record.bus else {
+        return (false, None, None);
+    };
+
+    let (publish_age, publish_future) = duration_since_optional(now, bus.last_publish);
+    if publish_future {
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Warning,
+                format!("Bus publish timestamp for VM `{vm_name}` is ahead of the host clock."),
+            )
+            .with_help("Ensure host and guest clocks are synchronized."),
+        );
+    }
+
+    let (heartbeat_age, heartbeat_future) = duration_since_optional(now, bus.last_heartbeat);
+    if heartbeat_future {
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Warning,
+                format!("Bus heartbeat timestamp for VM `{vm_name}` is ahead of the host clock."),
+            )
+            .with_help("Ensure host and guest clocks are synchronized."),
+        );
+    }
+
+    (
+        !bus.subscribed_topics.is_empty(),
+        publish_age,
+        heartbeat_age,
+    )
+}
+
+fn duration_since_optional(
+    now: SystemTime,
+    timestamp: Option<SystemTime>,
+) -> (Option<Duration>, bool) {
+    match timestamp {
+        Some(ts) => match now.duration_since(ts) {
+            Ok(age) => (Some(age), false),
+            Err(_) => (Some(Duration::from_secs(0)), true),
+        },
+        None => (None, false),
+    }
+}
+
 fn should_update_last_handshake(
     current: &Option<BrokerHandshake>,
     candidate_ts: SystemTime,
@@ -282,9 +344,9 @@ fn load_handshake_records(dir: &Path) -> (HashMap<String, HandshakeRecord>, Vec<
         let StoredHandshakeFile {
             vm,
             timestamp,
-            capabilities,
+            mut capabilities,
+            bus,
         } = stored;
-        let _ = capabilities;
 
         let vm = vm
             .unwrap_or_else(|| fallback_identity(&path))
@@ -298,26 +360,63 @@ fn load_handshake_records(dir: &Path) -> (HashMap<String, HandshakeRecord>, Vec<
             continue;
         }
 
-        let timestamp = match UNIX_EPOCH.checked_add(Duration::from_secs(timestamp)) {
-            Some(time) => time,
-            None => {
-                warnings.push(format!(
-                    "Handshake file {} contains an out-of-range timestamp {}.",
-                    path.display(),
-                    timestamp
-                ));
-                continue;
+        let timestamp =
+            match convert_optional_timestamp("handshake", Some(timestamp), &path, &mut warnings) {
+                Some(time) => time,
+                None => continue,
+            };
+
+        capabilities.sort_unstable_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        capabilities.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+
+        let bus_state = bus.map(|raw| {
+            let StoredHandshakeBusFile {
+                subscribed_topics,
+                last_publish_ts,
+                last_heartbeat_ts,
+            } = raw;
+
+            let mut topics = subscribed_topics;
+            topics.sort_unstable_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+            topics.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+            HandshakeBusState {
+                subscribed_topics: topics,
+                last_publish: convert_optional_timestamp(
+                    "bus.last_publish",
+                    last_publish_ts,
+                    &path,
+                    &mut warnings,
+                ),
+                last_heartbeat: convert_optional_timestamp(
+                    "bus.last_heartbeat",
+                    last_heartbeat_ts,
+                    &path,
+                    &mut warnings,
+                ),
             }
+        });
+
+        let new_record = HandshakeRecord {
+            timestamp,
+            capabilities,
+            bus: bus_state,
         };
 
         records
             .entry(vm)
             .and_modify(|existing: &mut HandshakeRecord| {
                 if timestamp > existing.timestamp {
-                    existing.timestamp = timestamp;
+                    *existing = new_record.clone();
+                } else if timestamp == existing.timestamp {
+                    if existing.capabilities.is_empty() && !new_record.capabilities.is_empty() {
+                        existing.capabilities = new_record.capabilities.clone();
+                    }
+                    if existing.bus.is_none() && new_record.bus.is_some() {
+                        existing.bus = new_record.bus.clone();
+                    }
                 }
             })
-            .or_insert(HandshakeRecord { timestamp });
+            .or_insert(new_record);
     }
 
     (records, warnings)
@@ -330,9 +429,39 @@ fn fallback_identity(path: &Path) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-#[derive(Debug)]
+fn convert_optional_timestamp(
+    label: &str,
+    value: Option<u64>,
+    path: &Path,
+    warnings: &mut Vec<String>,
+) -> Option<SystemTime> {
+    value.and_then(
+        |seconds| match UNIX_EPOCH.checked_add(Duration::from_secs(seconds)) {
+            Some(time) => Some(time),
+            None => {
+                warnings.push(format!(
+                    "Handshake file {} contains an out-of-range {label} timestamp {}.",
+                    path.display(),
+                    seconds
+                ));
+                None
+            }
+        },
+    )
+}
+
+#[derive(Debug, Clone)]
 struct HandshakeRecord {
     timestamp: SystemTime,
+    capabilities: Vec<String>,
+    bus: Option<HandshakeBusState>,
+}
+
+#[derive(Debug, Clone)]
+struct HandshakeBusState {
+    subscribed_topics: Vec<String>,
+    last_publish: Option<SystemTime>,
+    last_heartbeat: Option<SystemTime>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -341,6 +470,18 @@ struct StoredHandshakeFile {
     timestamp: u64,
     #[serde(default)]
     capabilities: Vec<String>,
+    #[serde(default)]
+    bus: Option<StoredHandshakeBusFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredHandshakeBusFile {
+    #[serde(default)]
+    subscribed_topics: Vec<String>,
+    #[serde(default)]
+    last_publish_ts: Option<u64>,
+    #[serde(default)]
+    last_heartbeat_ts: Option<u64>,
 }
 
 #[cfg(test)]
@@ -371,6 +512,9 @@ mod tests {
             BrokerReachability::Reachable
         ));
         assert!(snapshot.rows[0].handshake_age.is_some());
+        assert!(!snapshot.rows[0].bus_subscribed);
+        assert!(snapshot.rows[0].last_publish_age.is_none());
+        assert!(snapshot.rows[0].last_heartbeat_age.is_none());
         let Some(handshake) = snapshot.last_handshake else {
             panic!("expected last handshake");
         };
@@ -401,6 +545,9 @@ mod tests {
                 .map(|age| age >= HANDSHAKE_FRESHNESS)
                 .unwrap_or(false)
         );
+        assert!(!snapshot.rows[0].bus_subscribed);
+        assert!(snapshot.rows[0].last_publish_age.is_none());
+        assert!(snapshot.rows[0].last_heartbeat_age.is_none());
         assert!(snapshot.last_handshake.is_some());
 
         project.state_root = PathBuf::new();
@@ -420,6 +567,37 @@ mod tests {
             snapshot.rows[0].broker_reachability,
             BrokerReachability::Waiting
         ));
+        assert!(!snapshot.rows[0].bus_subscribed);
+        assert!(snapshot.rows[0].last_publish_age.is_none());
+        assert!(snapshot.rows[0].last_heartbeat_age.is_none());
+
+        project.state_root = PathBuf::new();
+    }
+
+    #[test]
+    fn collect_status_reports_bus_freshness() {
+        let dir = tempdir().unwrap();
+        let mut project = sample_project(dir.path());
+        write_broker_pid(dir.path());
+        write_handshake_with_bus(
+            dir.path(),
+            "devbox",
+            Duration::from_secs(3),
+            true,
+            Some(Duration::from_secs(5)),
+            Some(Duration::from_secs(2)),
+        );
+
+        let snapshot = collect_status(&project);
+        assert!(snapshot.rows[0].bus_subscribed);
+        let publish_age = snapshot.rows[0]
+            .last_publish_age
+            .expect("expected publish age");
+        assert!(publish_age.as_secs() >= 4 && publish_age.as_secs() <= 6);
+        let heartbeat_age = snapshot.rows[0]
+            .last_heartbeat_age
+            .expect("expected heartbeat age");
+        assert!(heartbeat_age.as_secs() >= 1 && heartbeat_age.as_secs() <= 3);
 
         project.state_root = PathBuf::new();
     }
@@ -469,6 +647,52 @@ mod tests {
             "vm": vm,
             "timestamp": timestamp,
         });
+        fs::write(&target, serde_json::to_vec_pretty(&payload).unwrap()).unwrap();
+    }
+
+    fn write_handshake_with_bus(
+        state_root: &std::path::Path,
+        vm: &str,
+        handshake_age: Duration,
+        subscribed: bool,
+        publish_age: Option<Duration>,
+        heartbeat_age: Option<Duration>,
+    ) {
+        use serde_json::json;
+
+        let dir = state_root.join("handshakes");
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join(format!("{}.json", vm));
+
+        let now = SystemTime::now();
+        let handshake_ts = now.checked_sub(handshake_age).unwrap();
+        let publish_ts = publish_age.and_then(|age| now.checked_sub(age));
+        let heartbeat_ts = heartbeat_age.and_then(|age| now.checked_sub(age));
+
+        let handshake_secs = handshake_ts.duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let publish_secs = publish_ts.map(|ts| ts.duration_since(UNIX_EPOCH).unwrap().as_secs());
+        let heartbeat_secs =
+            heartbeat_ts.map(|ts| ts.duration_since(UNIX_EPOCH).unwrap().as_secs());
+
+        let subscribed_topics: Vec<&str> = if subscribed {
+            vec!["broadcast"]
+        } else {
+            Vec::new()
+        };
+
+        let payload = json!({
+            "vm": vm,
+            "timestamp": handshake_secs,
+            "capabilities": ["bus-v1"],
+            "bus": {
+                "protocol": "bus-v1",
+                "subscribed_topics": subscribed_topics,
+                "last_publish_ts": publish_secs,
+                "last_heartbeat_ts": heartbeat_secs,
+                "last_subscribe_ts": if subscribed { Some(handshake_secs) } else { None },
+            }
+        });
+
         fs::write(&target, serde_json::to_vec_pretty(&payload).unwrap()).unwrap();
     }
 }
