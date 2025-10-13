@@ -1,15 +1,15 @@
 SNAPSHOT v0.7.9 — Castra (VM orchestration harness)
 
 Edits since last snapshot
+- Housekeeping: Removed duplicate TODO files to eliminate parallel threads; kept canonical todo_broker_handshake_events.md and todo_castra_bus_subscribe_heartbeat.md. No behavioral/code changes.
 - Editorial: Tightened remaining acceptance for Thread 3 (handshake denial/timeout evidence + non-blocking guarantee test) and Thread 13 (explicit back-pressure observability + reconnection/timeout edge-case tests). No code changes.
-- Housekeeping (prior): Removed duplicate TODO files to eliminate parallel threads: kept canonical broker_handshake_events.md.md and castra_bus_subscribe_heartbeat.md.md; deleted the duplicate non-.md.md variants. No behavioral/code changes.
-- Thread 3 (broker reachability): Implemented deterministic handshake success evidence — standardized log line and structured Event; capabilities normalized. Legend/docs updated. Remaining: denial-path test + example snippets.
+- Thread 3 (broker reachability): Implemented deterministic handshake success evidence — standardized log line and structured Event; capabilities normalized. Legend/docs updated. Remaining: denial-path/timeout tests + example snippets.
 - Thread 13 (Castra Bus): Delivered subscribe handling, durable publish acks, heartbeat tracking with 60s timeout, session timeout/cleanup, and non-blocking BUS status signals. Status UI gains BUS and BUS AGE columns; BUS.md updated. Remaining: explicit back-pressure observability and a few edge-case tests.
 
 Active threads (intent + acceptance)
 - Thread 1 — Discovery semantics gap [tests/docs pending]: `--skip-discovery` requires explicit config/path; zero filesystem walking when set; enforce across status/up/down/ports/logs/bus and clean. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs; CLEAN.md cross-link.
 - Thread 2 — Lifecycle gap: add guest‑cooperative shutdown before TERM→KILL with ordered Events and configurable timeouts [timeouts shipped; events+mechanism pending]. Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
-- Thread 3 — Broker reachability [success evidence delivered; denial tests/docs pending]: maintain non-blocking freshness via reachable/last_handshake_age_ms; emit deterministic handshake logs/events (success path done); finalize denial/timeout-path tests and docs examples. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs; src/core/logs.rs.
+- Thread 3 — Broker reachability [success evidence delivered; denial/timeout tests/docs pending]: maintain non-blocking freshness via reachable/last_handshake_age_ms; emit deterministic handshake logs/events (success path done); finalize denial/timeout-path tests and docs examples. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs; src/core/logs.rs.
 - Thread 6 — Ports active mode [delivered]: `--active` view shows runtime-active forwards; stable columns; fast path. Follow-up: doc snippet + smoke test (tracked in ports_active_mode_docs_test). Anchors: src/core/ports.rs; src/app/ports.rs; src/core/runtime.rs.
 - Thread 10 — Managed images [profile+checksums shipped]: emit machine-parseable verification/profile Events; document cache layout and remediation; align with CLEAN reclaimed-bytes accounting. Anchors: src/managed/mod.rs; src/core/logs.rs/reporter.rs; docs.
 - Thread 11 — Library API for embedders: feature gating in place; add AGENTS.md guidance/snippet for using castra as a library with default-features=false. Anchors: src/lib.rs; Cargo.toml; docs/AGENTS.md.
