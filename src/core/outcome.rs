@@ -5,7 +5,7 @@ use crate::config::{BrokerConfig, PortForward};
 use crate::managed::ManagedImagePaths;
 
 use super::diagnostics::Diagnostic;
-use super::events::{Event, ManagedImageSpecHandle};
+use super::events::{CleanupKind, Event, ManagedImageSpecHandle};
 use super::options::PortsView;
 
 /// Result wrapper returned by high-level operations.
@@ -236,6 +236,68 @@ struct LogSourceState {
     label: String,
     path: PathBuf,
     offset: u64,
+}
+
+/// Outcome of `clean`.
+#[derive(Debug)]
+pub struct CleanOutcome {
+    /// Whether the invocation was a dry run.
+    pub dry_run: bool,
+    /// Cleanup results for each processed state root.
+    pub state_roots: Vec<StateRootCleanup>,
+}
+
+/// Summary for a single state root cleanup.
+#[derive(Debug)]
+pub struct StateRootCleanup {
+    /// Filesystem path to the state root.
+    pub state_root: PathBuf,
+    /// Optional project name associated with the state root.
+    pub project_name: Option<String>,
+    /// Total bytes reclaimed (0 during dry runs).
+    pub reclaimed_bytes: u64,
+    /// Individual actions taken or skipped.
+    pub actions: Vec<CleanupAction>,
+}
+
+/// Individual cleanup decisions for a path.
+#[derive(Debug)]
+pub enum CleanupAction {
+    /// The path was removed successfully.
+    Removed {
+        /// Filesystem path that was removed.
+        path: PathBuf,
+        /// Number of bytes reclaimed.
+        bytes: u64,
+        /// Kind of artifact that was removed.
+        kind: CleanupKind,
+    },
+    /// The path was skipped for the provided reason.
+    Skipped {
+        /// Filesystem path that was skipped.
+        path: PathBuf,
+        /// Reason for skipping the cleanup.
+        reason: SkipReason,
+        /// Kind of artifact associated with the path.
+        kind: CleanupKind,
+    },
+}
+
+/// Reason why a cleanup action was skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipReason {
+    /// The path did not exist.
+    Missing,
+    /// Dry-run mode prevented deletion.
+    DryRun,
+    /// The path was disabled by user flags.
+    FlagDisabled,
+    /// Managed-only mode suppressed the path.
+    ManagedOnly,
+    /// A running process prevented safe cleanup.
+    RunningProcess,
+    /// Input/output error prevented deletion.
+    Io(String),
 }
 
 impl LogFollower {

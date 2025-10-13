@@ -1,4 +1,5 @@
 pub mod broker;
+pub mod clean;
 pub mod common;
 pub mod down;
 pub mod error;
@@ -9,6 +10,7 @@ pub mod status;
 pub mod up;
 
 pub use broker::handle_broker;
+pub use clean::handle_clean;
 pub use down::handle_down;
 pub use init::handle_init;
 pub use logs::handle_logs;

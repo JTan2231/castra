@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+mod clean;
+
 use crate::config::{self, ProjectConfig};
 use crate::error::{Error, Result};
 
@@ -8,13 +10,13 @@ use super::diagnostics::{Diagnostic, Severity};
 use super::events::{Event, ManagedImageSpecHandle};
 use super::logs as logs_core;
 use super::options::{
-    BrokerOptions, ConfigLoadOptions, DownOptions, InitOptions, LogsOptions, PortsOptions,
-    StatusOptions, UpOptions,
+    BrokerOptions, CleanOptions, ConfigLoadOptions, DownOptions, InitOptions, LogsOptions,
+    PortsOptions, StatusOptions, UpOptions,
 };
 use super::outcome::{
-    BrokerLaunchOutcome, BrokerShutdownOutcome, DownOutcome, InitOutcome, LogsOutcome,
-    ManagedVmAssets, OperationOutput, OperationResult, PortsOutcome, StatusOutcome, UpOutcome,
-    VmLaunchOutcome, VmShutdownOutcome,
+    BrokerLaunchOutcome, BrokerShutdownOutcome, CleanOutcome, DownOutcome, InitOutcome,
+    LogsOutcome, ManagedVmAssets, OperationOutput, OperationResult, PortsOutcome, StatusOutcome,
+    UpOutcome, VmLaunchOutcome, VmShutdownOutcome,
 };
 use super::ports as ports_core;
 use super::project::{
@@ -365,12 +367,19 @@ pub fn logs(
     Ok(OperationOutput::new(outcome).with_diagnostics(diagnostics))
 }
 
+pub fn clean(
+    options: CleanOptions,
+    reporter: Option<&mut dyn Reporter>,
+) -> OperationResult<CleanOutcome> {
+    clean::clean(options, reporter)
+}
+
 pub fn broker(options: BrokerOptions, _reporter: Option<&mut dyn Reporter>) -> OperationResult<()> {
     broker_core::run(&options)?;
     Ok(OperationOutput::new(()))
 }
 
-fn load_project_for_operation(
+pub(super) fn load_project_for_operation(
     options: &ConfigLoadOptions,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<(ProjectConfig, bool)> {
@@ -416,7 +425,7 @@ fn process_check(
     }
 }
 
-struct ReporterProxy<'a, 'b> {
+pub(super) struct ReporterProxy<'a, 'b> {
     delegate: Option<&'a mut dyn Reporter>,
     events: &'b mut Vec<Event>,
 }

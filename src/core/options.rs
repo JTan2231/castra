@@ -163,6 +163,43 @@ impl Default for LogsOptions {
     }
 }
 
+/// Options for the `clean` operation.
+#[derive(Debug, Clone)]
+pub struct CleanOptions {
+    /// Scope describing which state roots should be cleaned.
+    pub scope: CleanScope,
+    /// Preview cleanup actions without deleting files.
+    pub dry_run: bool,
+    /// Include VM overlays declared in the project.
+    pub include_overlays: bool,
+    /// Include orchestrator logs directory.
+    pub include_logs: bool,
+    /// Include broker handshake artifacts.
+    pub include_handshakes: bool,
+    /// Restrict cleanup to managed image artifacts.
+    pub managed_only: bool,
+    /// Override running-process safeguards.
+    pub force: bool,
+}
+
+/// Scope selector for the clean command.
+#[derive(Debug, Clone)]
+pub enum CleanScope {
+    /// Operate on all state roots under the shared projects directory.
+    Global { projects_root: PathBuf },
+    /// Operate on a single workspace, resolved via config or explicit state root.
+    Workspace(ProjectSelector),
+}
+
+/// Workspace selection strategy.
+#[derive(Debug, Clone)]
+pub enum ProjectSelector {
+    /// Resolve the workspace via config lookup.
+    Config(ConfigLoadOptions),
+    /// Use the provided state root directly.
+    StateRoot(PathBuf),
+}
+
 /// Options for the hidden `broker` command exposed via the library API.
 #[derive(Debug, Clone)]
 pub struct BrokerOptions {

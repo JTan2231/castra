@@ -70,6 +70,17 @@ pub enum Event {
         /// Whether a change occurred (`true` if the broker was terminated, `false` if it was already offline).
         changed: bool,
     },
+    /// Progress emitted during cleanup operations.
+    CleanupProgress {
+        /// Path targeted by the cleanup step.
+        path: PathBuf,
+        /// Category of artifact being processed.
+        kind: CleanupKind,
+        /// Number of bytes associated with the action.
+        bytes: u64,
+        /// Whether the action occurred in dry-run mode.
+        dry_run: bool,
+    },
 }
 
 /// Strategy used to initiate a shutdown.
@@ -84,6 +95,34 @@ impl ShutdownMethod {
     pub fn describe(self) -> &'static str {
         match self {
             ShutdownMethod::Graceful => "graceful (ACPI)",
+        }
+    }
+}
+
+/// Artifact categories that the cleanup pipeline operates on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupKind {
+    /// Managed image cache contents.
+    ManagedImages,
+    /// Orchestrator log directory.
+    Logs,
+    /// Broker handshake artifacts.
+    Handshakes,
+    /// VM overlay disks.
+    Overlay,
+    /// Orchestrator pid files.
+    PidFile,
+}
+
+impl CleanupKind {
+    /// Human-friendly label for rendering.
+    pub fn describe(self) -> &'static str {
+        match self {
+            CleanupKind::ManagedImages => "managed-images",
+            CleanupKind::Logs => "logs",
+            CleanupKind::Handshakes => "handshakes",
+            CleanupKind::Overlay => "overlay",
+            CleanupKind::PidFile => "pid-file",
         }
     }
 }

@@ -86,6 +86,17 @@ mod tests {
     }
 
     #[test]
+    fn clean_skip_discovery_requires_explicit_config() {
+        let err = config_load_options(None, true, "clean").unwrap_err();
+        match err {
+            Error::SkipDiscoveryRequiresConfig { command } => {
+                assert_eq!(command, "clean");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn explicit_config_passthrough() {
         let path = PathBuf::from("castra.toml");
         let opts = config_load_options(Some(&path), true, "up").expect("config options");

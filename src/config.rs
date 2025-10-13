@@ -1322,7 +1322,7 @@ fn derive_project_id(config_path: &Path) -> String {
     hex::encode(&digest[..8])
 }
 
-fn user_home_dir() -> Option<PathBuf> {
+pub(crate) fn user_home_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("HOME") {
         if !home.is_empty() {
             return Some(PathBuf::from(home));

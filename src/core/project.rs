@@ -19,6 +19,14 @@ pub struct ProjectLoad {
     pub synthetic: bool,
 }
 
+/// Shared projects root used for managed caches.
+pub fn default_projects_root() -> PathBuf {
+    crate::config::user_home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".castra")
+        .join("projects")
+}
+
 pub fn preferred_init_target(options: &InitOptions) -> PathBuf {
     match (&options.output_path, &options.config_hint) {
         (Some(path), _) => path.clone(),

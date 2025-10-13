@@ -43,6 +43,8 @@ pub enum Commands {
     Ports(PortsArgs),
     /// Tail orchestrator and guest logs.
     Logs(LogsArgs),
+    /// Reclaim cached images and workspace state safely.
+    Clean(CleanArgs),
     #[command(hide = true)]
     Broker(BrokerArgs),
 }
@@ -156,6 +158,62 @@ pub struct LogsArgs {
         help = "Show the most recent LINES before streaming"
     )]
     pub tail: usize,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct CleanArgs {
+    /// Only use the explicit --config path instead of searching parent directories.
+    #[arg(
+        long,
+        help = "Skip config discovery; requires --config <PATH> (e.g. --config ./castra.toml)."
+    )]
+    pub skip_discovery: bool,
+
+    /// Clean the global managed image cache under ~/.castra/projects instead of the active workspace.
+    #[arg(
+        long,
+        conflicts_with = "state_root",
+        help = "Purge managed image caches under the shared projects root."
+    )]
+    pub global: bool,
+
+    /// Clean the given state root without loading a project configuration.
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Operate on PATH as the workspace state root without reading configuration."
+    )]
+    pub state_root: Option<PathBuf>,
+
+    /// Preview cleanup actions without deleting anything.
+    #[arg(long, help = "List planned deletions without removing files")]
+    pub dry_run: bool,
+
+    /// Delete VM overlays in addition to ephemeral state.
+    #[arg(long, help = "Include VM overlays in the cleanup plan")]
+    pub include_overlays: bool,
+
+    /// Retain orchestrator logs.
+    #[arg(long, help = "Skip deleting logs/ under the state root")]
+    pub no_logs: bool,
+
+    /// Retain broker handshake artifacts.
+    #[arg(long, help = "Skip deleting broker handshakes/ under the state root")]
+    pub no_handshakes: bool,
+
+    /// Only remove managed image caches.
+    #[arg(
+        long,
+        help = "Suppress non-managed artifacts (overlays, logs, pid files)"
+    )]
+    pub managed_only: bool,
+
+    /// Override running-process safeguards.
+    #[arg(
+        long,
+        help = "Ignore running-process checks (use with caution; ensure VMs are stopped first)"
+    )]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -312,6 +370,68 @@ mod tests {
             panic!("expected ports command");
         };
         assert!(args.active);
+    }
+
+    #[test]
+    fn parse_clean_defaults() {
+        let cli = Cli::try_parse_from(["castra", "clean"]).expect("parse clean");
+        let Commands::Clean(args) = cli.command.expect("clean command present") else {
+            panic!("expected clean command");
+        };
+        assert!(!args.skip_discovery);
+        assert!(!args.global);
+        assert!(args.state_root.is_none());
+        assert!(!args.dry_run);
+        assert!(!args.include_overlays);
+        assert!(!args.no_logs);
+        assert!(!args.no_handshakes);
+        assert!(!args.managed_only);
+        assert!(!args.force);
+    }
+
+    #[test]
+    fn parse_clean_with_flags() {
+        let cli = Cli::try_parse_from([
+            "castra",
+            "--config",
+            "/tmp/castra.toml",
+            "clean",
+            "--skip-discovery",
+            "--dry-run",
+            "--include-overlays",
+            "--no-logs",
+            "--no-handshakes",
+            "--managed-only",
+            "--force",
+        ])
+        .expect("parse clean flags");
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(PathBuf::from("/tmp/castra.toml").as_path())
+        );
+        let Commands::Clean(args) = cli.command.expect("clean command present") else {
+            panic!("expected clean command");
+        };
+        assert!(args.skip_discovery);
+        assert!(args.dry_run);
+        assert!(args.include_overlays);
+        assert!(args.no_logs);
+        assert!(args.no_handshakes);
+        assert!(args.managed_only);
+        assert!(args.force);
+    }
+
+    #[test]
+    fn clean_global_conflicts_with_state_root() {
+        let err = Cli::try_parse_from([
+            "castra",
+            "clean",
+            "--global",
+            "--state-root",
+            "/tmp/workspace",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
