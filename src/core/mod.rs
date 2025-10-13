@@ -25,7 +25,7 @@ pub use outcome::{
     BrokerLaunchOutcome, BrokerShutdownOutcome, BrokerState, CleanOutcome, CleanupAction,
     DownOutcome, InitOutcome, LogEntry, LogFollower, LogSection, LogSectionState, LogsOutcome,
     OperationOutput, OperationResult, PortConflictRow, PortForwardRow, PortForwardStatus,
-    PortsOutcome, SkipReason, StateRootCleanup, StatusOutcome, UpOutcome, VmLaunchOutcome,
-    VmPortDetail, VmShutdownOutcome,
+    PortInactiveReason, PortsOutcome, SkipReason, StateRootCleanup, StatusOutcome, UpOutcome,
+    VmLaunchOutcome, VmPortDetail, VmShutdownOutcome,
 };
 pub use reporter::Reporter;

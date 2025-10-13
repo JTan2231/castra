@@ -5,7 +5,7 @@ use crate::Result;
 use crate::cli::PortsArgs;
 use crate::core::operations;
 use crate::core::options::{PortsOptions, PortsView};
-use crate::core::outcome::{PortForwardStatus, PortsOutcome};
+use crate::core::outcome::{PortForwardStatus, PortInactiveReason, PortsOutcome};
 use crate::core::project::format_config_warnings;
 
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
@@ -83,7 +83,7 @@ fn render_ports(outcome: &PortsOutcome, verbose: bool) {
                 row.forward.host,
                 row.forward.guest,
                 row.forward.protocol,
-                status = status_label(row.status, outcome.view),
+                status = status_label(row.status, outcome.view, row.inactive_reason),
                 vm = row.vm,
                 width = vm_width
             );
@@ -134,11 +134,22 @@ fn render_ports(outcome: &PortsOutcome, verbose: bool) {
     }
 }
 
-fn status_label(status: PortForwardStatus, view: PortsView) -> String {
+fn status_label(
+    status: PortForwardStatus,
+    view: PortsView,
+    reason: Option<PortInactiveReason>,
+) -> String {
     match status {
         PortForwardStatus::Declared => match view {
             PortsView::Declared => "declared".to_string(),
-            PortsView::Active => "inactive (vm stopped)".to_string(),
+            PortsView::Active => match reason {
+                Some(PortInactiveReason::VmStopped) => "inactive (vm stopped)".to_string(),
+                Some(PortInactiveReason::PortNotBound) => "inactive (port not bound)".to_string(),
+                Some(PortInactiveReason::InspectionUnavailable) => {
+                    "inactive (inspection unavailable)".to_string()
+                }
+                None => "inactive".to_string(),
+            },
         },
         PortForwardStatus::Active => "active".to_string(),
         PortForwardStatus::Conflicting => "conflict".to_string(),

@@ -170,6 +170,7 @@ pub struct PortForwardRow {
     pub vm: String,
     pub forward: PortForward,
     pub status: PortForwardStatus,
+    pub inactive_reason: Option<PortInactiveReason>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,6 +179,13 @@ pub enum PortForwardStatus {
     Active,
     Conflicting,
     BrokerReserved,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortInactiveReason {
+    VmStopped,
+    PortNotBound,
+    InspectionUnavailable,
 }
 
 #[derive(Debug)]

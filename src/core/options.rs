@@ -138,7 +138,8 @@ impl Default for PortsOptions {
 pub enum PortsView {
     /// Show declared forwards without inspecting runtime state.
     Declared,
-    /// Inspect runtime state and mark forwards as active when their VM is running.
+    /// Inspect runtime state and mark forwards as active when their VM is running
+    /// and the host forward is currently bound.
     Active,
 }
 

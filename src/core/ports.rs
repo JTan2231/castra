@@ -1,14 +1,37 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::io;
+use std::net::{TcpListener, UdpSocket};
 
-use crate::config::ProjectConfig;
+use crate::config::{PortForward, PortProtocol, ProjectConfig};
 
 use super::diagnostics::{Diagnostic, Severity};
 use super::options::PortsView;
 use super::outcome::{
-    PortConflictRow, PortForwardRow, PortForwardStatus, PortsOutcome, VmPortDetail,
+    PortConflictRow, PortForwardRow, PortForwardStatus, PortInactiveReason, PortsOutcome,
+    VmPortDetail,
 };
 use super::project::config_state_root;
 use super::runtime::inspect_vm_state;
+
+type ForwardKey = (u16, u16, PortProtocol);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VmRuntimeState {
+    Running,
+    Stopped,
+    Unknown,
+}
+
+#[derive(Clone, Copy)]
+enum ForwardRuntimeState {
+    Active,
+    Inactive(PortInactiveReason),
+}
+
+struct VmInspection {
+    state: VmRuntimeState,
+    forwards: HashMap<ForwardKey, ForwardRuntimeState>,
+}
 
 pub fn summarize(project: &ProjectConfig, view: PortsView) -> (PortsOutcome, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
@@ -16,22 +39,10 @@ pub fn summarize(project: &ProjectConfig, view: PortsView) -> (PortsOutcome, Vec
     let conflict_ports: HashSet<u16> = conflicts.iter().map(|c| c.port).collect();
     let broker_conflict_port = broker_collision.as_ref().map(|c| c.port);
 
-    let runtime_active: Option<HashSet<String>> = if matches!(view, PortsView::Active) {
-        let state_root = config_state_root(project);
-        let mut active = HashSet::new();
-        for vm in &project.vms {
-            let pidfile = state_root.join(format!("{}.pid", vm.name));
-            let (state, _uptime, warnings) = inspect_vm_state(&pidfile, &vm.name);
-            diagnostics.extend(
-                warnings
-                    .into_iter()
-                    .map(|warning| Diagnostic::new(Severity::Warning, warning)),
-            );
-            if state == "running" {
-                active.insert(vm.name.clone());
-            }
-        }
-        Some(active)
+    let runtime_inspection = if matches!(view, PortsView::Active) {
+        let (inspection, mut runtime_diags) = inspect_runtime_forwards(project);
+        diagnostics.append(&mut runtime_diags);
+        Some(inspection)
     } else {
         None
     };
@@ -39,23 +50,55 @@ pub fn summarize(project: &ProjectConfig, view: PortsView) -> (PortsOutcome, Vec
     let mut declared = Vec::new();
     for vm in &project.vms {
         for forward in &vm.port_forwards {
-            let status = if conflict_ports.contains(&forward.host) {
+            let mut status = if conflict_ports.contains(&forward.host) {
                 PortForwardStatus::Conflicting
             } else if broker_conflict_port == Some(forward.host) {
                 PortForwardStatus::BrokerReserved
-            } else if runtime_active
-                .as_ref()
-                .map_or(false, |set| set.contains(&vm.name))
-            {
-                PortForwardStatus::Active
             } else {
                 PortForwardStatus::Declared
             };
+            let mut inactive_reason = None;
+
+            if matches!(view, PortsView::Active) && matches!(status, PortForwardStatus::Declared) {
+                let key = forward_key(forward);
+                if let Some(runtime) = runtime_inspection.as_ref() {
+                    if let Some(vm_runtime) = runtime.get(&vm.name) {
+                        match vm_runtime.state {
+                            VmRuntimeState::Running => {
+                                if let Some(forward_state) = vm_runtime.forwards.get(&key) {
+                                    match forward_state {
+                                        ForwardRuntimeState::Active => {
+                                            status = PortForwardStatus::Active;
+                                        }
+                                        ForwardRuntimeState::Inactive(reason) => {
+                                            inactive_reason = Some(*reason);
+                                        }
+                                    }
+                                } else {
+                                    inactive_reason =
+                                        Some(PortInactiveReason::InspectionUnavailable);
+                                }
+                            }
+                            VmRuntimeState::Stopped => {
+                                inactive_reason = Some(PortInactiveReason::VmStopped);
+                            }
+                            VmRuntimeState::Unknown => {
+                                inactive_reason = Some(PortInactiveReason::InspectionUnavailable);
+                            }
+                        }
+                    } else {
+                        inactive_reason = Some(PortInactiveReason::InspectionUnavailable);
+                    }
+                } else {
+                    inactive_reason = Some(PortInactiveReason::InspectionUnavailable);
+                }
+            }
 
             declared.push(PortForwardRow {
                 vm: vm.name.clone(),
                 forward: forward.clone(),
                 status,
+                inactive_reason,
             });
         }
     }
@@ -133,6 +176,111 @@ pub fn ports_without_forwards(project: &ProjectConfig) -> Vec<String> {
         .collect()
 }
 
+fn forward_key(forward: &PortForward) -> ForwardKey {
+    (forward.host, forward.guest, forward.protocol)
+}
+
+fn inspect_runtime_forwards(
+    project: &ProjectConfig,
+) -> (HashMap<String, VmInspection>, Vec<Diagnostic>) {
+    let mut diagnostics = Vec::new();
+    let mut inspections = HashMap::new();
+    let state_root = config_state_root(project);
+
+    for vm in &project.vms {
+        let pidfile = state_root.join(format!("{}.pid", vm.name));
+        let (state, _uptime, warnings) = inspect_vm_state(&pidfile, &vm.name);
+        diagnostics.extend(
+            warnings
+                .into_iter()
+                .map(|warning| Diagnostic::new(Severity::Warning, warning)),
+        );
+
+        let vm_state = match state.as_str() {
+            "running" => VmRuntimeState::Running,
+            "stopped" => VmRuntimeState::Stopped,
+            _ => VmRuntimeState::Unknown,
+        };
+
+        let mut forwards = HashMap::new();
+        if matches!(vm_state, VmRuntimeState::Running) {
+            for forward in &vm.port_forwards {
+                let key = forward_key(forward);
+                match inspect_forward(forward) {
+                    Ok(status) => {
+                        forwards.insert(key, status);
+                    }
+                    Err(err) => {
+                        diagnostics.push(
+                            Diagnostic::new(
+                                Severity::Info,
+                                format!(
+                                    "Runtime inspection for host port {} ({}) on `{}` is unavailable: {err}",
+                                    forward.host,
+                                    forward.protocol,
+                                    vm.name
+                                ),
+                            )
+                            .with_help(
+                                "Showing declared status; inspect the forward manually if needed.",
+                            ),
+                        );
+                        forwards.insert(
+                            key,
+                            ForwardRuntimeState::Inactive(
+                                PortInactiveReason::InspectionUnavailable,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+
+        inspections.insert(
+            vm.name.clone(),
+            VmInspection {
+                state: vm_state,
+                forwards,
+            },
+        );
+    }
+
+    (inspections, diagnostics)
+}
+
+fn inspect_forward(forward: &PortForward) -> io::Result<ForwardRuntimeState> {
+    match forward.protocol {
+        PortProtocol::Tcp => inspect_tcp_port(forward.host),
+        PortProtocol::Udp => inspect_udp_port(forward.host),
+    }
+}
+
+fn inspect_tcp_port(port: u16) -> io::Result<ForwardRuntimeState> {
+    match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(ForwardRuntimeState::Inactive(
+                PortInactiveReason::PortNotBound,
+            ))
+        }
+        Err(err) if err.kind() == io::ErrorKind::AddrInUse => Ok(ForwardRuntimeState::Active),
+        Err(err) => Err(err),
+    }
+}
+
+fn inspect_udp_port(port: u16) -> io::Result<ForwardRuntimeState> {
+    match UdpSocket::bind(("127.0.0.1", port)) {
+        Ok(socket) => {
+            drop(socket);
+            Ok(ForwardRuntimeState::Inactive(
+                PortInactiveReason::PortNotBound,
+            ))
+        }
+        Err(err) if err.kind() == io::ErrorKind::AddrInUse => Ok(ForwardRuntimeState::Active),
+        Err(err) => Err(err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +288,7 @@ mod tests {
         BaseImageSource, BrokerConfig, MemorySpec, PortForward, PortProtocol, ProjectConfig,
         VmDefinition, Workflows,
     };
+    use std::net::TcpListener;
     use tempfile::tempdir;
 
     fn sample_project(state_root: &std::path::Path) -> ProjectConfig {
@@ -184,10 +333,11 @@ mod tests {
             outcome.declared[0].status,
             PortForwardStatus::Declared
         ));
+        assert!(outcome.declared[0].inactive_reason.is_none());
     }
 
     #[test]
-    fn active_view_marks_running_vm_forwards() {
+    fn active_view_reflects_runtime_activity() {
         let temp = tempdir().expect("temp dir");
         let project = sample_project(temp.path());
 
@@ -195,10 +345,11 @@ mod tests {
         assert!(diagnostics.is_empty());
         assert_eq!(outcome.view, PortsView::Active);
         assert_eq!(outcome.declared.len(), 1);
-        assert!(matches!(
-            outcome.declared[0].status,
-            PortForwardStatus::Declared
-        ));
+        assert_eq!(outcome.declared[0].status, PortForwardStatus::Declared);
+        assert_eq!(
+            outcome.declared[0].inactive_reason,
+            Some(PortInactiveReason::VmStopped)
+        );
 
         let pidfile = temp.path().join("devbox.pid");
         std::fs::write(&pidfile, format!("{}\n", std::process::id())).expect("write pidfile");
@@ -207,9 +358,21 @@ mod tests {
         assert!(diagnostics.is_empty());
         assert_eq!(outcome.view, PortsView::Active);
         assert_eq!(outcome.declared.len(), 1);
-        assert!(matches!(
-            outcome.declared[0].status,
-            PortForwardStatus::Active
-        ));
+        assert_eq!(outcome.declared[0].status, PortForwardStatus::Declared);
+        assert_eq!(
+            outcome.declared[0].inactive_reason,
+            Some(PortInactiveReason::PortNotBound)
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:2222").expect("bind listener");
+
+        let (outcome, diagnostics) = summarize(&project, PortsView::Active);
+        assert!(diagnostics.is_empty());
+        assert_eq!(outcome.view, PortsView::Active);
+        assert_eq!(outcome.declared.len(), 1);
+        assert_eq!(outcome.declared[0].status, PortForwardStatus::Active);
+        assert!(outcome.declared[0].inactive_reason.is_none());
+
+        drop(listener);
     }
 }
