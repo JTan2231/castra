@@ -1,7 +1,7 @@
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -40,10 +40,14 @@ impl SessionKind {
 enum HandshakeError {
     Io(io::Error),
     Protocol(String),
-    Storage(String),
+    Storage {
+        details: HandshakeDetails,
+        timestamp: u64,
+        reason: String,
+    },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct HandshakeDetails {
     vm: String,
     capabilities: Vec<String>,
@@ -60,6 +64,7 @@ struct RecordedHandshake {
 enum HandshakeSessionOutcome {
     Granted,
     Denied { reason: String },
+    Timeout { reason: Option<String> },
 }
 
 impl HandshakeSessionOutcome {
@@ -73,6 +78,10 @@ impl HandshakeSessionOutcome {
         }
     }
 
+    fn timeout(reason: Option<String>) -> Self {
+        Self::Timeout { reason }
+    }
+
     fn is_granted(&self) -> bool {
         matches!(self, Self::Granted)
     }
@@ -81,6 +90,7 @@ impl HandshakeSessionOutcome {
         match self {
             Self::Granted => "granted",
             Self::Denied { .. } => "denied",
+            Self::Timeout { .. } => "timeout",
         }
     }
 
@@ -88,6 +98,7 @@ impl HandshakeSessionOutcome {
         match self {
             Self::Granted => None,
             Self::Denied { reason } => Some(reason.as_str()),
+            Self::Timeout { reason } => reason.as_deref(),
         }
     }
 }
@@ -173,6 +184,62 @@ fn handshake_log_message(
         parts.push(format!("reason={reason}"));
     }
     parts.join(" ")
+}
+
+fn emit_handshake_observation(
+    log: &Arc<Mutex<fs::File>>,
+    handshake_dir: &Path,
+    timestamp: u64,
+    vm_label: &str,
+    remote: Option<SocketAddr>,
+    capabilities: &[String],
+    session_kind: SessionKind,
+    outcome: &HandshakeSessionOutcome,
+) -> Result<()> {
+    let remote_display = remote.map(|addr| addr.to_string());
+    let event_record = BrokerHandshakeEventRecord::new(
+        timestamp,
+        vm_label,
+        capabilities,
+        session_kind,
+        outcome,
+        remote_display.as_deref(),
+    );
+    if let Err(err) = append_handshake_event(handshake_dir, &event_record) {
+        let target = remote_display.as_deref().unwrap_or("unknown");
+        broker_log_line(
+            log,
+            "WARN",
+            &format!("failed to record handshake event for `{vm_label}` from {target}: {err}"),
+        )?;
+    }
+
+    let log_message = handshake_log_message(
+        timestamp,
+        vm_label,
+        remote,
+        capabilities,
+        session_kind,
+        outcome,
+    );
+    broker_log_line(log, "INFO", &log_message)?;
+    Ok(())
+}
+
+fn evaluate_handshake_outcome(details: &HandshakeDetails) -> HandshakeSessionOutcome {
+    if !details.has_capability("bus-v1") {
+        return HandshakeSessionOutcome::denied("missing-capability");
+    }
+
+    if !details.is_host() && details.vm.eq_ignore_ascii_case("host") {
+        return HandshakeSessionOutcome::denied("reserved-identity");
+    }
+
+    HandshakeSessionOutcome::granted()
+}
+
+fn is_timeout_error(err: &io::Error) -> bool {
+    matches!(err.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
 }
 impl HandshakeDetails {
     fn has_capability(&self, capability: &str) -> bool {
@@ -298,41 +365,18 @@ pub fn run(options: &BrokerOptions) -> Result<()> {
                         let timestamp = recorded.timestamp;
                         let details = recorded.details;
                         let vm_label = details.vm.clone();
-                        let remote_display = Some(addr.to_string());
-                        let session_outcome = if details.has_capability("bus-v1") {
-                            HandshakeSessionOutcome::granted()
-                        } else {
-                            HandshakeSessionOutcome::denied("missing-capability")
-                        };
-                        let event_record = BrokerHandshakeEventRecord::new(
-                            timestamp,
-                            &vm_label,
-                            &details.capabilities,
-                            details.kind,
-                            &session_outcome,
-                            remote_display.as_deref(),
-                        );
-                        if let Err(err) =
-                            append_handshake_event(&options.handshake_dir, &event_record)
-                        {
-                            broker_log_line(
-                                &log,
-                                "WARN",
-                                &format!(
-                                    "failed to record handshake event for `{}` from {addr}: {err}",
-                                    vm_label
-                                ),
-                            )?;
-                        }
-                        let log_message = handshake_log_message(
+                        let session_outcome = evaluate_handshake_outcome(&details);
+
+                        emit_handshake_observation(
+                            &log,
+                            options.handshake_dir.as_path(),
                             timestamp,
                             &vm_label,
                             Some(addr),
                             &details.capabilities,
                             details.kind,
                             &session_outcome,
-                        );
-                        broker_log_line(&log, "INFO", &log_message)?;
+                        )?;
 
                         if session_outcome.is_granted() {
                             let session = generate_session_token();
@@ -385,6 +429,20 @@ pub fn run(options: &BrokerOptions) -> Result<()> {
                         }
                     }
                     Err(HandshakeError::Protocol(reason)) => {
+                        let timestamp = unix_timestamp_seconds();
+                        let vm_label = addr.to_string();
+                        let capabilities: Vec<String> = Vec::new();
+                        let outcome = HandshakeSessionOutcome::denied("protocol-error");
+                        emit_handshake_observation(
+                            &log,
+                            options.handshake_dir.as_path(),
+                            timestamp,
+                            &vm_label,
+                            Some(addr),
+                            &capabilities,
+                            SessionKind::Guest,
+                            &outcome,
+                        )?;
                         broker_log_line(
                             &log,
                             "WARN",
@@ -393,13 +451,47 @@ pub fn run(options: &BrokerOptions) -> Result<()> {
                         let _ = stream.write_all(format!("error: {reason}\n").as_bytes());
                     }
                     Err(HandshakeError::Io(err)) => {
+                        let timestamp = unix_timestamp_seconds();
+                        let vm_label = addr.to_string();
+                        let capabilities: Vec<String> = Vec::new();
+                        let outcome = if is_timeout_error(&err) {
+                            HandshakeSessionOutcome::timeout(Some("read-timeout".to_string()))
+                        } else {
+                            HandshakeSessionOutcome::denied("io-error")
+                        };
+                        emit_handshake_observation(
+                            &log,
+                            options.handshake_dir.as_path(),
+                            timestamp,
+                            &vm_label,
+                            Some(addr),
+                            &capabilities,
+                            SessionKind::Guest,
+                            &outcome,
+                        )?;
                         broker_log_line(
                             &log,
                             "WARN",
                             &format!("handshake IO error from {addr}: {err}"),
                         )?;
                     }
-                    Err(HandshakeError::Storage(reason)) => {
+                    Err(HandshakeError::Storage {
+                        details,
+                        timestamp,
+                        reason,
+                    }) => {
+                        let vm_label = details.vm.clone();
+                        let outcome = HandshakeSessionOutcome::denied("storage-error");
+                        emit_handshake_observation(
+                            &log,
+                            options.handshake_dir.as_path(),
+                            timestamp,
+                            &vm_label,
+                            Some(addr),
+                            &details.capabilities,
+                            details.kind,
+                            &outcome,
+                        )?;
                         broker_log_line(
                             &log,
                             "ERROR",
@@ -471,8 +563,13 @@ fn process_handshake(
     let details = parse_handshake_line(&line)?;
     let timestamp = unix_timestamp_seconds();
     if !details.is_host() {
-        persist_handshake(handshake_dir, &details.vm, &details.capabilities, timestamp)
-            .map_err(|err| HandshakeError::Storage(err.to_string()))?;
+        persist_handshake(handshake_dir, &details.vm, &details.capabilities, timestamp).map_err(
+            |err| HandshakeError::Storage {
+                details: details.clone(),
+                timestamp,
+                reason: err.to_string(),
+            },
+        )?;
     }
     Ok(RecordedHandshake { details, timestamp })
 }
@@ -1279,6 +1376,76 @@ mod tests {
         assert_eq!(json["session_kind"], "guest");
         assert_eq!(json["capabilities"], serde_json::json!(["bus-v1"]));
         assert_eq!(json["remote_addr"], "127.0.0.1:2222");
+    }
+
+    #[test]
+    fn handshake_log_message_includes_timeout_reason() {
+        let outcome = HandshakeSessionOutcome::timeout(Some("read-timeout".to_string()));
+        let addr: std::net::SocketAddr = "127.0.0.1:6000".parse().unwrap();
+        let message = handshake_log_message(
+            1_700_000_010,
+            "127.0.0.1:6000",
+            Some(addr),
+            &Vec::<String>::new(),
+            SessionKind::Guest,
+            &outcome,
+        );
+        assert!(message.contains("session_outcome=timeout"));
+        assert!(message.contains("reason=read-timeout"));
+    }
+
+    #[test]
+    fn evaluate_handshake_outcome_rejects_reserved_identity_without_host_capability() {
+        let details = HandshakeDetails {
+            vm: "host".to_string(),
+            capabilities: vec!["bus-v1".to_string()],
+            kind: SessionKind::Guest,
+        };
+        let outcome = evaluate_handshake_outcome(&details);
+        match outcome {
+            HandshakeSessionOutcome::Denied { reason } => {
+                assert_eq!(reason, "reserved-identity")
+            }
+            other => panic!("expected denial, received {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_handshake_observation_records_timeout_event() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("broker.log");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .unwrap();
+        let logger = Arc::new(Mutex::new(file));
+        let remote: std::net::SocketAddr = "127.0.0.1:5555".parse().unwrap();
+        let caps: Vec<String> = Vec::new();
+        let outcome = HandshakeSessionOutcome::timeout(Some("read-timeout".to_string()));
+
+        emit_handshake_observation(
+            &logger,
+            dir.path(),
+            1_700_000_123,
+            "127.0.0.1:5555",
+            Some(remote),
+            &caps,
+            SessionKind::Guest,
+            &outcome,
+        )
+        .expect("emit handshake event");
+
+        logger.lock().unwrap().flush().unwrap();
+        let log_contents = fs::read_to_string(&log_path).unwrap();
+        assert!(log_contents.contains("session_outcome=timeout"));
+
+        let event_path = dir.path().join(HANDSHAKE_EVENT_LOG);
+        let raw = fs::read_to_string(event_path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(raw.trim()).unwrap();
+        assert_eq!(json["session_outcome"], "timeout");
+        assert_eq!(json["reason"], "read-timeout");
+        assert_eq!(json["vm"], "127.0.0.1:5555");
     }
 
     #[test]

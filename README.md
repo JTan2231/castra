@@ -35,4 +35,22 @@ The binary is gated behind the `cli` feature (enabled by default). Library consu
 
 `castra status --json` returns the same reachability view rendered by the table. The `reachable` flag stays `true` while the freshest guest handshake is at most 45 seconds old and flips to `false` once that cache ages out; the value is derived from on-disk records and never blocks on a live network probe. `last_handshake_age_ms` reports the age of that freshest handshake in milliseconds (omitted when no guest has connected).
 
-Every handshake also emits a structured JSON line under `<state_root>/handshakes/handshake-events.jsonl` recording the VM name, sorted capabilities, session outcome (`granted` or `denied`), and any denial reason. The timestamp stored in the event matches the value used for reachability calculations.
+Every handshake produces both a deterministic broker log line and a JSON event appended to `<state_root>/handshakes/handshake-events.jsonl`. Each entry records the VM name, normalized capabilities, session outcome (`granted`, `denied`, or `timeout`), and an optional reason. The event timestamp matches the value used for reachability calculations.
+
+Example log lines emitted by the broker:
+
+```text
+[host-broker] 12:00:00 INFO handshake ts=1700000123 vm=devbox remote=127.0.0.1:41000 capabilities=[bus-v1] session_kind=guest session_outcome=granted
+[host-broker] 12:00:01 INFO handshake ts=1700000124 vm=host remote=127.0.0.1:41001 capabilities=[bus-v1] session_kind=guest session_outcome=denied reason=reserved-identity
+[host-broker] 12:00:05 INFO handshake ts=1700000128 vm=127.0.0.1:41002 remote=127.0.0.1:41002 capabilities=[-] session_kind=guest session_outcome=timeout reason=read-timeout
+```
+
+Corresponding JSON events:
+
+```json
+{"timestamp":1700000123,"vm":"devbox","capabilities":["bus-v1"],"session_kind":"guest","session_outcome":"granted","remote_addr":"127.0.0.1:41000"}
+{"timestamp":1700000124,"vm":"host","capabilities":["bus-v1"],"session_kind":"guest","session_outcome":"denied","reason":"reserved-identity","remote_addr":"127.0.0.1:41001"}
+{"timestamp":1700000128,"vm":"127.0.0.1:41002","capabilities":[],"session_kind":"guest","session_outcome":"timeout","reason":"read-timeout","remote_addr":"127.0.0.1:41002"}
+```
+
+Guests that attempt to impersonate the reserved `host` identity without presenting the `host-bus` capability are denied with `reason=reserved-identity`. Idle connections that fail to present a handshake before the socket deadline record `session_outcome=timeout` with `reason=read-timeout`.

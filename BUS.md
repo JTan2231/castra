@@ -68,6 +68,26 @@
 - Library/JSON consumers receive the same data via `VmStatusRow.bus_subscribed`, `last_publish_age`, and `last_heartbeat_age` durations, alongside existing broker reachability metrics.
 - Heartbeats are required every 60 seconds; missing heartbeats age the session out and clear subscription state. Publish frames are acknowledged only after durable persistence, providing back-pressure when the broker cannot keep up.
 
+## Handshake Evidence
+- The broker writes a deterministic log line and appends a JSON event to `<state_root>/handshakes/handshake-events.jsonl` for every handshake attempt. Fields cover the VM identity, sorted capabilities, the session kind (`guest` or `host`), the outcome (`granted`, `denied`, or `timeout`), and an optional reason.
+- Policy guardrails deny guests that attempt to impersonate the reserved `host` identity without advertising the `host-bus` capability (`reason=reserved-identity`). Connections that fail to present a handshake before the socket deadline are recorded as `session_outcome=timeout` with `reason=read-timeout`.
+
+Example log lines:
+
+```text
+[host-broker] 12:00:00 INFO handshake ts=1700000123 vm=devbox remote=127.0.0.1:41000 capabilities=[bus-v1] session_kind=guest session_outcome=granted
+[host-broker] 12:00:01 INFO handshake ts=1700000124 vm=host remote=127.0.0.1:41001 capabilities=[bus-v1] session_kind=guest session_outcome=denied reason=reserved-identity
+[host-broker] 12:00:05 INFO handshake ts=1700000128 vm=127.0.0.1:41002 remote=127.0.0.1:41002 capabilities=[-] session_kind=guest session_outcome=timeout reason=read-timeout
+```
+
+Corresponding JSON events:
+
+```json
+{"timestamp":1700000123,"vm":"devbox","capabilities":["bus-v1"],"session_kind":"guest","session_outcome":"granted","remote_addr":"127.0.0.1:41000"}
+{"timestamp":1700000124,"vm":"host","capabilities":["bus-v1"],"session_kind":"guest","session_outcome":"denied","reason":"reserved-identity","remote_addr":"127.0.0.1:41001"}
+{"timestamp":1700000128,"vm":"127.0.0.1:41002","capabilities":[],"session_kind":"guest","session_outcome":"timeout","reason":"read-timeout","remote_addr":"127.0.0.1:41002"}
+```
+
 ## Incremental Delivery
 1. Extend broker to maintain long-lived sessions and expose a framed bus API while keeping current handshake behavior (Thread 3 acceptance).
 2. Ship a guest agent update that upgrades to the bus protocol; validate reachability and freshness stay accurate.
