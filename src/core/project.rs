@@ -3,8 +3,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    BaseImageSource, BrokerConfig, DEFAULT_BROKER_PORT, ManagedDiskKind, ManagedImageReference,
-    MemorySpec, PortConflict, ProjectConfig, VmDefinition, Workflows,
+    BaseImageSource, BrokerConfig, DEFAULT_BROKER_PORT, LifecycleConfig, ManagedDiskKind,
+    ManagedImageReference, MemorySpec, PortConflict, ProjectConfig, VmDefinition, Workflows,
 };
 use crate::error::{Error, Result};
 
@@ -101,6 +101,11 @@ name = "{project_name}"
 [broker]
 # port = 7070
 
+[lifecycle]
+# graceful_shutdown_wait_secs = 20
+# sigterm_wait_secs = 10
+# sigkill_wait_secs = 5
+
 [[vms]]
 name = "devbox"
 description = "Primary development VM"
@@ -183,6 +188,7 @@ fn synthesize_default_project(search_root: PathBuf) -> ProjectConfig {
         broker: BrokerConfig {
             port: DEFAULT_BROKER_PORT,
         },
+        lifecycle: LifecycleConfig::default(),
         warnings: vec![],
     }
 }

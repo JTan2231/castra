@@ -16,7 +16,8 @@ use libc::{self, pid_t};
 use sysinfo::{Disks, System};
 
 use crate::config::{
-    BaseImageSource, ManagedDiskKind, PortForward, PortProtocol, ProjectConfig, VmDefinition,
+    BaseImageSource, LifecycleConfig, ManagedDiskKind, PortForward, PortProtocol, ProjectConfig,
+    VmDefinition,
 };
 use crate::error::{Error, Result};
 use crate::managed::{
@@ -47,9 +48,6 @@ const DISK_WARN_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
 const DISK_FAIL_THRESHOLD: u64 = 500 * 1024 * 1024;
 const MEMORY_WARN_HEADROOM: u64 = 1 * 1024 * 1024 * 1024;
 const MEMORY_FAIL_HEADROOM: u64 = 512 * 1024 * 1024;
-const GRACEFUL_SHUTDOWN_WAIT_SECS: u64 = 20;
-const SIGTERM_WAIT_SECS: u64 = 10;
-const SIGKILL_WAIT_SECS: u64 = 5;
 
 #[derive(Debug)]
 pub struct AssetPreparation {
@@ -614,6 +612,7 @@ pub fn launch_vm(
 pub fn shutdown_vm(
     vm: &VmDefinition,
     state_root: &Path,
+    lifecycle: &LifecycleConfig,
     events: &mut Vec<Event>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<bool> {
@@ -666,16 +665,18 @@ pub fn shutdown_vm(
         ),
     })?;
 
+    let graceful_wait = lifecycle.graceful_wait();
+    let sigterm_wait = lifecycle.sigterm_wait();
+    let sigkill_wait = lifecycle.sigkill_wait();
+
     match attempt_graceful_shutdown(state_root, &vm.name, events) {
         GracefulTrigger::Initiated => {
-            if wait_for_process_exit(pid, Duration::from_secs(GRACEFUL_SHUTDOWN_WAIT_SECS))
-                .map_err(|err| Error::ShutdownFailed {
-                    vm: vm.name.clone(),
-                    message: format!(
-                        "Error while waiting for pid {pid} during graceful shutdown: {err}"
-                    ),
-                })?
-            {
+            if wait_for_process_exit(pid, graceful_wait).map_err(|err| Error::ShutdownFailed {
+                vm: vm.name.clone(),
+                message: format!(
+                    "Error while waiting for pid {pid} during graceful shutdown: {err}"
+                ),
+            })? {
                 if let Err(err) = fs::remove_file(&pidfile) {
                     if err.kind() != ErrorKind::NotFound {
                         return Err(Error::ShutdownFailed {
@@ -744,11 +745,9 @@ pub fn shutdown_vm(
         vm: vm.name.clone(),
         signal: ShutdownSignal::Sigterm,
     });
-    if !wait_for_process_exit(pid, Duration::from_secs(SIGTERM_WAIT_SECS)).map_err(|err| {
-        Error::ShutdownFailed {
-            vm: vm.name.clone(),
-            message: format!("Error while waiting for pid {pid} to exit: {err}"),
-        }
+    if !wait_for_process_exit(pid, sigterm_wait).map_err(|err| Error::ShutdownFailed {
+        vm: vm.name.clone(),
+        message: format!("Error while waiting for pid {pid} to exit: {err}"),
     })? {
         let kill_res = unsafe { libc::kill(pid, libc::SIGKILL) };
         events.push(Event::ShutdownEscalation {
@@ -767,11 +766,9 @@ pub fn shutdown_vm(
             }
         }
 
-        if !wait_for_process_exit(pid, Duration::from_secs(SIGKILL_WAIT_SECS)).map_err(|err| {
-            Error::ShutdownFailed {
-                vm: vm.name.clone(),
-                message: format!("Error while waiting for pid {pid} after SIGKILL: {err}"),
-            }
+        if !wait_for_process_exit(pid, sigkill_wait).map_err(|err| Error::ShutdownFailed {
+            vm: vm.name.clone(),
+            message: format!("Error while waiting for pid {pid} after SIGKILL: {err}"),
         })? {
             return Err(Error::ShutdownFailed {
                 vm: vm.name.clone(),

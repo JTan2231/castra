@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -8,6 +9,9 @@ use sha2::{Digest, Sha256};
 use crate::error::Error;
 
 pub const DEFAULT_BROKER_PORT: u16 = 7070;
+pub const DEFAULT_GRACEFUL_SHUTDOWN_WAIT_SECS: u64 = 20;
+pub const DEFAULT_SIGTERM_WAIT_SECS: u64 = 10;
+pub const DEFAULT_SIGKILL_WAIT_SECS: u64 = 5;
 
 #[derive(Debug, Clone)]
 pub enum BaseImageSource {
@@ -81,7 +85,39 @@ pub struct ProjectConfig {
     pub state_root: PathBuf,
     pub workflows: Workflows,
     pub broker: BrokerConfig,
+    pub lifecycle: LifecycleConfig,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LifecycleConfig {
+    pub graceful_shutdown_wait_secs: u64,
+    pub sigterm_wait_secs: u64,
+    pub sigkill_wait_secs: u64,
+}
+
+impl Default for LifecycleConfig {
+    fn default() -> Self {
+        Self {
+            graceful_shutdown_wait_secs: DEFAULT_GRACEFUL_SHUTDOWN_WAIT_SECS,
+            sigterm_wait_secs: DEFAULT_SIGTERM_WAIT_SECS,
+            sigkill_wait_secs: DEFAULT_SIGKILL_WAIT_SECS,
+        }
+    }
+}
+
+impl LifecycleConfig {
+    pub fn graceful_wait(&self) -> Duration {
+        Duration::from_secs(self.graceful_shutdown_wait_secs)
+    }
+
+    pub fn sigterm_wait(&self) -> Duration {
+        Duration::from_secs(self.sigterm_wait_secs)
+    }
+
+    pub fn sigkill_wait(&self) -> Duration {
+        Duration::from_secs(self.sigkill_wait_secs)
+    }
 }
 
 impl ProjectConfig {
@@ -237,7 +273,14 @@ fn invalid_config(path: &Path, message: impl Into<String>) -> Error {
 
 fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
     let mut warnings = Vec::new();
-    let allowed_root = ["version", "project", "vms", "workflows", "broker"];
+    let allowed_root = [
+        "version",
+        "project",
+        "vms",
+        "workflows",
+        "broker",
+        "lifecycle",
+    ];
 
     if let toml::Value::Table(table) = value {
         warn_table(table, &allowed_root, "root", &mut warnings);
@@ -421,6 +464,23 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
                 warn_table(broker_table, &["port"], "[broker]", &mut warnings);
             } else {
                 warnings.push("Expected [broker] to be a table.".to_string());
+            }
+        }
+
+        if let Some(lifecycle) = table.get("lifecycle") {
+            if let toml::Value::Table(lifecycle_table) = lifecycle {
+                warn_table(
+                    lifecycle_table,
+                    &[
+                        "graceful_shutdown_wait_secs",
+                        "sigterm_wait_secs",
+                        "sigkill_wait_secs",
+                    ],
+                    "[lifecycle]",
+                    &mut warnings,
+                );
+            } else {
+                warnings.push("Expected [lifecycle] to be a table.".to_string());
             }
         }
     }
@@ -734,6 +794,8 @@ struct RawConfig {
     workflows: RawWorkflows,
     #[serde(default)]
     broker: Option<RawBroker>,
+    #[serde(default)]
+    lifecycle: Option<RawLifecycle>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -831,6 +893,39 @@ struct RawBroker {
     port: Option<u16>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RawLifecycle {
+    #[serde(default)]
+    graceful_shutdown_wait_secs: Option<u64>,
+    #[serde(default)]
+    sigterm_wait_secs: Option<u64>,
+    #[serde(default)]
+    sigkill_wait_secs: Option<u64>,
+}
+
+impl RawLifecycle {
+    fn into_config(self, path: &Path) -> Result<LifecycleConfig, Error> {
+        let graceful = self
+            .graceful_shutdown_wait_secs
+            .unwrap_or(DEFAULT_GRACEFUL_SHUTDOWN_WAIT_SECS);
+        let sigterm = self.sigterm_wait_secs.unwrap_or(DEFAULT_SIGTERM_WAIT_SECS);
+        let sigkill = self.sigkill_wait_secs.unwrap_or(DEFAULT_SIGKILL_WAIT_SECS);
+
+        if sigkill == 0 {
+            return Err(invalid_config(
+                path,
+                "`[lifecycle].sigkill_wait_secs` must be at least 1 to allow the orchestrator to confirm process exit.",
+            ));
+        }
+
+        Ok(LifecycleConfig {
+            graceful_shutdown_wait_secs: graceful,
+            sigterm_wait_secs: sigterm,
+            sigkill_wait_secs: sigkill,
+        })
+    }
+}
+
 impl RawConfig {
     fn into_validated(
         self,
@@ -843,6 +938,7 @@ impl RawConfig {
             vms,
             workflows,
             broker,
+            lifecycle,
         } = self;
 
         let version = version.ok_or_else(|| {
@@ -1211,6 +1307,11 @@ impl RawConfig {
             port: broker.and_then(|b| b.port).unwrap_or(DEFAULT_BROKER_PORT),
         };
 
+        let lifecycle = match lifecycle {
+            Some(raw) => raw.into_config(path)?,
+            None => LifecycleConfig::default(),
+        };
+
         Ok(ProjectConfig {
             file_path: path.to_path_buf(),
             version,
@@ -1219,6 +1320,7 @@ impl RawConfig {
             state_root,
             workflows,
             broker,
+            lifecycle,
             warnings: warnings.clone(),
         })
     }
@@ -1359,6 +1461,7 @@ mod tests {
     use crate::error::Error;
     use regex::Regex;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
     use temp_env::with_var;
     use tempfile::tempdir;
 
@@ -1483,6 +1586,101 @@ memory = "512 MiB"
             _ => panic!("expected managed image source"),
         }
         assert_eq!(vm.memory.bytes(), Some(512 * 1024 * 1024));
+    }
+
+    #[test]
+    fn lifecycle_defaults_applied() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config(
+                r#"
+[[vms]]
+name = "devbox"
+base_image = "images/devbox.qcow2"
+overlay = ".castra/devbox-overlay.qcow2"
+cpus = 2
+memory = "2048 MiB"
+"#,
+            ),
+        );
+
+        let config = load_project_config(&path).expect("load config");
+        assert_eq!(
+            config.lifecycle.graceful_shutdown_wait_secs,
+            DEFAULT_GRACEFUL_SHUTDOWN_WAIT_SECS
+        );
+        assert_eq!(
+            config.lifecycle.sigterm_wait_secs,
+            DEFAULT_SIGTERM_WAIT_SECS
+        );
+        assert_eq!(
+            config.lifecycle.sigkill_wait_secs,
+            DEFAULT_SIGKILL_WAIT_SECS
+        );
+    }
+
+    #[test]
+    fn lifecycle_overrides_parse() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config(
+                r#"
+[lifecycle]
+graceful_shutdown_wait_secs = 5
+sigterm_wait_secs = 2
+sigkill_wait_secs = 7
+
+[[vms]]
+name = "devbox"
+base_image = "images/devbox.qcow2"
+overlay = ".castra/devbox-overlay.qcow2"
+cpus = 2
+memory = "2048 MiB"
+"#,
+            ),
+        );
+
+        let config = load_project_config(&path).expect("load config");
+        assert_eq!(config.lifecycle.graceful_shutdown_wait_secs, 5);
+        assert_eq!(config.lifecycle.sigterm_wait_secs, 2);
+        assert_eq!(config.lifecycle.sigkill_wait_secs, 7);
+        assert_eq!(config.lifecycle.graceful_wait(), Duration::from_secs(5));
+        assert_eq!(config.lifecycle.sigterm_wait(), Duration::from_secs(2));
+        assert_eq!(config.lifecycle.sigkill_wait(), Duration::from_secs(7));
+    }
+
+    #[test]
+    fn lifecycle_sigkill_requires_positive_duration() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config(
+                r#"
+[lifecycle]
+sigkill_wait_secs = 0
+
+[[vms]]
+name = "devbox"
+base_image = "images/devbox.qcow2"
+overlay = ".castra/devbox-overlay.qcow2"
+cpus = 2
+memory = "2048 MiB"
+"#,
+            ),
+        );
+
+        let err = load_project_config(&path).unwrap_err();
+        match err {
+            Error::InvalidConfig { message, .. } => {
+                assert!(
+                    message.contains("sigkill_wait_secs"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]

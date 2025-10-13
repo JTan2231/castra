@@ -35,7 +35,7 @@ pub enum Commands {
     Init(InitArgs),
     /// Boot the configured virtual machines.
     Up(UpArgs),
-    /// Shut down running virtual machines. Attempts a graceful ACPI/QMP powerdown for up to 20s before signals.
+    /// Shut down running virtual machines. Attempts a graceful ACPI/QMP powerdown (default 20s, configurable via [lifecycle]) before signals.
     Down(DownArgs),
     /// Inspect the state of managed virtual machines.
     Status(StatusArgs),

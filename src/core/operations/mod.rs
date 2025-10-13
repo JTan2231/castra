@@ -249,8 +249,15 @@ pub fn down(
 
     let mut vm_results = Vec::new();
     for vm in &project.vms {
-        let changed = reporter
-            .with_event_buffer(|events| shutdown_vm(vm, &state_root, events, &mut diagnostics))?;
+        let changed = reporter.with_event_buffer(|events| {
+            shutdown_vm(
+                vm,
+                &state_root,
+                &project.lifecycle,
+                events,
+                &mut diagnostics,
+            )
+        })?;
         vm_results.push(VmShutdownOutcome {
             name: vm.name.clone(),
             changed,

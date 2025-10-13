@@ -285,8 +285,8 @@ fn inspect_udp_port(port: u16) -> io::Result<ForwardRuntimeState> {
 mod tests {
     use super::*;
     use crate::config::{
-        BaseImageSource, BrokerConfig, MemorySpec, PortForward, PortProtocol, ProjectConfig,
-        VmDefinition, Workflows,
+        BaseImageSource, BrokerConfig, LifecycleConfig, MemorySpec, PortForward, PortProtocol,
+        ProjectConfig, VmDefinition, Workflows,
     };
     use std::net::TcpListener;
     use tempfile::tempdir;
@@ -316,6 +316,7 @@ mod tests {
             state_root: state_root.to_path_buf(),
             workflows: Workflows { init: Vec::new() },
             broker: BrokerConfig { port: 7070 },
+            lifecycle: LifecycleConfig::default(),
             warnings: Vec::new(),
         }
     }

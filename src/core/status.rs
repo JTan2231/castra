@@ -339,7 +339,8 @@ struct StoredHandshakeFile {
 mod tests {
     use super::*;
     use crate::config::{
-        BaseImageSource, BrokerConfig, MemorySpec, ProjectConfig, VmDefinition, Workflows,
+        BaseImageSource, BrokerConfig, LifecycleConfig, MemorySpec, ProjectConfig, VmDefinition,
+        Workflows,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -434,6 +435,7 @@ mod tests {
             state_root: state_root.to_path_buf(),
             workflows: Workflows { init: Vec::new() },
             broker: BrokerConfig { port: 7070 },
+            lifecycle: LifecycleConfig::default(),
             warnings: Vec::new(),
         }
     }
