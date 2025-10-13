@@ -1,32 +1,39 @@
-SNAPSHOT v0.7.5 — Castra (VM orchestration harness)
+SNAPSHOT v0.7.6 — Castra (VM orchestration harness)
 
 Edits since last snapshot
-- Threads 1/3/6/10/2: TODOs synced to current behavior; acceptance clarified (tests for skip-discovery no-walk + failure copy; broker non-blocking guarantees + handshake events; ports --active stability/latency; managed-image verification/profile structured Events; graceful shutdown ordered Events). No code behavior changes.
+- Thread 6: Shipped `castra ports --active` with runtime inspection, inactivity reasons, stable columns, and tests (commit 003c767).
+- Thread 14: Shipped first-class `castra clean` with workspace/global scopes, dry-run, include-* toggles, safeguards, CleanupProgress events, and reclaimed-bytes accounting; enforces skip-discovery pairing with --config/--state-root (commit 9eea08b).
+- Thread 2: Partial — lifecycle timeouts (graceful/term/kill) are configurable and threaded through shutdown; cooperative (ACPI/QMP) phase and ordered Events still pending (commit 2353031).
+- Thread 3: Partial — status exposes `reachable` and `last_handshake_age_ms`; non-blocking guarantees and handshake Events/logs pending tests and help/legend finalization.
+- Thread 10: Partial — managed image boot profile and checksum/size verification are in place with clearer diagnostics; structured machine-parseable Events and docs still pending.
+- Housekeeping: deduped/retired stale TODOs; aligned TODOs to reflect shipped features and remaining acceptance.
 
 Active threads (intent + acceptance)
-- Thread 1 — Discovery semantics gap [delivery pending tests]: `--skip-discovery` requires explicit config/path; zero filesystem walking when set; consistent copy and exit codes; tests across commands and parity for future `clean`. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs; CLEAN.md cross-link.
-- Thread 2 — Lifecycle gap: add multi-phase graceful shutdown before TERM→KILL with ordered Events and configurable timeouts; CLI copy references attempt but runtime behavior not yet implemented. Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
-- Thread 3 — Broker reachability [core fields delivered]: expose non-blocking freshness via reachable and last_handshake_age_ms; cap any initial probe; add deterministic handshake logs/events; document field semantics for automation. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs; src/core/logs.rs.
-- Thread 6 — Ports active mode: add `--active` view; keep columns stable; target <200ms; degrade gracefully if inspection unavailable. Anchors: src/core/ports.rs; src/app/ports.rs; src/core/runtime.rs.
-- Thread 10 — Managed images [profile+checksums delivered]: emit machine-parseable verification/profile events; document cache layout and remediation; align with CLEAN reclaimed-bytes accounting. Anchors: src/managed/mod.rs; src/core/logs.rs/reporter.rs; docs.
+- Thread 1 — Discovery semantics gap [tests/docs pending]: `--skip-discovery` requires explicit config/path; zero filesystem walking when set; consistent copy and exit codes; tests across commands including `clean`. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs; CLEAN.md cross-link.
+- Thread 2 — Lifecycle gap: add guest-cooperative shutdown before TERM→KILL with ordered Events and configurable timeouts [timeouts shipped; events+mechanism pending]. Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
+- Thread 3 — Broker reachability [fields shipped]: maintain non-blocking freshness via reachable/last_handshake_age_ms; add deterministic handshake logs/events; finalize help/legend and JSON field docs. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs; src/core/logs.rs.
+- Thread 6 — Ports active mode [delivered]: `--active` view shows runtime-active forwards with reasons; stable columns; fast path. Keep perf guardrail and degrade copy consistent. Anchors: src/core/ports.rs; src/app/ports.rs; src/core/runtime.rs.
+- Thread 10 — Managed images [profile+checksums shipped]: emit machine-parseable verification/profile Events; document cache layout and remediation; align with CLEAN reclaimed-bytes accounting. Anchors: src/managed/mod.rs; src/core/logs.rs/reporter.rs; docs.
 - Thread 11 — Library API for embedders: feature gating in place; add AGENTS.md guidance/snippet for using castra as a library with default-features=false. Anchors: src/lib.rs; Cargo.toml; docs/AGENTS.md.
-- Thread 12 — Post-boot bootstrap pipeline: host bootstrap daemon reacts to fresh handshake and applies Nix flake over SSH; idempotent via hash stamps; observable logs under state root. Depends on Threads 3 and 10. Anchors: docs/BOOTSTRAP.md; workflows.init hooks; broker/status fields.
+- Thread 12 — Post-boot bootstrap pipeline: host bootstrap reacts to fresh handshake and applies Nix flake over SSH; idempotent via hash stamps; observable logs under state root. Depends on Threads 3 and 10. Anchors: docs/BOOTSTRAP.md; workflows.init hooks; broker/status fields.
 - Thread 13 — Castra Bus: extend broker to framed sessions for publish/subscribe; preserve handshake-only mode via capabilities; add host CLI to publish/tail; log persistence and freshness. Depends on Thread 3. Anchors: src/core/broker.rs; src/core/status.rs; src/core/events.rs; src/core/logs.rs; src/cli.rs.
-- Thread 14 — First-class clean: implement `castra clean` with global/workspace scopes, dry-run/force, overlay opt-in; safe around running processes; emit CleanupProgress events and reclaimed bytes. Aligns with Threads 1, 2, 10. Anchors: src/cli.rs; src/app/clean.rs; src/core/options.rs; src/core/operations/clean.rs; src/core/project.rs; src/core/runtime.rs.
+- Thread 14 — First-class clean [delivered]: `castra clean` implemented per CLEAN.md with events/byte accounting and safeguards. Follow-ups: docs/examples, integration tests for byte totals and permission downgrades. Anchors: src/cli.rs; src/app/clean.rs; src/core/operations/clean.rs; src/core/project.rs; src/core/runtime.rs.
 
 Current code state (observable surfaces)
 - Versioning/MSRV: build.rs injects version/short SHA; CLI reports it. README declares MSRV=1.77; docs/RELEASING.md present.
 - Feature gating: default features include `cli`; building with --no-default-features succeeds and excludes CLI. AGENTS.md guidance still missing.
-- Skip discovery: Enforcement active across status/up/down/ports/logs — `--skip-discovery` must pair with `--config`; help text reflects stricter semantics. Tests for no-walk and exit codes outstanding. Future `clean` will accept `--state-root` as explicit path under skip.
-- Broker status: `reachable` and `last_handshake_age_ms` present in JSON; legend partially updated. Non-blocking guarantees and handshake log/event lines not yet proven by tests.
+- Skip discovery: Enforcement active across status/up/down/ports/logs and clean — `--skip-discovery` must pair with `--config` (or `--state-root` for clean). Help text reflects stricter semantics. Tests for no-walk and exit codes outstanding.
+- Broker status: `reachable` and `last_handshake_age_ms` present in JSON; legend partially updated. Non-blocking guarantees and handshake log/event lines not yet covered by tests.
 - Managed images: Alpine boot profile delivered; checksum/size verification and improved diagnostics in place; emits success copy. Machine-parseable Events and docs pending.
-- Gaps outstanding: ports --active view; graceful shutdown behavior/events; `castra clean` command; bus not implemented; bootstrap flow remains documented-only.
+- Ports: `--active` shipped; runtime inspection marks Active/Inactive with `inactive_reason`; columns stable; diagnostics on inspection failure.
+- Clean: Command shipped with scopes/toggles; emits CleanupProgress events and returns structured CleanOutcome; safeguards for running processes with `--force` override.
+- Gaps outstanding: graceful shutdown cooperative phase/events; broker handshake events/logs; managed-image structured events; docs for AGENTS.md and CLEAN examples; bus and bootstrap remain planned.
 
 Narrative themes
-1) UX-first CLI contract → explicit-config with skip-discovery; consistent, actionable errors; tests back the promise.
-2) Robust VM lifecycle → cooperative shutdown phases with events/timeouts; copy must match behavior.
+1) UX-first CLI contract → explicit-config with skip-discovery; consistent, actionable errors; tests back the promise and include clean.
+2) Robust VM lifecycle → cooperative shutdown phases with events/timeouts; copy matches behavior.
 3) Clear connectivity signals → stable, non-blocking status fields; recognizable handshake logs/events.
-6) Networking clarity → ports --active with stable columns and fast path.
+6) Networking clarity → ports --active with stable columns, reasons, and fast path.
 10) Trustworthy bootstrap → verified managed images and applied boot profile events enabling post-boot provisioning.
 11) Embedder clarity → document how to consume castra as a library without CLI.
 12) Day-1 productivity → documented, repeatable post-boot environment application keyed to handshakes.
@@ -34,15 +41,15 @@ Narrative themes
 14) Safe housekeeping → first-class clean to recover space and resolve cache corruption.
 
 Direction of travel
-- Finish Thread 1 with tests and uniform enforcement across commands (and future `clean`).
-- Implement graceful shutdown events/behavior (Thread 2) with configurable timeouts.
+- Finish Thread 1 with tests and uniform enforcement across commands (and confirm clean parity) including no-walk assertions.
+- Implement cooperative shutdown events/behavior (Thread 2) honoring lifecycle waits; emit ordered events.
 - Solidify Thread 3 non-blocking guarantees and add handshake Events/logs; finalize help/legend; document JSON fields for automation.
-- Expose ports --active and wire runtime inspection (Thread 6).
+- For Thread 6, add perf smoke and scripting docs to lock in the contract.
 - Emit structured Events for managed image verification/profile and document cache (Thread 10); cross-link to `clean`.
 - Author AGENTS.md embedder guide (Thread 11).
-- Deliver `castra clean` end-to-end per CLEAN.md (Thread 14).
-- Keep bootstrap as documented scripts first; consider a first-class command after Threads 3/10 settle (Thread 12).
+- Expand CLEAN.md/README examples; add integration tests for byte totals and permission downgrade behavior (Thread 14 follow-ups).
+- Keep bootstrap as documented scripts first; consider first-class command after Threads 3/10 settle (Thread 12).
 - Design and stage broker bus behind a capability flag without regressing handshake (Thread 13).
 
 Cross-links
-- BOOTSTRAP.md consumes Thread 3/10 fields and events; CLEAN.md enforces Thread 1/2/10; BUS.md extends Thread 3 semantics.
+- BOOTSTRAP.md consumes Thread 3/10 fields and events; CLEAN.md enforces Thread 1/2/10; BUS.md extends Thread 3 semantics; docs/library_usage.md to surface OperationOutput fields for embedders.
