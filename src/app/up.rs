@@ -36,6 +36,47 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
             Event::ManagedArtifact { spec, text, .. } => {
                 println!("→ {} {}: {}", spec.id, spec.version, text);
             }
+            Event::ManagedImageVerified { spec, artifacts } => {
+                let kinds: Vec<&str> = artifacts
+                    .iter()
+                    .map(|artifact| artifact.kind.describe())
+                    .collect();
+                if kinds.is_empty() {
+                    println!(
+                        "→ {} {}: verified managed artifacts.",
+                        spec.id, spec.version
+                    );
+                } else {
+                    println!(
+                        "→ {} {}: verified managed artifacts ({}).",
+                        spec.id,
+                        spec.version,
+                        kinds.join(", ")
+                    );
+                }
+            }
+            Event::ManagedImageProfileApplied {
+                spec,
+                vm,
+                initrd,
+                machine,
+                ..
+            } => {
+                let mut components = vec!["kernel".to_string()];
+                if initrd.is_some() {
+                    components.push("initrd".to_string());
+                }
+                if let Some(machine) = machine {
+                    components.push(format!("machine={machine}"));
+                }
+                println!(
+                    "→ {} {}: applied boot profile for VM `{}` ({}).",
+                    spec.id,
+                    spec.version,
+                    vm,
+                    components.join(", ")
+                );
+            }
             Event::OverlayPrepared { vm, overlay_path } => {
                 println!(
                     "Prepared overlay for VM `{vm}` at {}.",

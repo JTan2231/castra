@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hex::encode as hex_encode;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use ureq::{Agent, Error as UreqError, ErrorKind as UreqErrorKind};
 
@@ -24,6 +25,7 @@ pub struct ImageManager {
 pub struct ManagedImageEnsureOutcome {
     pub paths: ManagedImagePaths,
     pub events: Vec<ManagedArtifactEvent>,
+    pub verification: ManagedImageVerification,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +33,20 @@ pub struct ManagedImagePaths {
     pub root_disk: PathBuf,
     pub kernel: Option<PathBuf>,
     pub initrd: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagedImageArtifactSummary {
+    pub kind: ManagedArtifactKind,
+    pub filename: String,
+    pub size_bytes: u64,
+    pub final_sha256: String,
+    pub source_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagedImageVerification {
+    pub artifacts: Vec<ManagedImageArtifactSummary>,
 }
 
 impl ManagedImagePaths {
@@ -294,7 +310,26 @@ impl ImageManager {
         }
 
         manifest.last_checked = Some(timestamp_seconds());
+        let verification = ManagedImageVerification {
+            artifacts: spec
+                .artifacts
+                .iter()
+                .filter_map(|artifact| {
+                    manifest
+                        .artifacts
+                        .get(artifact.final_filename)
+                        .map(|record| ManagedImageArtifactSummary {
+                            kind: artifact.kind,
+                            filename: artifact.final_filename.to_string(),
+                            size_bytes: record.size,
+                            final_sha256: record.final_sha256.clone(),
+                            source_sha256: record.source_sha256.clone(),
+                        })
+                })
+                .collect(),
+        };
         save_manifest(&manifest_path, &manifest)?;
+        self.log_verification(spec, &verification);
 
         self.push_event(
             spec,
@@ -305,7 +340,11 @@ impl ImageManager {
 
         let paths = ManagedImagePaths::from_records(spec, &resolved_paths)?;
 
-        Ok(ManagedImageEnsureOutcome { paths, events })
+        Ok(ManagedImageEnsureOutcome {
+            paths,
+            events,
+            verification,
+        })
     }
 
     fn push_event(
@@ -329,6 +368,61 @@ impl ImageManager {
             event.message
         );
         self.log_line(&line);
+    }
+
+    pub(crate) fn log_verification(
+        &self,
+        spec: &ManagedImageSpec,
+        verification: &ManagedImageVerification,
+    ) {
+        let artifacts: Vec<_> = verification
+            .artifacts
+            .iter()
+            .map(|artifact| {
+                json!({
+                    "kind": artifact.kind.describe(),
+                    "filename": artifact.filename,
+                    "size_bytes": artifact.size_bytes,
+                    "final_sha256": artifact.final_sha256,
+                    "source_sha256": artifact.source_sha256,
+                })
+            })
+            .collect();
+        let payload = json!({
+            "ts": timestamp_seconds(),
+            "event": "managed-image-verified",
+            "image": spec.id,
+            "version": spec.version,
+            "artifacts": artifacts,
+        });
+        self.log_line(&payload.to_string());
+    }
+
+    pub fn log_profile_application(
+        &self,
+        spec: &ManagedImageSpec,
+        vm: &str,
+        kernel: &Path,
+        initrd: Option<&Path>,
+        append: &str,
+        extra_args: &[String],
+        machine: Option<&str>,
+    ) {
+        let payload = json!({
+            "ts": timestamp_seconds(),
+            "event": "managed-image-profile-applied",
+            "image": spec.id,
+            "version": spec.version,
+            "vm": vm,
+            "components": {
+                "kernel": kernel.display().to_string(),
+                "initrd": initrd.map(|path| path.display().to_string()),
+                "append": append,
+                "extra_args": extra_args.iter().cloned().collect::<Vec<String>>(),
+                "machine": machine,
+            },
+        });
+        self.log_line(&payload.to_string());
     }
 
     fn log_line(&self, line: &str) {
@@ -874,6 +968,7 @@ static ALPINE_MINIMAL_V1: ManagedImageSpec = ManagedImageSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::fs;
     use std::io::Write;
     use tempfile::{NamedTempFile, tempdir};
@@ -1054,5 +1149,79 @@ mod tests {
         let missing = dir.path().join("missing");
         let err = run_qemu_img_convert(&missing, "raw", "qcow2", &input, &output).unwrap_err();
         assert!(err.to_string().contains("Failed to invoke"));
+    }
+
+    #[test]
+    fn log_verification_writes_json_line() {
+        let dir = tempdir().unwrap();
+        let storage_root = dir.path().join("storage");
+        let log_root = dir.path().join("logs");
+        fs::create_dir_all(&storage_root).unwrap();
+        fs::create_dir_all(&log_root).unwrap();
+        let manager = ImageManager::new(storage_root, log_root.clone(), None);
+
+        let verification = ManagedImageVerification {
+            artifacts: vec![ManagedImageArtifactSummary {
+                kind: ManagedArtifactKind::RootDisk,
+                filename: "disk.qcow2".to_string(),
+                size_bytes: 10,
+                final_sha256: "abc123".to_string(),
+                source_sha256: Some("def456".to_string()),
+            }],
+        };
+
+        manager.log_verification(&ALPINE_MINIMAL_V1, &verification);
+
+        let log_path = log_root.join("image-manager.log");
+        let contents = fs::read_to_string(&log_path).expect("log file");
+        let line = contents.trim();
+        let value: Value = serde_json::from_str(line).expect("json line");
+        assert_eq!(value["event"], "managed-image-verified");
+        assert_eq!(value["image"], ALPINE_MINIMAL_V1.id);
+        assert_eq!(value["version"], ALPINE_MINIMAL_V1.version);
+        assert_eq!(
+            value["artifacts"][0]["filename"],
+            verification.artifacts[0].filename
+        );
+        assert_eq!(
+            value["artifacts"][0]["final_sha256"],
+            verification.artifacts[0].final_sha256
+        );
+    }
+
+    #[test]
+    fn log_profile_application_writes_json_line() {
+        let dir = tempdir().unwrap();
+        let storage_root = dir.path().join("storage");
+        let log_root = dir.path().join("logs");
+        fs::create_dir_all(&storage_root).unwrap();
+        fs::create_dir_all(&log_root).unwrap();
+        let manager = ImageManager::new(storage_root, log_root.clone(), None);
+
+        let kernel = dir.path().join("vmlinuz");
+        let initrd = dir.path().join("initrd.img");
+        let extra_args = vec!["arg1".to_string(), "arg2".to_string()];
+
+        manager.log_profile_application(
+            &ALPINE_MINIMAL_V1,
+            "vm-test",
+            &kernel,
+            Some(&initrd),
+            "console=ttyS0",
+            &extra_args,
+            Some("pc-q35"),
+        );
+
+        let log_path = log_root.join("image-manager.log");
+        let contents = fs::read_to_string(&log_path).expect("log file");
+        let line = contents.trim();
+        let value: Value = serde_json::from_str(line).expect("json line");
+        assert_eq!(value["event"], "managed-image-profile-applied");
+        assert_eq!(value["vm"], "vm-test");
+        assert_eq!(value["components"]["kernel"], kernel.display().to_string());
+        assert_eq!(value["components"]["initrd"], initrd.display().to_string());
+        assert_eq!(value["components"]["append"], "console=ttyS0");
+        assert_eq!(value["components"]["extra_args"][0], "arg1");
+        assert_eq!(value["components"]["machine"], "pc-q35");
     }
 }

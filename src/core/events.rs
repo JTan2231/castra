@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use crate::managed::{ManagedArtifactEventDetail, ManagedArtifactKind, ManagedImageSpec};
+use crate::managed::{
+    ManagedArtifactEventDetail, ManagedArtifactKind, ManagedImageArtifactSummary, ManagedImageSpec,
+};
 
 use super::diagnostics::Severity;
 
@@ -13,6 +15,30 @@ pub enum Event {
         severity: Severity,
         /// Human-readable text.
         text: String,
+    },
+    /// Structured summary confirming managed image verification.
+    ManagedImageVerified {
+        /// The managed image specification that was verified.
+        spec: ManagedImageSpecHandle,
+        /// Artifact summaries including filenames, sizes, and checksums.
+        artifacts: Vec<ManagedImageArtifactSummary>,
+    },
+    /// Structured details about a boot profile applied to a VM.
+    ManagedImageProfileApplied {
+        /// The managed image specification providing the profile.
+        spec: ManagedImageSpecHandle,
+        /// VM name receiving the profile.
+        vm: String,
+        /// Resolved kernel path on disk.
+        kernel: PathBuf,
+        /// Optional initrd path.
+        initrd: Option<PathBuf>,
+        /// Kernel append/cmdline used.
+        append: String,
+        /// Additional QEMU arguments supplied by the profile.
+        extra_args: Vec<String>,
+        /// Machine type override if provided.
+        machine: Option<String>,
     },
     /// Status update for managed artifact acquisition.
     ManagedArtifact {

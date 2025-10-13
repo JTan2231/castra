@@ -149,32 +149,36 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
             let prep = ensure_vm_assets(vm, &context)?;
             if let Some(managed) = &prep.managed {
                 let handle = ManagedImageSpecHandle::from(managed.spec);
-                if prep.assets.boot.is_some() {
-                    let profile_label = if prep
-                        .assets
-                        .boot
-                        .as_ref()
-                        .and_then(|boot| boot.initrd.as_ref())
-                        .is_some()
-                    {
-                        "kernel/initrd"
-                    } else {
-                        "kernel"
-                    };
-                    reporter.emit(Event::Message {
-                        severity: Severity::Info,
-                        text: format!(
-                            "→ {}@{}: applied boot profile ({}) for VM `{}`.",
-                            handle.id, handle.version, profile_label, vm.name
-                        ),
-                    });
-                }
                 for event in &managed.events {
                     reporter.emit(Event::ManagedArtifact {
                         spec: handle.clone(),
                         artifact: event.artifact,
                         detail: event.detail.clone(),
                         text: event.message.clone(),
+                    });
+                }
+                reporter.emit(Event::ManagedImageVerified {
+                    spec: handle.clone(),
+                    artifacts: managed.verification.artifacts.clone(),
+                });
+                if let Some(boot) = prep.assets.boot.as_ref() {
+                    context.image_manager.log_profile_application(
+                        managed.spec,
+                        &vm.name,
+                        &boot.kernel,
+                        boot.initrd.as_deref(),
+                        &boot.append,
+                        &boot.extra_args,
+                        boot.machine.as_deref(),
+                    );
+                    reporter.emit(Event::ManagedImageProfileApplied {
+                        spec: handle,
+                        vm: vm.name.clone(),
+                        kernel: boot.kernel.clone(),
+                        initrd: boot.initrd.clone(),
+                        append: boot.append.clone(),
+                        extra_args: boot.extra_args.clone(),
+                        machine: boot.machine.clone(),
                     });
                 }
             }

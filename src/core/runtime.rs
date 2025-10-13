@@ -22,7 +22,7 @@ use crate::config::{
 use crate::error::{Error, Result};
 use crate::managed::{
     ImageManager, ManagedArtifactEvent, ManagedArtifactKind, ManagedImagePaths, ManagedImageSpec,
-    lookup_managed_image,
+    ManagedImageVerification, lookup_managed_image,
 };
 use serde_json::{Value, json};
 
@@ -60,6 +60,7 @@ pub struct AssetPreparation {
 pub struct ManagedAcquisition {
     pub spec: &'static ManagedImageSpec,
     pub events: Vec<ManagedArtifactEvent>,
+    pub verification: ManagedImageVerification,
     pub paths: ManagedImagePaths,
 }
 
@@ -418,6 +419,7 @@ pub fn ensure_vm_assets(vm: &VmDefinition, context: &RuntimeContext) -> Result<A
                 managed: Some(ManagedAcquisition {
                     spec,
                     events: outcome.events,
+                    verification: outcome.verification,
                     paths: outcome.paths,
                 }),
                 overlay_created,
