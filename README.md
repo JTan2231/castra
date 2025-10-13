@@ -30,3 +30,9 @@ The binary is gated behind the `cli` feature (enabled by default). Library consu
 
 - `docs/library_usage.md` explains how to drive Castra from another crate.
 - `docs/RELEASING.md` captures the release checklist.
+
+## Status JSON
+
+`castra status --json` returns the same reachability view rendered by the table. The `reachable` flag stays `true` while the freshest guest handshake is at most 45 seconds old and flips to `false` once that cache ages out; the value is derived from on-disk records and never blocks on a live network probe. `last_handshake_age_ms` reports the age of that freshest handshake in milliseconds (omitted when no guest has connected).
+
+Every handshake also emits a structured JSON line under `<state_root>/handshakes/handshake-events.jsonl` recording the VM name, sorted capabilities, session outcome (`granted` or `denied`), and any denial reason. The timestamp stored in the event matches the value used for reachability calculations.

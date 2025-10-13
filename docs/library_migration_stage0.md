@@ -42,7 +42,8 @@ Broker process: offline (run `castra up`).
 VM      STATE      CPU/MEM  UPTIME  BROKER   FORWARDS
 devbox  stopped  2/2048MiB       —  offline  2222->22/tcp, 8080->80/tcp
 
-Legend: BROKER reachable = host broker handshake OK; waiting = broker up, guest not connected; offline = listener not running.
+Legend: BROKER reachable = handshake received within the freshness window; waiting = broker up with stale handshakes; offline = listener not running.
+`castra status --json` mirrors these fields: `reachable` is derived from cached handshakes, and `last_handshake_age_ms` reports the age of the freshest guest hello in milliseconds.
 States: stopped | starting | running | shutting_down | error
 Exit codes: 0 on success; non-zero if any VM in error.
 ````
@@ -115,4 +116,3 @@ Launching the hidden broker command requires a long-lived process; no transcript
 
 - `cargo test` currently fails under the sandbox: `app::runtime::tests::ensure_port_is_free_detects_conflicts` attempts to bind privileged ports and `app::project::tests::load_or_default_project_synthesizes_when_missing` expects filesystem state outside the sandbox.
 - Existing tests focus on parsing (`config.rs`), CLI argument parsing (`cli.rs`), and broker log formatting. No tests exercise the high-level workflows end-to-end or assert CLI text output, which will be a gap once the library API is introduced.
-

@@ -229,7 +229,8 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
     out.push('\n');
     writeln!(
         out,
-        "Legend: BROKER reachable = host broker handshake OK; waiting = broker up, guest not connected; offline = listener not running."
+        "Legend: BROKER reachable = handshake received within {}; waiting = broker up with stale handshakes; offline = listener not running.",
+        format_uptime(Some(HANDSHAKE_FRESHNESS))
     )
     .unwrap();
     writeln!(
@@ -239,8 +240,12 @@ fn render_status_table(outcome: &StatusOutcome, use_color: bool) -> String {
     .unwrap();
     writeln!(
         out,
-        "Handshake age reflects hh:mm:ss since the last guest hello; entries older than {} flip reachability to waiting.",
-        format_uptime(Some(HANDSHAKE_FRESHNESS))
+        "Handshake age shows hh:mm:ss since the freshest guest hello; older entries flip BROKER to waiting."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "`--json`: reachable mirrors the table without blocking; last_handshake_age_ms reports milliseconds since that freshest hello (null when unseen)."
     )
     .unwrap();
     writeln!(

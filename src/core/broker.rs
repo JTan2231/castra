@@ -17,6 +17,7 @@ use serde_json::{self, Value};
 const BUS_MAX_FRAME_SIZE: usize = 64 * 1024;
 const BUS_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
 const BUS_MAX_SUBSCRIPTIONS: usize = 16;
+const HANDSHAKE_EVENT_LOG: &str = "handshake-events.jsonl";
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -24,6 +25,15 @@ static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 enum SessionKind {
     Guest,
     Host,
+}
+
+impl SessionKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            SessionKind::Guest => "guest",
+            SessionKind::Host => "host",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -40,6 +50,130 @@ struct HandshakeDetails {
     kind: SessionKind,
 }
 
+#[derive(Debug)]
+struct RecordedHandshake {
+    details: HandshakeDetails,
+    timestamp: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HandshakeSessionOutcome {
+    Granted,
+    Denied { reason: String },
+}
+
+impl HandshakeSessionOutcome {
+    fn granted() -> Self {
+        Self::Granted
+    }
+
+    fn denied(reason: impl Into<String>) -> Self {
+        Self::Denied {
+            reason: reason.into(),
+        }
+    }
+
+    fn is_granted(&self) -> bool {
+        matches!(self, Self::Granted)
+    }
+
+    fn status(&self) -> &'static str {
+        match self {
+            Self::Granted => "granted",
+            Self::Denied { .. } => "denied",
+        }
+    }
+
+    fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Granted => None,
+            Self::Denied { reason } => Some(reason.as_str()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct BrokerHandshakeEventRecord {
+    timestamp: u64,
+    vm: String,
+    capabilities: Vec<String>,
+    session_kind: String,
+    session_outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_addr: Option<String>,
+}
+
+impl BrokerHandshakeEventRecord {
+    fn new(
+        timestamp: u64,
+        vm: &str,
+        capabilities: &[String],
+        session_kind: SessionKind,
+        outcome: &HandshakeSessionOutcome,
+        remote_addr: Option<&str>,
+    ) -> Self {
+        let mut caps: Vec<String> = capabilities.iter().cloned().collect();
+        caps.sort_unstable_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        caps.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        Self {
+            timestamp,
+            vm: vm.to_string(),
+            capabilities: caps,
+            session_kind: session_kind.as_str().to_string(),
+            session_outcome: outcome.status().to_string(),
+            reason: outcome.reason().map(|value| value.to_string()),
+            remote_addr: remote_addr.map(|value| value.to_string()),
+        }
+    }
+}
+
+fn append_handshake_event(
+    handshake_dir: &Path,
+    record: &BrokerHandshakeEventRecord,
+) -> io::Result<()> {
+    fs::create_dir_all(handshake_dir)?;
+    let path = handshake_dir.join(HANDSHAKE_EVENT_LOG);
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    serde_json::to_writer(&mut file, record).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to encode handshake event: {err}"),
+        )
+    })?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(())
+}
+
+fn handshake_log_message(
+    timestamp: u64,
+    vm: &str,
+    remote: Option<std::net::SocketAddr>,
+    capabilities: &[String],
+    session_kind: SessionKind,
+    outcome: &HandshakeSessionOutcome,
+) -> String {
+    let mut parts = Vec::with_capacity(6);
+    parts.push(format!("handshake ts={timestamp}"));
+    parts.push(format!("vm={vm}"));
+    if let Some(addr) = remote {
+        parts.push(format!("remote={addr}"));
+    }
+    let caps = if capabilities.is_empty() {
+        "-".to_string()
+    } else {
+        capabilities.join(",")
+    };
+    parts.push(format!("capabilities=[{caps}]"));
+    parts.push(format!("session_kind={}", session_kind.as_str()));
+    parts.push(format!("session_outcome={}", outcome.status()));
+    if let Some(reason) = outcome.reason() {
+        parts.push(format!("reason={reason}"));
+    }
+    parts.join(" ")
+}
 impl HandshakeDetails {
     fn has_capability(&self, capability: &str) -> bool {
         self.capabilities
@@ -160,32 +294,47 @@ pub fn run(options: &BrokerOptions) -> Result<()> {
                     continue;
                 }
                 match process_handshake(&mut stream, options.handshake_dir.as_path()) {
-                    Ok(details) => {
-                        let vm_name = details.vm.clone();
-                        let capabilities_display = if details.capabilities.is_empty() {
-                            "-".to_string()
+                    Ok(recorded) => {
+                        let timestamp = recorded.timestamp;
+                        let details = recorded.details;
+                        let vm_label = details.vm.clone();
+                        let remote_display = Some(addr.to_string());
+                        let session_outcome = if details.has_capability("bus-v1") {
+                            HandshakeSessionOutcome::granted()
                         } else {
-                            details.capabilities.join(",")
+                            HandshakeSessionOutcome::denied("missing-capability")
                         };
-                        let session_label = if details.has_capability("bus-v1") {
-                            match details.kind {
-                                SessionKind::Host => "session=bus(kind=host)".to_string(),
-                                SessionKind::Guest => "session=bus".to_string(),
-                            }
-                        } else {
-                            "session=declined(reason=missing-capability)".to_string()
-                        };
-                        broker_log_line(
-                            &log,
-                            "INFO",
-                            &format!(
-                                "handshake success from {addr}: vm={vm} capabilities=[{caps}] {session}",
-                                vm = vm_name,
-                                caps = capabilities_display,
-                                session = session_label
-                            ),
-                        )?;
-                        if details.has_capability("bus-v1") {
+                        let event_record = BrokerHandshakeEventRecord::new(
+                            timestamp,
+                            &vm_label,
+                            &details.capabilities,
+                            details.kind,
+                            &session_outcome,
+                            remote_display.as_deref(),
+                        );
+                        if let Err(err) =
+                            append_handshake_event(&options.handshake_dir, &event_record)
+                        {
+                            broker_log_line(
+                                &log,
+                                "WARN",
+                                &format!(
+                                    "failed to record handshake event for `{}` from {addr}: {err}",
+                                    vm_label
+                                ),
+                            )?;
+                        }
+                        let log_message = handshake_log_message(
+                            timestamp,
+                            &vm_label,
+                            Some(addr),
+                            &details.capabilities,
+                            details.kind,
+                            &session_outcome,
+                        );
+                        broker_log_line(&log, "INFO", &log_message)?;
+
+                        if session_outcome.is_granted() {
                             let session = generate_session_token();
                             if let Err(err) =
                                 stream.write_all(format!("ok session={session}\n").as_bytes())
@@ -209,7 +358,7 @@ pub fn run(options: &BrokerOptions) -> Result<()> {
                             }
 
                             let logger = log.clone();
-                            let session_vm = vm_name.clone();
+                            let session_vm = vm_label.clone();
                             let bus_dir = bus_log_dir.clone();
                             let handshake_dir = options.handshake_dir.clone();
                             let session_kind = details.kind;
@@ -317,14 +466,15 @@ type HandshakeResult<T> = std::result::Result<T, HandshakeError>;
 fn process_handshake(
     stream: &mut TcpStream,
     handshake_dir: &Path,
-) -> HandshakeResult<HandshakeDetails> {
+) -> HandshakeResult<RecordedHandshake> {
     let line = read_handshake_line(stream).map_err(HandshakeError::Io)?;
     let details = parse_handshake_line(&line)?;
+    let timestamp = unix_timestamp_seconds();
     if !details.is_host() {
-        persist_handshake(handshake_dir, &details.vm, &details.capabilities)
+        persist_handshake(handshake_dir, &details.vm, &details.capabilities, timestamp)
             .map_err(|err| HandshakeError::Storage(err.to_string()))?;
     }
-    Ok(details)
+    Ok(RecordedHandshake { details, timestamp })
 }
 
 fn read_handshake_line(stream: &mut TcpStream) -> io::Result<String> {
@@ -438,10 +588,15 @@ fn parse_handshake_line(line: &str) -> HandshakeResult<HandshakeDetails> {
     })
 }
 
-fn persist_handshake(handshake_dir: &Path, vm: &str, capabilities: &[String]) -> io::Result<()> {
+fn persist_handshake(
+    handshake_dir: &Path,
+    vm: &str,
+    capabilities: &[String],
+    timestamp: u64,
+) -> io::Result<()> {
     let mut record = StoredHandshake {
         vm: vm.to_string(),
-        timestamp: unix_timestamp_seconds(),
+        timestamp,
         capabilities: capabilities.to_vec(),
         bus: None,
     };
@@ -1063,6 +1218,51 @@ mod tests {
                 .any(|cap| cap.eq_ignore_ascii_case("host-bus"))
         );
         assert!(matches!(details.kind, SessionKind::Host));
+    }
+
+    #[test]
+    fn handshake_log_message_includes_core_fields() {
+        let outcome = HandshakeSessionOutcome::granted();
+        let addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let message = handshake_log_message(
+            1_700_000_000,
+            "devbox",
+            Some(addr),
+            &vec!["metrics".to_string(), "bus-v1".to_string()],
+            SessionKind::Guest,
+            &outcome,
+        );
+        assert!(message.contains("handshake ts=1700000000"));
+        assert!(message.contains("vm=devbox"));
+        assert!(message.contains("remote=127.0.0.1:12345"));
+        assert!(message.contains("capabilities=[metrics,bus-v1]"));
+        assert!(message.contains("session_kind=guest"));
+        assert!(message.contains("session_outcome=granted"));
+    }
+
+    #[test]
+    fn append_handshake_event_persists_json_record() {
+        let dir = tempdir().unwrap();
+        let outcome = HandshakeSessionOutcome::denied("missing-capability");
+        let record = BrokerHandshakeEventRecord::new(
+            1_700_000_001,
+            "alpha",
+            &vec!["bus-v1".to_string(), "BUS-V1".to_string()],
+            SessionKind::Guest,
+            &outcome,
+            Some("127.0.0.1:2222"),
+        );
+        append_handshake_event(dir.path(), &record).expect("handshake event");
+        let path = dir.path().join(HANDSHAKE_EVENT_LOG);
+        let raw = fs::read_to_string(path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(raw.trim()).unwrap();
+        assert_eq!(json["vm"], "alpha");
+        assert_eq!(json["timestamp"], 1_700_000_001);
+        assert_eq!(json["session_outcome"], "denied");
+        assert_eq!(json["reason"], "missing-capability");
+        assert_eq!(json["session_kind"], "guest");
+        assert_eq!(json["capabilities"], serde_json::json!(["bus-v1"]));
+        assert_eq!(json["remote_addr"], "127.0.0.1:2222");
     }
 
     #[test]
