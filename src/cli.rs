@@ -45,6 +45,8 @@ pub enum Commands {
     Logs(LogsArgs),
     /// Reclaim cached images and workspace state safely.
     Clean(CleanArgs),
+    /// Interact with the Castra message bus.
+    Bus(BusArgs),
     #[command(hide = true)]
     Broker(BrokerArgs),
 }
@@ -217,6 +219,87 @@ pub struct CleanArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct BusArgs {
+    #[command(subcommand)]
+    pub command: BusCommands,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BusCommands {
+    /// Publish a JSON payload onto the bus.
+    Publish(BusPublishArgs),
+    /// Tail bus logs for shared or per-VM streams.
+    Tail(BusTailArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct BusPublishArgs {
+    /// Only use the explicit --config path instead of searching parent directories.
+    #[arg(
+        long,
+        help = "Skip config discovery; requires --config <PATH> (e.g. --config ./castra.toml)."
+    )]
+    pub skip_discovery: bool,
+
+    /// Topic to publish to (defaults to broadcast).
+    #[arg(
+        long,
+        value_name = "TOPIC",
+        default_value = "broadcast",
+        help = "Topic to publish to (e.g. broadcast or vm:devbox)."
+    )]
+    pub topic: String,
+
+    /// JSON payload to send.
+    #[arg(
+        long,
+        value_name = "JSON",
+        help = "JSON payload describing the message to publish."
+    )]
+    pub payload: String,
+}
+
+#[derive(Debug, Args)]
+pub struct BusTailArgs {
+    /// Only use the explicit --config path instead of searching parent directories.
+    #[arg(
+        long,
+        help = "Skip config discovery; requires --config <PATH> (e.g. --config ./castra.toml)."
+    )]
+    pub skip_discovery: bool,
+
+    /// Tail the shared bus log aggregating all messages.
+    #[arg(
+        long,
+        conflicts_with = "vm",
+        help = "Tail the shared bus log aggregating all messages."
+    )]
+    pub shared: bool,
+
+    /// Tail logs for a specific VM stream.
+    #[arg(
+        long,
+        value_name = "NAME",
+        conflicts_with = "shared",
+        help = "Tail bus logs for the VM named NAME."
+    )]
+    pub vm: Option<String>,
+
+    /// Follow logs in real time.
+    #[arg(short, long, help = "Stream logs until interrupted")]
+    pub follow: bool,
+
+    /// Number of historical lines to display before streaming.
+    #[arg(
+        long,
+        value_name = "LINES",
+        default_value = "200",
+        help = "Show the most recent LINES before streaming"
+    )]
+    pub tail: usize,
+}
+
+#[derive(Debug, Args)]
 #[command(hide = true)]
 pub struct BrokerArgs {
     #[arg(long, value_name = "PORT")]
@@ -296,6 +379,47 @@ mod tests {
         assert_eq!(args.tail, 50);
         assert!(!args.follow);
         assert!(!args.skip_discovery);
+    }
+
+    #[test]
+    fn parse_bus_publish_with_topic() {
+        let cli = Cli::try_parse_from([
+            "castra",
+            "bus",
+            "publish",
+            "--topic",
+            "vm:devbox",
+            "--payload",
+            "{\"message\":\"hi\"}",
+        ])
+        .expect("parse bus publish");
+        let Commands::Bus(args) = cli.command.expect("bus command present") else {
+            panic!("expected bus command");
+        };
+        let BusCommands::Publish(publish) = args.command else {
+            panic!("expected publish subcommand");
+        };
+        assert_eq!(publish.topic, "vm:devbox");
+        assert_eq!(publish.payload, "{\"message\":\"hi\"}");
+        assert!(!publish.skip_discovery);
+    }
+
+    #[test]
+    fn parse_bus_tail_vm() {
+        let cli = Cli::try_parse_from([
+            "castra", "bus", "tail", "--vm", "devbox", "--tail", "10", "--follow",
+        ])
+        .expect("parse bus tail");
+        let Commands::Bus(args) = cli.command.expect("bus command present") else {
+            panic!("expected bus command");
+        };
+        let BusCommands::Tail(tail) = args.command else {
+            panic!("expected tail subcommand");
+        };
+        assert_eq!(tail.vm.as_deref(), Some("devbox"));
+        assert_eq!(tail.tail, 10);
+        assert!(tail.follow);
+        assert!(!tail.shared);
     }
 
     #[test]

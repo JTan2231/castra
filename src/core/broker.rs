@@ -3,10 +3,10 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::options::BrokerOptions;
 use crate::error::{Error, Result};
@@ -251,19 +251,18 @@ impl Drop for PidfileGuard {
 }
 
 fn broker_log_line(log: &Arc<Mutex<fs::File>>, level: &str, message: &str) -> Result<()> {
-    let mut file = log
-        .lock()
-        .map_err(|_| Error::PreflightFailed {
-            message: "Broker log mutex poisoned.".to_string(),
-        })?;
+    let mut file = log.lock().map_err(|_| Error::PreflightFailed {
+        message: "Broker log mutex poisoned.".to_string(),
+    })?;
     let line = format!("[host-broker] {} {} {}", broker_timestamp(), level, message);
     file.write_all(line.as_bytes())
         .map_err(|err| Error::PreflightFailed {
             message: format!("Failed to write broker log entry: {err}"),
         })?;
-    file.write_all(b"\n").map_err(|err| Error::PreflightFailed {
-        message: format!("Failed to finalize broker log entry: {err}"),
-    })?;
+    file.write_all(b"\n")
+        .map_err(|err| Error::PreflightFailed {
+            message: format!("Failed to finalize broker log entry: {err}"),
+        })?;
     file.flush().map_err(|err| Error::PreflightFailed {
         message: format!("Failed to flush broker log: {err}"),
     })?;
@@ -396,11 +395,7 @@ fn parse_handshake_line(line: &str) -> HandshakeResult<HandshakeDetails> {
     })
 }
 
-fn persist_handshake(
-    handshake_dir: &Path,
-    vm: &str,
-    capabilities: &[String],
-) -> io::Result<()> {
+fn persist_handshake(handshake_dir: &Path, vm: &str, capabilities: &[String]) -> io::Result<()> {
     fs::create_dir_all(handshake_dir)?;
     let filename = format!("{}.json", sanitize_vm_name(vm));
     let path = handshake_dir.join(filename);
@@ -490,10 +485,7 @@ fn handle_bus_session(
                         let _ = broker_log_line(
                             &logger,
                             "WARN",
-                            &format!(
-                                "failed to persist bus publish from `{vm}`: {err}",
-                                vm = vm
-                            ),
+                            &format!("failed to persist bus publish from `{vm}`: {err}", vm = vm),
                         );
                         break;
                     }
@@ -563,8 +555,7 @@ fn handle_publish(vm: &str, frame: &BusFrame, bus_log_dir: &Path) -> BusResult<(
         "topic": topic,
         "payload": frame.payload.clone(),
     });
-    let line = serde_json::to_string(&entry)
-        .map_err(|err| BusError::Protocol(err.to_string()))?;
+    let line = serde_json::to_string(&entry).map_err(|err| BusError::Protocol(err.to_string()))?;
     append_bus_log(bus_log_dir, vm, &line)?;
     append_shared_bus_log(bus_log_dir, &line)?;
     Ok(())
@@ -703,15 +694,11 @@ mod tests {
 
     #[test]
     fn parse_handshake_supports_capabilities() {
-        let details =
-            parse_handshake_line("hello vm:dev capabilities=bus-v1,bus-v1,metrics")
-                .expect("handshake parse");
+        let details = parse_handshake_line("hello vm:dev capabilities=bus-v1,bus-v1,metrics")
+            .expect("handshake parse");
         assert_eq!(details.vm, "dev");
         assert_eq!(details.capabilities.len(), 2);
-        assert!(details
-            .capabilities
-            .iter()
-            .any(|cap| cap == "bus-v1"));
+        assert!(details.capabilities.iter().any(|cap| cap == "bus-v1"));
         assert!(details.capabilities.iter().any(|cap| cap == "metrics"));
     }
 

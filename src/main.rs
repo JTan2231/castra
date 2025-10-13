@@ -40,6 +40,7 @@ fn main() -> ExitCode {
         Commands::Ports(args) => app::handle_ports(args, config.as_ref()),
         Commands::Logs(args) => app::handle_logs(args, config.as_ref()),
         Commands::Clean(args) => app::handle_clean(args, config.as_ref()),
+        Commands::Bus(args) => app::handle_bus(args, config.as_ref()),
         Commands::Broker(args) => app::handle_broker(args),
     };
 

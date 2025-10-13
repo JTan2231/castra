@@ -70,7 +70,7 @@ fn render_section(section: &LogSection, use_color: bool) {
     }
 }
 
-fn print_entries(prefix: &str, entries: &[LogEntry]) {
+pub(crate) fn print_entries(prefix: &str, entries: &[LogEntry]) {
     if entries.is_empty() {
         println!("{prefix} (no log entries yet)");
         return;
@@ -85,7 +85,7 @@ fn print_entries(prefix: &str, entries: &[LogEntry]) {
     }
 }
 
-fn follow_logs(follower: &mut LogFollower, use_color: bool) -> Result<()> {
+pub(crate) fn follow_logs(follower: &mut LogFollower, use_color: bool) -> Result<()> {
     println!("--- Following logs (press Ctrl-C to stop) ---");
     loop {
         let updates = follower.poll()?;
@@ -104,7 +104,7 @@ fn follow_logs(follower: &mut LogFollower, use_color: bool) -> Result<()> {
     }
 }
 
-fn format_log_prefix(label: &str, colored: bool) -> String {
+pub(crate) fn format_log_prefix(label: &str, colored: bool) -> String {
     let bracketed = format!("[{label}]");
     if !colored {
         return bracketed;

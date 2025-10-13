@@ -6,7 +6,7 @@ use crate::managed::ManagedImagePaths;
 
 use super::diagnostics::Diagnostic;
 use super::events::{CleanupKind, Event, ManagedImageSpecHandle};
-use super::options::PortsView;
+use super::options::{BusLogTarget, PortsView};
 
 /// Result wrapper returned by high-level operations.
 pub type OperationResult<T> = crate::error::Result<OperationOutput<T>>;
@@ -210,6 +210,26 @@ pub struct VmPortDetail {
 #[derive(Debug)]
 pub struct LogsOutcome {
     pub sections: Vec<LogSection>,
+    pub follower: Option<LogFollower>,
+}
+
+/// Outcome of `bus publish`.
+#[derive(Debug)]
+pub struct BusPublishOutcome {
+    pub log_path: PathBuf,
+    pub topic: String,
+}
+
+/// Outcome of `bus tail`.
+#[derive(Debug)]
+pub struct BusTailOutcome {
+    pub project_path: PathBuf,
+    pub project_name: String,
+    pub target: BusLogTarget,
+    pub log_label: String,
+    pub log_path: PathBuf,
+    pub entries: Vec<LogEntry>,
+    pub state: LogSectionState,
     pub follower: Option<LogFollower>,
 }
 

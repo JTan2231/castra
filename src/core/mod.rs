@@ -16,16 +16,17 @@ pub mod status;
 
 pub use diagnostics::{Diagnostic, Severity};
 pub use events::{CleanupKind, Event, ManagedImageSpecHandle};
-pub use operations::{broker, clean, down, init, logs, ports, status, up};
+pub use operations::{broker, bus_publish, bus_tail, clean, down, init, logs, ports, status, up};
 pub use options::{
-    BrokerOptions, CleanOptions, CleanScope, ConfigLoadOptions, ConfigSource, DownOptions,
-    InitOptions, LogsOptions, PortsOptions, PortsView, ProjectSelector, StatusOptions, UpOptions,
+    BrokerOptions, BusLogTarget, BusPublishOptions, BusTailOptions, CleanOptions, CleanScope,
+    ConfigLoadOptions, ConfigSource, DownOptions, InitOptions, LogsOptions, PortsOptions,
+    PortsView, ProjectSelector, StatusOptions, UpOptions,
 };
 pub use outcome::{
-    BrokerLaunchOutcome, BrokerShutdownOutcome, BrokerState, CleanOutcome, CleanupAction,
-    DownOutcome, InitOutcome, LogEntry, LogFollower, LogSection, LogSectionState, LogsOutcome,
-    OperationOutput, OperationResult, PortConflictRow, PortForwardRow, PortForwardStatus,
-    PortInactiveReason, PortsOutcome, SkipReason, StateRootCleanup, StatusOutcome, UpOutcome,
-    VmLaunchOutcome, VmPortDetail, VmShutdownOutcome,
+    BrokerLaunchOutcome, BrokerShutdownOutcome, BrokerState, BusPublishOutcome, BusTailOutcome,
+    CleanOutcome, CleanupAction, DownOutcome, InitOutcome, LogEntry, LogFollower, LogSection,
+    LogSectionState, LogsOutcome, OperationOutput, OperationResult, PortConflictRow,
+    PortForwardRow, PortForwardStatus, PortInactiveReason, PortsOutcome, SkipReason,
+    StateRootCleanup, StatusOutcome, UpOutcome, VmLaunchOutcome, VmPortDetail, VmShutdownOutcome,
 };
 pub use reporter::Reporter;

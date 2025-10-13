@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use serde_json::Value;
+
 /// Source used when resolving a Castra configuration.
 #[derive(Debug, Clone)]
 pub enum ConfigSource {
@@ -190,6 +192,39 @@ pub enum CleanScope {
     Global { projects_root: PathBuf },
     /// Operate on a single workspace, resolved via config or explicit state root.
     Workspace(ProjectSelector),
+}
+
+/// Options for publishing a message onto the Castra bus.
+#[derive(Debug, Clone)]
+pub struct BusPublishOptions {
+    /// Configuration lookup parameters.
+    pub config: ConfigLoadOptions,
+    /// Topic to publish to.
+    pub topic: String,
+    /// JSON payload delivered with the message.
+    pub payload: Value,
+}
+
+/// Options for tailing bus logs.
+#[derive(Debug, Clone)]
+pub struct BusTailOptions {
+    /// Configuration lookup parameters.
+    pub config: ConfigLoadOptions,
+    /// Which bus log to inspect.
+    pub target: BusLogTarget,
+    /// Number of historical lines to show before streaming.
+    pub tail: usize,
+    /// Whether to follow logs continuously.
+    pub follow: bool,
+}
+
+/// Selector for bus log streams.
+#[derive(Debug, Clone)]
+pub enum BusLogTarget {
+    /// Shared log that aggregates all messages.
+    Shared,
+    /// Per-VM log scoped to the provided VM name.
+    Vm(String),
 }
 
 /// Workspace selection strategy.

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+mod bus;
 mod clean;
 
 use crate::config::{self, ProjectConfig};
@@ -10,13 +11,13 @@ use super::diagnostics::{Diagnostic, Severity};
 use super::events::{Event, ManagedImageSpecHandle};
 use super::logs as logs_core;
 use super::options::{
-    BrokerOptions, CleanOptions, ConfigLoadOptions, DownOptions, InitOptions, LogsOptions,
-    PortsOptions, StatusOptions, UpOptions,
+    BrokerOptions, BusPublishOptions, BusTailOptions, CleanOptions, ConfigLoadOptions, DownOptions,
+    InitOptions, LogsOptions, PortsOptions, StatusOptions, UpOptions,
 };
 use super::outcome::{
-    BrokerLaunchOutcome, BrokerShutdownOutcome, CleanOutcome, DownOutcome, InitOutcome,
-    LogsOutcome, ManagedVmAssets, OperationOutput, OperationResult, PortsOutcome, StatusOutcome,
-    UpOutcome, VmLaunchOutcome, VmShutdownOutcome,
+    BrokerLaunchOutcome, BrokerShutdownOutcome, BusPublishOutcome, BusTailOutcome, CleanOutcome,
+    DownOutcome, InitOutcome, LogsOutcome, ManagedVmAssets, OperationOutput, OperationResult,
+    PortsOutcome, StatusOutcome, UpOutcome, VmLaunchOutcome, VmShutdownOutcome,
 };
 use super::ports as ports_core;
 use super::project::{
@@ -464,4 +465,18 @@ impl<'a, 'b> ReporterProxy<'a, 'b> {
         }
         result
     }
+}
+
+pub fn bus_publish(
+    options: BusPublishOptions,
+    reporter: Option<&mut dyn Reporter>,
+) -> OperationResult<BusPublishOutcome> {
+    bus::publish(options, reporter)
+}
+
+pub fn bus_tail(
+    options: BusTailOptions,
+    reporter: Option<&mut dyn Reporter>,
+) -> OperationResult<BusTailOutcome> {
+    bus::tail(options, reporter)
 }
