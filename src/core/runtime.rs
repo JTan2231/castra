@@ -699,7 +699,12 @@ pub fn shutdown_vm(
                 return Ok(true);
             }
         }
-        GracefulTrigger::Unavailable => {}
+        GracefulTrigger::Unavailable => {
+            events.push(Event::ShutdownInitiated {
+                vm: vm.name.clone(),
+                method: ShutdownMethod::Signals,
+            });
+        }
         GracefulTrigger::Failed(message) => {
             diagnostics.push(
                 Diagnostic::new(
@@ -710,6 +715,10 @@ pub fn shutdown_vm(
                     "Ensure QEMU launched with QMP support or allow Castra to manage the VM lifecycle.",
                 ),
             );
+            events.push(Event::ShutdownInitiated {
+                vm: vm.name.clone(),
+                method: ShutdownMethod::Signals,
+            });
         }
     }
 

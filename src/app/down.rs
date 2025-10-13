@@ -40,6 +40,9 @@ fn render_down(events: &[Event]) {
                 ShutdownMethod::Graceful => {
                     println!("→ {vm}: sent graceful shutdown request (ACPI/QMP).");
                 }
+                ShutdownMethod::Signals => {
+                    println!("→ {vm}: initiating signal-based shutdown (SIGTERM/SIGKILL path).");
+                }
             },
             Event::ShutdownEscalation { vm, signal } => match signal {
                 ShutdownSignal::Sigterm => {

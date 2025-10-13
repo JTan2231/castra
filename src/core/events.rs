@@ -118,6 +118,8 @@ pub enum Event {
 pub enum ShutdownMethod {
     /// Cooperative shutdown via guest-aware channel (e.g., ACPI/QMP).
     Graceful,
+    /// Signal-based shutdown when cooperative paths are unavailable.
+    Signals,
 }
 
 impl ShutdownMethod {
@@ -125,6 +127,7 @@ impl ShutdownMethod {
     pub fn describe(self) -> &'static str {
         match self {
             ShutdownMethod::Graceful => "graceful (ACPI)",
+            ShutdownMethod::Signals => "signals (TERM/KILL)",
         }
     }
 }
