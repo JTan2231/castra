@@ -65,17 +65,84 @@ impl ManagedImagePaths {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ManagedArtifactEvent {
     pub artifact: ManagedArtifactKind,
+    pub detail: ManagedArtifactEventDetail,
     pub message: String,
 }
 
 impl ManagedArtifactEvent {
-    fn new(artifact: ManagedArtifactKind, message: impl Into<String>) -> Self {
+    fn new(artifact: ManagedArtifactKind, detail: ManagedArtifactEventDetail) -> Self {
+        let message = detail.render(artifact);
         Self {
             artifact,
-            message: message.into(),
+            detail,
+            message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedArtifactEventDetail {
+    CacheHit,
+    RefreshingCache,
+    DownloadStarted {
+        url: String,
+        resume_offset: u64,
+    },
+    DownloadCompleted {
+        bytes: u64,
+    },
+    SourceChecksumVerified,
+    FinalChecksumRecorded {
+        checksum: String,
+    },
+    ManifestUpdated,
+    TransformVhdFooterStripped,
+    TransformQemuImgConvert {
+        input_format: String,
+        output_format: String,
+    },
+    TransformRename {
+        target: String,
+    },
+}
+
+impl ManagedArtifactEventDetail {
+    fn render(&self, artifact: ManagedArtifactKind) -> String {
+        match self {
+            Self::CacheHit => format!("{}: cache hit (verified).", artifact.describe()),
+            Self::RefreshingCache => {
+                format!("{}: refreshing cached artifact.", artifact.describe())
+            }
+            Self::DownloadStarted { url, resume_offset } => format!(
+                "{}: downloading from {} (resume offset {}).",
+                artifact.describe(),
+                url,
+                resume_offset
+            ),
+            Self::DownloadCompleted { bytes } => format!(
+                "{}: download complete ({} bytes).",
+                artifact.describe(),
+                bytes
+            ),
+            Self::SourceChecksumVerified => "verified source checksums.".to_string(),
+            Self::FinalChecksumRecorded { checksum } => format!(
+                "{}: final checksum {} stored.",
+                artifact.describe(),
+                checksum
+            ),
+            Self::ManifestUpdated => "Manifest updated.".to_string(),
+            Self::TransformVhdFooterStripped => "VHD footer stripped.".to_string(),
+            Self::TransformQemuImgConvert {
+                input_format,
+                output_format,
+            } => format!(
+                "Converted via qemu-img ({}→{}).",
+                input_format, output_format
+            ),
+            Self::TransformRename { target } => format!("Renamed to {target}."),
         }
     }
 }
@@ -132,7 +199,7 @@ impl ImageManager {
                             spec,
                             &mut events,
                             artifact.kind,
-                            format!("{}: cache hit (verified).", artifact.kind.describe()),
+                            ManagedArtifactEventDetail::CacheHit,
                         );
                         resolved_paths.insert(artifact.kind, final_path.clone());
                         continue;
@@ -150,7 +217,7 @@ impl ImageManager {
                 spec,
                 &mut events,
                 artifact.kind,
-                format!("{}: refreshing cached artifact.", artifact.kind.describe()),
+                ManagedArtifactEventDetail::RefreshingCache,
             );
 
             let download_path =
@@ -169,7 +236,7 @@ impl ImageManager {
                     spec,
                     &mut events,
                     artifact.kind,
-                    "verified source checksums.",
+                    ManagedArtifactEventDetail::SourceChecksumVerified,
                 );
             }
 
@@ -218,11 +285,9 @@ impl ImageManager {
                 spec,
                 &mut events,
                 artifact.kind,
-                format!(
-                    "{}: final checksum {} stored.",
-                    artifact.kind.describe(),
-                    final_hash
-                ),
+                ManagedArtifactEventDetail::FinalChecksumRecorded {
+                    checksum: final_hash.clone(),
+                },
             );
 
             resolved_paths.insert(artifact.kind, final_location);
@@ -235,7 +300,7 @@ impl ImageManager {
             spec,
             &mut events,
             ManagedArtifactKind::RootDisk,
-            "Manifest updated.",
+            ManagedArtifactEventDetail::ManifestUpdated,
         );
 
         let paths = ManagedImagePaths::from_records(spec, &resolved_paths)?;
@@ -248,9 +313,9 @@ impl ImageManager {
         spec: &ManagedImageSpec,
         events: &mut Vec<ManagedArtifactEvent>,
         artifact: ManagedArtifactKind,
-        message: impl Into<String>,
+        detail: ManagedArtifactEventDetail,
     ) {
-        let event = ManagedArtifactEvent::new(artifact, message);
+        let event = ManagedArtifactEvent::new(artifact, detail);
         self.log_event(spec, &event);
         events.push(event);
     }
@@ -300,12 +365,10 @@ impl ImageManager {
             spec,
             events,
             artifact.kind,
-            format!(
-                "{}: downloading from {} (resume offset {}).",
-                artifact.kind.describe(),
-                artifact.source.url,
-                start
-            ),
+            ManagedArtifactEventDetail::DownloadStarted {
+                url: artifact.source.url.to_string(),
+                resume_offset: start,
+            },
         );
 
         let response = request
@@ -365,11 +428,9 @@ impl ImageManager {
             spec,
             events,
             artifact.kind,
-            format!(
-                "{}: download complete ({} bytes).",
-                artifact.kind.describe(),
-                downloaded_size
-            ),
+            ManagedArtifactEventDetail::DownloadCompleted {
+                bytes: downloaded_size,
+            },
         );
 
         if let Some(expected) = artifact.source.size {
@@ -461,7 +522,12 @@ impl ImageManager {
             match step {
                 TransformStep::StripVhdFooter => {
                     strip_vhd_footer(&current)?;
-                    self.push_event(spec, events, artifact.kind, "VHD footer stripped.");
+                    self.push_event(
+                        spec,
+                        events,
+                        artifact.kind,
+                        ManagedArtifactEventDetail::TransformVhdFooterStripped,
+                    );
                 }
                 TransformStep::QemuImgConvert {
                     input_format,
@@ -477,10 +543,10 @@ impl ImageManager {
                         spec,
                         events,
                         artifact.kind,
-                        format!(
-                            "Converted via qemu-img ({}→{}).",
-                            input_format, output_format
-                        ),
+                        ManagedArtifactEventDetail::TransformQemuImgConvert {
+                            input_format: input_format.to_string(),
+                            output_format: output_format.to_string(),
+                        },
                     );
                     current = target;
                 }
@@ -497,7 +563,9 @@ impl ImageManager {
                         spec,
                         events,
                         artifact.kind,
-                        format!("Renamed to {}.", target.display()),
+                        ManagedArtifactEventDetail::TransformRename {
+                            target: target.display().to_string(),
+                        },
                     );
                     current = target;
                 }

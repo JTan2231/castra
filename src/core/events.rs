@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::managed::{ManagedArtifactKind, ManagedImageSpec};
+use crate::managed::{ManagedArtifactEventDetail, ManagedArtifactKind, ManagedImageSpec};
 
 use super::diagnostics::Severity;
 
@@ -18,6 +18,10 @@ pub enum Event {
     ManagedArtifact {
         /// The artifact specification that is being provisioned.
         spec: ManagedImageSpecHandle,
+        /// Which managed artifact the event refers to (root disk, kernel, ...).
+        artifact: ManagedArtifactKind,
+        /// Structured detail describing the progress step.
+        detail: ManagedArtifactEventDetail,
         /// Human-readable progress message.
         text: String,
     },

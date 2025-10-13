@@ -33,7 +33,7 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
 fn render_up(outcome: &UpOutcome, events: &[Event]) {
     for event in events {
         match event {
-            Event::ManagedArtifact { spec, text } => {
+            Event::ManagedArtifact { spec, text, .. } => {
                 println!("→ {} {}: {}", spec.id, spec.version, text);
             }
             Event::OverlayPrepared { vm, overlay_path } => {

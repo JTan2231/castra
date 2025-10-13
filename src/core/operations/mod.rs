@@ -171,6 +171,8 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
                 for event in &managed.events {
                     reporter.emit(Event::ManagedArtifact {
                         spec: handle.clone(),
+                        artifact: event.artifact,
+                        detail: event.detail.clone(),
                         text: event.message.clone(),
                     });
                 }
