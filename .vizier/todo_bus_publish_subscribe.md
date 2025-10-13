@@ -19,4 +19,26 @@ Acceptance criteria
 
 Notes
 - Keep transport/serialization choices open; JSON frames are the default sketch, but implementation can evolve if constraints demand. Expose capability versioning to allow future evolution without breaking older guests.
-- Cross-links: bootstrap daemon (Thread 12) may ride the bus for triggers in the future but should not block initial delivery.
+- Cross-links: bootstrap daemon (Thread 12) may ride the bus for triggers in the future but should not block initial delivery.Thread 13 — Castra Bus (host CLI landed; broker subscribe/heartbeat pending) — Snapshot v0.7.7
+
+Context
+- Broker supports capability-gated bus sessions and persists guest `publish` frames to per-VM/shared logs. New host CLI: `castra bus publish` and `castra bus tail`, persisting host-originated frames and tailing logs.
+
+Tension
+- Interactive and automated consumers need subscribe/heartbeat/back-pressure guarantees and bus freshness signals in status, without regressing reachability guarantees.
+
+Product change (behavioral)
+- Broker session loop to implement `subscribe`, `ack`, heartbeat cadence, back-pressure limits, and session timeout/cleanup. Non-blocking by design; compatibility preserved for handshake-only guests.
+- Status JSON extended with per-VM bus fields: `bus_subscribed: bool`, `last_publish_age_ms`, `last_heartbeat_age_ms`.
+- CLI remains fast: `bus tail` reflects subscription state via log copy; `bus publish` returns success when logs are durably persisted.
+
+Acceptance criteria
+- Heartbeats and timeouts observable in logs; back-pressure causes bounded retries or disconnect with clear logging.
+- Status reflects bus freshness without blocking; fields documented in help/legend.
+- Disconnected sessions clear subscription state deterministically.
+
+Anchors
+- src/core/broker.rs (session loop); src/core/status.rs (new fields); src/core/events.rs; src/core/logs.rs; src/cli.rs (no changes required for current scope).
+
+Thread links
+- Builds on Thread 3 signals; future cross-link with Thread 12 bootstrap triggers possible.

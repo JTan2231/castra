@@ -81,3 +81,27 @@ Anchors
 
 ---
 
+Thread 3 — Broker reachability and deterministic handshake signals (Snapshot v0.7.7)
+
+Context
+- Status JSON already exposes `reachable` and `last_handshake_age_ms`. Handshake parses capability strings and conditionally starts bus sessions. Deterministic broker logging is in place.
+- Host CLI for bus landed; observability path exists via `bus tail`, but handshake-specific logs/events are not yet standardized.
+
+Tension
+- Operators and automation need reliable, non-blocking freshness signals and machine-parseable handshake evidence, including observed capabilities and session establishment results.
+
+Product change (behavioral)
+- Preserve non-blocking `status` call semantics while ensuring fields are updated by periodic broker-side handshakes.
+- Emit deterministic handshake Events/log lines including: vm name, capabilities (sorted unique), session outcome (ok/declined), and reason on decline.
+- Update help/legend and JSON field docs to define staleness thresholds and polling cadence expectations (~2s baseline) without coupling to runtime.
+
+Acceptance criteria
+- With and without `capabilities` present, `status --json` remains non-blocking and `reachable`/`last_handshake_age_ms` semantics unchanged.
+- On handshake, broker writes an ordered, deterministic line to its log and emits an Event containing vm, capabilities, and session outcome; lines are covered by tests.
+- Docs: status legend updated; BOOTSTRAP.md references handshake evidence for bootstrap triggers.
+
+Anchors
+- src/core/status.rs; src/core/broker.rs (handshake codepaths/logging); src/app/status.rs; src/core/logs.rs; docs/BOOTSTRAP.md.
+
+Thread links
+- Depends on Snapshot v0.7.7 current state. Feeds Thread 12 (bootstrap triggers) and Thread 13 (bus session lifecycle reporting).

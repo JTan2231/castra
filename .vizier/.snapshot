@@ -1,35 +1,36 @@
-SNAPSHOT v0.7.7 — Castra (VM orchestration harness)
+SNAPSHOT v0.7.8 — Castra (VM orchestration harness)
 
 Edits since last snapshot
-- Thread 13: Partial — capability-aware broker handshake and initial Bus sessions landed; when guest advertises bus-v1, broker issues session token, spawns framed session handler, and persists `publish` frames to per-VM/shared bus logs. Logging made deterministic/thread-safe; bus log dir created (commit 32d5039).
-- Thread 3: Progress — handshake now records capabilities; deterministic broker log lines improve observability while preserving status field contract. Status loader tolerates capability fields (commit 32d5039).
-- Threads 6 and 14 remain delivered; Thread 2 timeouts previously shipped (2353031).
-- Housekeeping: aligned TODOs to reflect bus partial delivery and broker legend/tests; removed stale duplicates previously noted.
+- Thread 13: Host CLI landed — `castra bus publish` and `castra bus tail` implemented. Host-originated frames persist to `<state_root>/logs/bus` (shared and per-VM when topic is vm:<name>). Tail uses existing log follower UX with follow/tail options; CLI parsing tests added. Broker remains partial for subscribe/heartbeat/back-pressure.
+- Thread 3: No field changes; reinforced observability path by tailing bus logs. Handshake logs/events still to be standardized.
+- Thread 1: Extended strict `--skip-discovery` semantics to new Bus subcommands; help text communicates pairing with --config.
+- Refactors: app::logs helpers exported for reuse by bus; minor broker log/write cleanups.
 
 Active threads (intent + acceptance)
-- Thread 1 — Discovery semantics gap [tests/docs pending]: `--skip-discovery` requires explicit config/path; zero filesystem walking when set; consistent copy and exit codes; tests across commands including `clean`. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs; CLEAN.md cross-link.
+- Thread 1 — Discovery semantics gap [tests/docs pending]: `--skip-discovery` requires explicit config/path; zero filesystem walking when set; consistent copy and exit codes; tests across commands including `clean` and new `bus` subcommands. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs; CLEAN.md cross-link.
 - Thread 2 — Lifecycle gap: add guest‑cooperative shutdown before TERM→KILL with ordered Events and configurable timeouts [timeouts shipped; events+mechanism pending]. Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
 - Thread 3 — Broker reachability [fields shipped; logs/events pending]: maintain non-blocking freshness via reachable/last_handshake_age_ms; add deterministic handshake logs/events (including observed capabilities and bus session outcome); finalize help/legend and JSON field docs. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs; src/core/logs.rs.
-- Thread 6 — Ports active mode [delivered]: `--active` view shows runtime-active forwards with reasons; stable columns; fast path. Keep perf guardrail and degrade copy consistent. Anchors: src/core/ports.rs; src/app/ports.rs; src/core/runtime.rs.
+- Thread 6 — Ports active mode [delivered]: `--active` view shows runtime-active forwards with reasons; stable columns; fast path. Anchors: src/core/ports.rs; src/app/ports.rs; src/core/runtime.rs.
 - Thread 10 — Managed images [profile+checksums shipped]: emit machine-parseable verification/profile Events; document cache layout and remediation; align with CLEAN reclaimed-bytes accounting. Anchors: src/managed/mod.rs; src/core/logs.rs/reporter.rs; docs.
 - Thread 11 — Library API for embedders: feature gating in place; add AGENTS.md guidance/snippet for using castra as a library with default-features=false. Anchors: src/lib.rs; Cargo.toml; docs/AGENTS.md.
 - Thread 12 — Post-boot bootstrap pipeline: host bootstrap reacts to fresh handshake and applies Nix flake over SSH; idempotent via hash stamps; observable logs under state root. Depends on Threads 3 and 10. Anchors: docs/BOOTSTRAP.md; workflows.init hooks; broker/status fields.
-- Thread 13 — Castra Bus [partial]: broker supports capability‑gated bus sessions with framed JSON and persistent publish logs; add subscribe/heartbeat/back‑pressure; expose status fields and host CLI (`bus publish`/`bus tail`); maintain compatibility for handshake‑only guests. Anchors: src/core/broker.rs; src/core/status.rs; src/core/events.rs; src/core/logs.rs; src/cli.rs.
+- Thread 13 — Castra Bus [partial]: broker supports capability‑gated bus sessions with framed JSON and persistent publish logs; host CLI (`bus publish`/`bus tail`) shipped; pending: subscribe/heartbeat/back‑pressure; add status fields; maintain compatibility for handshake‑only guests. Anchors: src/core/broker.rs; src/core/status.rs; src/core/events.rs; src/core/logs.rs; src/cli.rs; src/core/operations/bus.rs; src/app/bus.rs.
 - Thread 14 — First-class clean [delivered]: `castra clean` implemented per CLEAN.md with events/byte accounting and safeguards. Follow-ups: docs/examples, integration tests for byte totals and permission downgrades. Anchors: src/cli.rs; src/app/clean.rs; src/core/operations/clean.rs; src/core/project.rs; src/core/runtime.rs.
 
 Current code state (observable surfaces)
 - Versioning/MSRV: build.rs injects version/short SHA; CLI reports it. README declares MSRV=1.77; docs/RELEASING.md present.
 - Feature gating: default features include `cli`; building with --no-default-features succeeds and excludes CLI. AGENTS.md guidance still missing.
-- Skip discovery: Enforcement active across status/up/down/ports/logs and clean — `--skip-discovery` must pair with `--config` (or `--state-root` for clean). Help text reflects stricter semantics. Tests for no-walk and exit codes outstanding.
+- Skip discovery: Enforcement active across status/up/down/ports/logs/clean and bus — `--skip-discovery` must pair with `--config` (or `--state-root` for clean). Help text reflects stricter semantics. Tests for no-walk and exit codes outstanding.
 - Broker status: `reachable` and `last_handshake_age_ms` present in JSON; loader tolerates handshake `capabilities`. Legend partially updated; non-blocking guarantees and handshake log/event lines not yet covered by tests.
-- Broker bus: guests advertising `capabilities=bus-v1` receive session tokens; broker runs framed session handler; `publish` frames persist to per-VM/shared bus logs; heartbeat/subscribe/back‑pressure are stubbed; host CLI subcommands not yet present.
+- Broker bus: guests advertising `capabilities=bus-v1` receive session tokens; broker runs framed session handler; `publish` frames persist to per-VM/shared bus logs; heartbeat/subscribe/back‑pressure are stubbed. Host CLI present to publish/tail logs.
+- Host bus operations: `bus publish` writes JSON lines with timestamp/vm/topic/payload to shared and per-VM logs; `bus tail` tails shared or per-VM logs with follow and tail count; messages printed with standard log UX.
 - Managed images: Alpine boot profile delivered; checksum/size verification and improved diagnostics in place; emits success copy. Machine-parseable Events and docs pending.
 - Ports: `--active` shipped; runtime inspection marks Active/Inactive with `inactive_reason`; columns stable; diagnostics on inspection failure.
 - Clean: Command shipped with scopes/toggles; emits CleanupProgress events and returns structured CleanOutcome; safeguards for running processes with `--force` override.
-- Gaps outstanding: cooperative shutdown phase/events; broker handshake events/logs + docs; managed‑image structured events; AGENTS.md; bus host CLI + subscribe/heartbeat + status fields; CLEAN examples/tests.
+- Gaps outstanding: cooperative shutdown phase/events; broker handshake events/logs + docs; managed‑image structured events; AGENTS.md; bus subscribe/heartbeat/back‑pressure + status fields; CLEAN examples/tests; skip-discovery tests for new bus commands.
 
 Narrative themes
-1) UX‑first CLI contract — explicit‑config with skip‑discovery; consistent, actionable errors; tests back the promise and include clean.
+1) UX‑first CLI contract — explicit‑config with skip‑discovery; consistent, actionable errors; tests back the promise, including bus subcommands.
 2) Robust VM lifecycle — cooperative shutdown phases with events/timeouts; copy matches behavior.
 3) Clear connectivity signals — stable, non‑blocking status fields; recognizable handshake logs/events; capability‑aware without regressions.
 6) Networking clarity — ports --active with stable columns, reasons, and fast path.
@@ -40,14 +41,13 @@ Narrative themes
 14) Safe housekeeping — first‑class clean to recover space and resolve cache corruption.
 
 Direction of travel
-- Finalize Thread 1 with tests and uniform enforcement across commands (and confirm clean parity) including no‑walk assertions.
+- Finalize Thread 1 with tests and uniform enforcement across commands (including new bus subcommands); assert no-walk behavior.
 - Implement cooperative shutdown events/behavior (Thread 2) honoring lifecycle waits; emit ordered events.
-- Solidify Thread 3 non‑blocking guarantees and add handshake Events/logs (including capabilities + bus session outcome); finalize help/legend; document JSON fields.
-- Thread 13: add host CLI (`bus publish`/`bus tail`), implement subscribe/heartbeat/back‑pressure, session timeout + cleanup, and expose bus freshness in status.
+- Solidify Thread 3 non-blocking guarantees and add handshake Events/logs (including capabilities + bus session outcome); finalize help/legend; document JSON fields.
+- Thread 13: implement subscribe/heartbeat/back‑pressure, session timeout + cleanup, and expose bus freshness in status; validate with tailing UX.
 - Emit structured Events for managed image verification/profile and document cache (Thread 10); cross-link to `clean`.
 - Author AGENTS.md embedder guide (Thread 11).
 - Expand CLEAN.md/README examples; add integration tests for byte totals and permission downgrade behavior (Thread 14 follow-ups).
-- Keep bootstrap as documented scripts first; consider first‑class command after Threads 3/10/13 settle (Thread 12).
 
 Cross-links
 - BOOTSTRAP.md consumes Thread 3/10 fields and events; CLEAN.md enforces Thread 1/2/10; BUS.md reflects Thread 13 protocol; docs/library_usage.md to surface OperationOutput fields for embedders.
