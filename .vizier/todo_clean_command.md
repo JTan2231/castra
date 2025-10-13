@@ -20,4 +20,26 @@ Acceptance criteria
 
 Notes
 - Add `project::default_projects_root()` helper for global sweep. Ensure permission errors in global mode downgrade to diagnostics, not panics.
-- Cross-links: surfaced in README/docs as the supported remediation path for checksum mismatch errors (Thread 10).
+- Cross-links: surfaced in README/docs as the supported remediation path for checksum mismatch errors (Thread 10).Finalize docs and integration tests for first-class clean.
+Ensure `castra clean` is documented with examples and verified by tests covering byte accounting, permission downgrades in global mode, skip‑discovery pairing, and safety guards, aligning with CLEAN.md. Close the thread when docs/tests land. (thread: first-class clean — snapshot v0.7.8/Thread 14)
+
+Acceptance Criteria:
+- Docs:
+  - README/CLEAN.md include examples for workspace and `--global` modes, showing `--dry-run`, `--force`, `--include-overlays`, `--include-logs`, `--include-handshakes`, `--managed-only`, `--state-root`, and `--skip-discovery`.
+  - Help text and docs explicitly state that `--skip-discovery` must be paired with `--config` (or `--state-root` for clean-only state) and show the failure message when omitted.
+  - Cross-link from managed image remediation guidance to `castra clean` with a concrete example.
+- Tests:
+  - Byte totals: an integration test deletes known-sized files and asserts reclaimed byte totals in human output and JSON.
+  - Permission downgrade (global mode): test simulates unreadable/unwritable entries and asserts graceful diagnostics without panic; command exits successfully when appropriate.
+  - Running-process guard: test asserts refusal while VM/broker running; `--force` overrides and proceeds.
+  - Overlay opt-in: test asserts overlays are untouched by default and removed only with `--include-overlays`.
+  - Skip-discovery pairing: tests assert fast‑fail when `--skip-discovery` is passed without `--config`/`--state-root`, and success when correctly paired.
+  - Public API smoke: tempdir-backed project cleaned via core operation (no CLI), emitting CleanupProgress events and returning a structured outcome.
+- Observability:
+  - CleanupProgress events (path, kind, bytes, dry_run) are visible in OperationOutput and logs; field names stable for scripts.
+
+Pointers:
+- docs/CLEAN.md; README (examples)
+- src/app/clean.rs; src/cli.rs (help/copy)
+- tests/integration/clean_*.rs (byte totals, permission downgrade, guards, skip‑discovery)
+- src/core/operations/clean.rs; src/core/project.rs (API surfaces)

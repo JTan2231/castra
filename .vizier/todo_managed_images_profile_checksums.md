@@ -49,3 +49,27 @@ Anchors
 
 ---
 
+Emit structured managed‑image verification/profile Events and tighten offline/mismatch diagnostics.
+Ensure managed images surface machine‑parseable Events for checksum verification and applied boot profiles, with deterministic log lines and stable JSON fields, and improve diagnostics for offline vs checksum mismatch vs transform errors. Update docs to describe cache layout, remediation, and field semantics. (thread: managed-images — snapshot v0.7.8/Thread 10)
+
+Acceptance Criteria:
+- Events and logs:
+  - On successful source verification, emit a ManagedImageVerified event including image id/version, artifact list with names, sizes, and checksums; write a single deterministic log line mirroring these fields.
+  - When a boot profile is applied, emit a ManagedImageProfileApplied event including image id/version and which components were used (kernel/initrd/cmdline/machine); write a single deterministic log line.
+  - Events are exposed via OperationOutput and reporter APIs; `castra logs` shows corresponding lines under a stable prefix; covered by tests.
+- Diagnostics and exit codes:
+  - Offline/no-network case: clear message indicating cache hit/miss and a suggestion to prefetch; no partial files left; exit code maps to preflight/IO.
+  - Checksum mismatch: error includes expected vs observed checksum and a hint to remove the cached file and retry; exit code maps to IO/launch error; partial files removed.
+  - Transform failure: message distinguishes from network/mismatch and routes through diagnostics with an appropriate exit code.
+- Docs:
+  - Document cache layout and verification behavior; include examples of the new Events and log lines with field names.
+  - BOOTSTRAP.md references these Events as preconditions for host‑side bootstrap.
+  - Cross‑link CLEAN.md/README as the remediation path for checksum mismatches (e.g., using `castra clean --managed-only`), noting reclaimed‑bytes accounting alignment.
+- Stability:
+  - Field names for Events are stable and script‑friendly; log lines are ordered, deterministic, and parseable; polling at ~2s cadence requires no blocking operations.
+
+Pointers:
+- src/managed/mod.rs (catalog/events hooks)
+- src/core/logs.rs; src/core/reporter.rs (deterministic lines and Event wiring)
+- src/app/up.rs (rendering)
+- docs/ (cache layout, status/BOOTSTRAP cross‑links; CLEAN.md integration)

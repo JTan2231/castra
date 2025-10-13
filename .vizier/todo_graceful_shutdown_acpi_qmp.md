@@ -65,4 +65,27 @@ Acceptance criteria
 - If graceful path is unavailable or times out, signal-based fallback occurs and is explicitly logged.
 
 Anchors
-- src/core/runtime.rs (lifecycle); src/core/events.rs; src/core/options.rs (timeouts/config); src/app/down.rs (user-facing copy).
+- src/core/runtime.rs (lifecycle); src/core/events.rs; src/core/options.rs (timeouts/config); src/app/down.rs (user-facing copy).Add cooperative shutdown phase with ordered lifecycle events before TERM→KILL.
+Introduce a guest-cooperative shutdown attempt in `castra down` (e.g., ACPI/QMP powerdown) with a bounded wait using existing timeout settings; if the VM exits, skip signals. If not, escalate to SIGTERM then SIGKILL with visible, ordered events. Behavior is per‑VM, idempotent, and does not let one stuck VM block others. Surface the sequence in logs and OperationOutput. (thread: lifecycle-gap — snapshot v0.7.8/Thread 2)
+
+Acceptance Criteria:
+- Graceful path:
+  - On guests that honor ACPI/QMP, `castra down` completes without TERM/KILL; status reports stopped.
+  - Logs and OperationOutput include an ordered sequence indicating graceful shutdown initiated and completed.
+- Escalation path:
+  - If the graceful attempt doesn’t complete within the configured timeout, escalation proceeds to SIGTERM, then SIGKILL after its timeout.
+  - Logs and OperationOutput show the escalation steps and bounded waits; command exits successfully when processes are gone.
+- Per-VM isolation:
+  - Multiple VMs shut down concurrently; a stuck VM’s escalation does not block others from completing.
+- Idempotence and policy:
+  - Re-invoking `castra down` during an in-progress or completed shutdown is safe and consistent with the global exit code policy.
+- Observability:
+  - Events are emitted in order for each VM: ShutdownInitiated(Graceful), zero or more ShutdownEscalation steps (SIGTERM/SIGKILL with reason/timeout), and ShutdownComplete(Graceful|Forced).
+  - Text UI and `--json` surfaces show these events with timestamps; names/fields are stable for scripts.
+
+Pointers:
+- src/core/runtime.rs (shutdown orchestration)
+- src/core/events.rs (event variants)
+- src/core/options.rs (timeouts already shipped; reuse)
+- src/app/down.rs (user-facing messages)
+- tests covering status transitions and ordered events

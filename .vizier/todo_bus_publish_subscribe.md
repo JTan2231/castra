@@ -41,4 +41,30 @@ Anchors
 - src/core/broker.rs (session loop); src/core/status.rs (new fields); src/core/events.rs; src/core/logs.rs; src/cli.rs (no changes required for current scope).
 
 Thread links
-- Builds on Thread 3 signals; future cross-link with Thread 12 bootstrap triggers possible.
+- Builds on Thread 3 signals; future cross-link with Thread 12 bootstrap triggers possible.Deliver subscribe/heartbeat/back‑pressure and expose bus freshness in status.
+Enable broker sessions to support subscribe/ack heartbeats with back‑pressure and timeouts, while preserving compatibility for handshake‑only guests. Extend status with per‑VM bus freshness fields and keep host CLI fast and non‑blocking; `bus publish` succeeds only on durable append. (thread: castra-bus — snapshot v0.7.8/Thread 13)
+
+Acceptance Criteria:
+- Broker session behavior:
+  - Guests can establish a long‑lived session and issue subscribe/ack; idle sessions send periodic heartbeats.
+  - Back‑pressure triggers bounded retries or clean disconnect; session timeout/cleanup removes server‑side state.
+  - Disconnects deterministically clear subscription state; events/logs show heartbeats, back‑pressure, and timeouts.
+- Status fields:
+  - `castra status --json` includes per‑VM fields: `bus_subscribed: bool`, `last_publish_age_ms: u64`, `last_heartbeat_age_ms: u64`.
+  - Calls are non‑blocking; fields are documented in help/legend and remain stable for scripts.
+- Host UX:
+  - `castra bus publish` returns success only when the frame is durably appended to per‑VM/shared logs; failures return non‑zero with actionable diagnostics.
+  - `castra bus tail` remains fast and non‑blocking; reflects subscription state via log copy.
+- Compatibility:
+  - Guests without bus capabilities continue to operate in handshake‑only mode with no regressions to `reachable`/`last_handshake_age_ms`.
+
+Pointers:
+- src/core/broker.rs (session loop: subscribe/ack/heartbeat/back‑pressure/timeout)
+- src/core/status.rs; src/app/status.rs (new fields + legend/help)
+- src/core/events.rs; src/core/logs.rs (observable signals)
+- src/app/bus.rs; src/cli.rs (host UX)
+
+Implementation Notes (safety/correctness):
+- Only acknowledge host CLI publish after durable append (fsync or equivalent policy) to the bus logs.
+- Enforce bounded queues per session; apply fair back‑pressure to prevent broker starvation.
+- Status freshness must derive from broker‑maintained timestamps; do not block status on live sessions.

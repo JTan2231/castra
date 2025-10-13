@@ -93,3 +93,24 @@ Anchors
 - src/app/common.rs; src/core/options.rs; src/cli.rs (flag help/copy).Cross-link: CLEAN.md mandates that `castra clean` obey the same skip-discovery contract. Acceptance: when `--skip-discovery` is used without `--config` or `--state-root`, both `status` and `clean` fail fast with a clear diagnostic (no filesystem walking).
 
 ---
+Enforce strict skip-discovery pairing across all commands (status/up/down/ports/logs/bus/clean) with no filesystem walking.
+When --skip-discovery is set without an explicit project path, commands that require config must fail fast with a clear usage/config error; when paired with --config (or --state-root for clean-only), commands perform zero directory walking. Update help/legend to reflect stricter semantics. (thread: discovery-semantics — snapshot v0.7.8/Thread 1)
+
+Acceptance Criteria:
+- Fast-fail behavior:
+  - `castra status --skip-discovery` without `--config` exits with the documented usage/config code and prints actionable guidance including an example (`--config <path>`).
+  - Same fast-fail applies to `up`, `down`, `ports`, `logs`, and `bus` subcommands when `--skip-discovery` is present without `--config`.
+  - `castra clean --skip-discovery` fast-fails unless paired with `--config` or `--state-root`, with diagnostics explaining the required pairing.
+- No-walk guarantee:
+  - With `--skip-discovery --config <path>`, and for `clean` with `--state-root`, no upward filesystem walking occurs; verified via targeted tests that exercise the library API path used by the CLI.
+- Help and docs:
+  - Help text for `--skip-discovery`, `--config`, and `--state-root` updated to describe required pairing and stricter semantics; include one example per relevant command.
+- Tests:
+  - Integration/unit tests cover fast-fail for each command (`status`, `up`, `down`, `ports`, `logs`, `bus`, `clean`) when `--skip-discovery` lacks a required path.
+  - Positive-path tests confirm zero discovery when correctly paired and validate exit codes/messages.
+  - Tests include the bus and clean surfaces explicitly.
+
+Pointers:
+- src/app/common.rs; src/core/options.rs (discovery enforcement)
+- src/cli.rs; src/app/* (help/copy per command)
+- tests/integration/ (skip-discovery pairing and no-walk)

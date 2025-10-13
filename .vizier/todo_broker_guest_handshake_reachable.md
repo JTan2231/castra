@@ -104,4 +104,26 @@ Anchors
 - src/core/status.rs; src/core/broker.rs (handshake codepaths/logging); src/app/status.rs; src/core/logs.rs; docs/BOOTSTRAP.md.
 
 Thread links
-- Depends on Snapshot v0.7.7 current state. Feeds Thread 12 (bootstrap triggers) and Thread 13 (bus session lifecycle reporting).
+- Depends on Snapshot v0.7.7 current state. Feeds Thread 12 (bootstrap triggers) and Thread 13 (bus session lifecycle reporting).Standardize handshake evidence and finalize status documentation.
+
+Describe deterministic, machine-parseable handshake signals and keep status non-blocking. On each guest↔broker handshake, write a single, ordered log line and emit a structured Event including vm identity, observed capabilities, and session outcome. Update CLI legend/docs to define `reachable`/`last_handshake_age_ms` semantics and polling expectations. (thread: broker-reachability — snapshot v0.7.8/Thread 3)
+
+Acceptance Criteria:
+- Status behavior:
+  - `castra status --json` remains non-blocking; `reachable` and `last_handshake_age_ms` semantics unchanged.
+  - Help/legend documents meanings of both fields, the staleness threshold, and recommended polling cadence (~2s).
+- Handshake log line:
+  - On handshake, broker writes one deterministic line including: timestamp, vm identity, capabilities (sorted, deduped), session outcome (ok/declined), and decline reason if any.
+  - Line appears under the host broker log prefix and is stable for parsing; covered by a test.
+- Handshake Event:
+  - A structured Event is emitted on handshake with the same fields (vm, capabilities, session outcome, optional reason).
+  - Event is available via existing logs/events surfaces and is machine-parseable; covered by a test.
+- Docs:
+  - Status JSON field docs updated to include `reachable` and `last_handshake_age_ms` semantics and examples.
+  - BOOTSTRAP.md references handshake evidence for bootstrap triggers.
+
+Pointers:
+- src/core/broker.rs (handshake/logging)
+- src/core/status.rs; src/app/status.rs (legend/help)
+- src/core/events.rs; src/core/logs.rs
+- docs/BOOTSTRAP.md; README/help text
