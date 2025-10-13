@@ -1,22 +1,25 @@
 SNAPSHOT v0.7.8 — Castra (VM orchestration harness)
 
 Edits since last snapshot
-- Thread 13: Host CLI landed previously; scope clarified. `castra bus publish`/`tail` persist host frames and tail durable logs; broker subscribe/heartbeat/back-pressure remain. Acceptance tightened for durable append semantics and status fields to come.
-- Thread 1: Stricter `--skip-discovery` pairing extended explicitly to new Bus subcommands and reaffirmed for `clean`; tests/doc help updates called out.
-- Thread 3: Scoped handshake standardization work — add deterministic handshake log line and structured Event (vm, capabilities, bus session outcome); update status legend/docs for `reachable`/`last_handshake_age_ms` semantics.
-- Thread 6: `ports --active` marked delivered; add-docs + smoke test follow-up noted.
-- Thread 14: `clean` shipped; follow-ups added for docs/examples and integration tests (byte totals, permission downgrade, managed-image remediation path). Reinforced skip-discovery pairing for `clean`.
+- Housekeeping: Consolidated duplicate/overlapping TODOs without changing scope or intent.
+  - Thread 3: merged handshake/reachability work into “broker_handshake_events” (replaces older broker_guest_handshake_reachable variants).
+  - Thread 13: merged bus publish/subscribe backlog into “castra_bus_subscribe_heartbeat” (replaces older bus_publish_subscribe notes).
+  - Thread 14: follow-ups captured in “clean_docs_and_tests” (replaces generic clean_command follow-ups).
+  - Thread 6: added “ports_active_mode_docs_test” for docs + smoke test; removed stale ports_active_mode.md.md entry.
+- Thread 13: Scope clarified previously — durable append semantics and future status fields unchanged.
+- Thread 1: Enforcement and tests/docs for strict skip-discovery pairing remain in scope; no behavior change in this pass.
+- Thread 3: Acceptance remains to add deterministic handshake log line + structured Event and finalize legend/docs.
 
 Active threads (intent + acceptance)
-- Thread 1 — Discovery semantics gap [tests/docs pending]: `--skip-discovery` requires explicit config/path; zero filesystem walking when set; enforce across status/up/down/ports/logs/clean and bus. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs; CLEAN.md cross-link.
+- Thread 1 — Discovery semantics gap [tests/docs pending]: `--skip-discovery` requires explicit config/path; zero filesystem walking when set; enforce across status/up/down/ports/logs/bus and clean. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs; CLEAN.md cross-link.
 - Thread 2 — Lifecycle gap: add guest‑cooperative shutdown before TERM→KILL with ordered Events and configurable timeouts [timeouts shipped; events+mechanism pending]. Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
 - Thread 3 — Broker reachability [fields shipped; logs/events pending]: maintain non-blocking freshness via reachable/last_handshake_age_ms; emit deterministic handshake logs/events (observed capabilities and bus session outcome); finalize help/legend and JSON field docs. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs; src/core/logs.rs.
-- Thread 6 — Ports active mode [delivered]: `--active` view shows runtime-active forwards with reasons; stable columns; fast path. Follow-up: doc snippet + smoke test. Anchors: src/core/ports.rs; src/app/ports.rs; src/core/runtime.rs.
+- Thread 6 — Ports active mode [delivered]: `--active` view shows runtime-active forwards; stable columns; fast path. Follow-up: doc snippet + smoke test (tracked in ports_active_mode_docs_test). Anchors: src/core/ports.rs; src/app/ports.rs; src/core/runtime.rs.
 - Thread 10 — Managed images [profile+checksums shipped]: emit machine-parseable verification/profile Events; document cache layout and remediation; align with CLEAN reclaimed-bytes accounting. Anchors: src/managed/mod.rs; src/core/logs.rs/reporter.rs; docs.
 - Thread 11 — Library API for embedders: feature gating in place; add AGENTS.md guidance/snippet for using castra as a library with default-features=false. Anchors: src/lib.rs; Cargo.toml; docs/AGENTS.md.
 - Thread 12 — Post-boot bootstrap pipeline: host bootstrap reacts to fresh handshake and applies Nix flake over SSH; idempotent via hash stamps; observable logs under state root. Depends on Threads 3 and 10. Anchors: docs/BOOTSTRAP.md; workflows.init hooks; broker/status fields.
 - Thread 13 — Castra Bus [partial]: broker supports capability‑gated bus sessions with framed JSON and persistent publish logs; host CLI (`bus publish`/`bus tail`) shipped; pending: subscribe/heartbeat/back‑pressure; add status fields; maintain compatibility for handshake‑only guests. Anchors: src/core/broker.rs; src/core/status.rs; src/core/events.rs; src/core/logs.rs; src/cli.rs; src/core/operations/bus.rs; src/app/bus.rs.
-- Thread 14 — First-class clean [delivered]: `castra clean` implemented per CLEAN.md with events/byte accounting and safeguards. Follow-ups: docs/examples, integration tests for byte totals and permission downgrades, and skip-discovery pairing tests. Anchors: src/cli.rs; src/app/clean.rs; src/core/operations/clean.rs; src/core/project.rs; src/core/runtime.rs.
+- Thread 14 — First-class clean [delivered]: `castra clean` implemented with events/byte accounting and safeguards. Follow-ups: docs/examples, integration tests for byte totals and permission downgrades, and skip-discovery pairing tests (tracked in clean_docs_and_tests). Anchors: src/cli.rs; src/app/clean.rs; src/core/operations/clean.rs; src/core/project.rs; src/core/runtime.rs.
 
 Current code state (observable surfaces)
 - Versioning/MSRV: build.rs injects version/short SHA; CLI reports it. README declares MSRV=1.77; docs/RELEASING.md present.
