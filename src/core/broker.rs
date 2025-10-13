@@ -20,6 +20,12 @@ const BUS_MAX_SUBSCRIPTIONS: usize = 16;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionKind {
+    Guest,
+    Host,
+}
+
 #[derive(Debug)]
 enum HandshakeError {
     Io(io::Error),
@@ -31,6 +37,7 @@ enum HandshakeError {
 struct HandshakeDetails {
     vm: String,
     capabilities: Vec<String>,
+    kind: SessionKind,
 }
 
 impl HandshakeDetails {
@@ -38,6 +45,10 @@ impl HandshakeDetails {
         self.capabilities
             .iter()
             .any(|value| value.eq_ignore_ascii_case(capability))
+    }
+
+    fn is_host(&self) -> bool {
+        matches!(self.kind, SessionKind::Host)
     }
 }
 
@@ -157,9 +168,12 @@ pub fn run(options: &BrokerOptions) -> Result<()> {
                             details.capabilities.join(",")
                         };
                         let session_label = if details.has_capability("bus-v1") {
-                            "session=bus"
+                            match details.kind {
+                                SessionKind::Host => "session=bus(kind=host)".to_string(),
+                                SessionKind::Guest => "session=bus".to_string(),
+                            }
                         } else {
-                            "session=declined(reason=missing-capability)"
+                            "session=declined(reason=missing-capability)".to_string()
                         };
                         broker_log_line(
                             &log,
@@ -198,6 +212,7 @@ pub fn run(options: &BrokerOptions) -> Result<()> {
                             let session_vm = vm_name.clone();
                             let bus_dir = bus_log_dir.clone();
                             let handshake_dir = options.handshake_dir.clone();
+                            let session_kind = details.kind;
                             thread::spawn(move || {
                                 handle_bus_session(
                                     stream,
@@ -206,6 +221,7 @@ pub fn run(options: &BrokerOptions) -> Result<()> {
                                     bus_dir,
                                     handshake_dir,
                                     logger,
+                                    session_kind,
                                 );
                             });
                             continue;
@@ -304,8 +320,10 @@ fn process_handshake(
 ) -> HandshakeResult<HandshakeDetails> {
     let line = read_handshake_line(stream).map_err(HandshakeError::Io)?;
     let details = parse_handshake_line(&line)?;
-    persist_handshake(handshake_dir, &details.vm, &details.capabilities)
-        .map_err(|err| HandshakeError::Storage(err.to_string()))?;
+    if !details.is_host() {
+        persist_handshake(handshake_dir, &details.vm, &details.capabilities)
+            .map_err(|err| HandshakeError::Storage(err.to_string()))?;
+    }
     Ok(details)
 }
 
@@ -404,9 +422,19 @@ fn parse_handshake_line(line: &str) -> HandshakeResult<HandshakeDetails> {
 
     capabilities.sort_unstable_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
 
+    let kind = if capabilities
+        .iter()
+        .any(|cap| cap.eq_ignore_ascii_case("host-bus"))
+    {
+        SessionKind::Host
+    } else {
+        SessionKind::Guest
+    };
+
     Ok(HandshakeDetails {
         vm: vm.to_string(),
         capabilities,
+        kind,
     })
 }
 
@@ -547,10 +575,12 @@ fn handle_bus_session(
     bus_log_dir: PathBuf,
     handshake_dir: PathBuf,
     logger: Arc<Mutex<fs::File>>,
+    session_kind: SessionKind,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let mut last_heartbeat = Instant::now();
     let mut subscribed_topics: Vec<String> = Vec::new();
+    let track_handshake = matches!(session_kind, SessionKind::Guest);
 
     if let Ok(addr) = stream.peer_addr() {
         let _ = broker_log_line(
@@ -569,21 +599,23 @@ fn handle_bus_session(
         );
     }
 
-    if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
-        let now = unix_timestamp_seconds();
-        let bus = record.bus.get_or_insert_with(StoredBusState::default);
-        if bus.protocol.is_none() {
-            bus.protocol = Some("bus-v1".to_string());
+    if track_handshake {
+        if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
+            let now = unix_timestamp_seconds();
+            let bus = record.bus.get_or_insert_with(StoredBusState::default);
+            if bus.protocol.is_none() {
+                bus.protocol = Some("bus-v1".to_string());
+            }
+            bus.last_heartbeat_ts = Some(now);
+            bus.subscribed_topics.clear();
+            bus.last_subscribe_ts = None;
+        }) {
+            let _ = broker_log_line(
+                &logger,
+                "WARN",
+                &format!("failed to initialize bus state for `{vm}`: {err}", vm = vm),
+            );
         }
-        bus.last_heartbeat_ts = Some(now);
-        bus.subscribed_topics.clear();
-        bus.last_subscribe_ts = None;
-    }) {
-        let _ = broker_log_line(
-            &logger,
-            "WARN",
-            &format!("failed to initialize bus state for `{vm}`: {err}", vm = vm),
-        );
     }
 
     loop {
@@ -593,22 +625,24 @@ fn handle_bus_session(
                     let topic_label = frame.topic.as_deref().unwrap_or("broadcast");
                     match handle_publish(&vm, &frame, &bus_log_dir) {
                         Ok(()) => {
-                            if let Err(err) =
-                                update_handshake_record(&handshake_dir, &vm, |record| {
-                                    let now = unix_timestamp_seconds();
-                                    let bus =
-                                        record.bus.get_or_insert_with(StoredBusState::default);
-                                    bus.last_publish_ts = Some(now);
-                                })
-                            {
-                                let _ = broker_log_line(
-                                    &logger,
-                                    "WARN",
-                                    &format!(
-                                        "failed to record publish timestamp for `{vm}`: {err}",
-                                        vm = vm
-                                    ),
-                                );
+                            if track_handshake {
+                                if let Err(err) =
+                                    update_handshake_record(&handshake_dir, &vm, |record| {
+                                        let now = unix_timestamp_seconds();
+                                        let bus =
+                                            record.bus.get_or_insert_with(StoredBusState::default);
+                                        bus.last_publish_ts = Some(now);
+                                    })
+                                {
+                                    let _ = broker_log_line(
+                                        &logger,
+                                        "WARN",
+                                        &format!(
+                                            "failed to record publish timestamp for `{vm}`: {err}",
+                                            vm = vm
+                                        ),
+                                    );
+                                }
                             }
                             let _ = broker_log_line(
                                 &logger,
@@ -652,16 +686,18 @@ fn handle_bus_session(
                 }
                 "heartbeat" => {
                     last_heartbeat = Instant::now();
-                    if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
-                        let now = unix_timestamp_seconds();
-                        let bus = record.bus.get_or_insert_with(StoredBusState::default);
-                        bus.last_heartbeat_ts = Some(now);
-                    }) {
-                        let _ = broker_log_line(
-                            &logger,
-                            "WARN",
-                            &format!("failed to record heartbeat for `{vm}`: {err}", vm = vm),
-                        );
+                    if track_handshake {
+                        if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
+                            let now = unix_timestamp_seconds();
+                            let bus = record.bus.get_or_insert_with(StoredBusState::default);
+                            bus.last_heartbeat_ts = Some(now);
+                        }) {
+                            let _ = broker_log_line(
+                                &logger,
+                                "WARN",
+                                &format!("failed to record heartbeat for `{vm}`: {err}", vm = vm),
+                            );
+                        }
                     }
                     if let Err(err) = send_ack(&mut stream, "heartbeat", None, "ok", None) {
                         let _ = broker_log_line(
@@ -714,17 +750,28 @@ fn handle_bus_session(
                         subscribed_topics
                             .sort_unstable_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
                     }
-                    if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
-                        let now = unix_timestamp_seconds();
-                        let bus = record.bus.get_or_insert_with(StoredBusState::default);
-                        bus.subscribed_topics = subscribed_topics.clone();
-                        bus.last_subscribe_ts = Some(now);
-                    }) {
-                        let _ = broker_log_line(
-                            &logger,
-                            "WARN",
-                            &format!("failed to record subscription for `{vm}`: {err}", vm = vm),
-                        );
+                    if track_handshake {
+                        if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
+                            let now = unix_timestamp_seconds();
+                            let bus = record.bus.get_or_insert_with(StoredBusState::default);
+                            bus.subscribed_topics = subscribed_topics.clone();
+                            bus.last_subscribe_ts = Some(now);
+                        }) {
+                            let _ = broker_log_line(
+                                &logger,
+                                "WARN",
+                                &format!(
+                                    "failed to record subscription for `{vm}`: {err}",
+                                    vm = vm
+                                ),
+                            );
+                        } else {
+                            let _ = broker_log_line(
+                                &logger,
+                                "INFO",
+                                &format!("`{vm}` subscribed to {:?}", subscribed_topics),
+                            );
+                        }
                     } else {
                         let _ = broker_log_line(
                             &logger,
@@ -780,17 +827,19 @@ fn handle_bus_session(
         }
     }
 
-    if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
-        if let Some(bus) = record.bus.as_mut() {
-            bus.subscribed_topics.clear();
-            bus.last_subscribe_ts = None;
+    if track_handshake {
+        if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
+            if let Some(bus) = record.bus.as_mut() {
+                bus.subscribed_topics.clear();
+                bus.last_subscribe_ts = None;
+            }
+        }) {
+            let _ = broker_log_line(
+                &logger,
+                "WARN",
+                &format!("failed to clear subscription state for `{vm}`: {err}"),
+            );
         }
-    }) {
-        let _ = broker_log_line(
-            &logger,
-            "WARN",
-            &format!("failed to clear subscription state for `{vm}`: {err}"),
-        );
     }
 
     let _ = broker_log_line(
@@ -810,6 +859,17 @@ fn handle_publish(vm: &str, frame: &BusFrame, bus_log_dir: &Path) -> BusResult<(
     });
     let line = serde_json::to_string(&entry).map_err(|err| BusError::Protocol(err.to_string()))?;
     append_bus_log(bus_log_dir, vm, &line)?;
+    if let Some(target_vm) = frame
+        .topic
+        .as_deref()
+        .and_then(|topic| topic.strip_prefix("vm:"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if !target_vm.eq_ignore_ascii_case(vm) {
+            append_bus_log(bus_log_dir, target_vm, &line)?;
+        }
+    }
     append_shared_bus_log(bus_log_dir, &line)?;
     Ok(())
 }
@@ -989,6 +1049,20 @@ mod tests {
         assert_eq!(details.capabilities.len(), 2);
         assert!(details.capabilities.iter().any(|cap| cap == "bus-v1"));
         assert!(details.capabilities.iter().any(|cap| cap == "metrics"));
+        assert!(matches!(details.kind, SessionKind::Guest));
+    }
+
+    #[test]
+    fn parse_handshake_marks_host_sessions() {
+        let details = parse_handshake_line("hello vm:host capabilities=bus-v1,HOST-BUS").unwrap();
+        assert_eq!(details.vm, "host");
+        assert!(
+            details
+                .capabilities
+                .iter()
+                .any(|cap| cap.eq_ignore_ascii_case("host-bus"))
+        );
+        assert!(matches!(details.kind, SessionKind::Host));
     }
 
     #[test]
@@ -1006,5 +1080,26 @@ mod tests {
         assert!(contents.contains("\"vm\":\"devbox\""));
         let shared = fs::read_to_string(dir.path().join("bus.log")).unwrap();
         assert!(shared.contains("\"topic\":\"broadcast\""));
+    }
+
+    #[test]
+    fn handle_publish_appends_targeted_vm_logs() {
+        let dir = tempdir().unwrap();
+        let frame = BusFrame {
+            kind: "publish".to_string(),
+            topic: Some("vm:alpha".to_string()),
+            payload: json!({ "message": "hi" }),
+        };
+        handle_publish("host", &frame, dir.path()).expect("publish");
+        let publisher_log = dir.path().join("host.log");
+        assert!(publisher_log.exists());
+        let publisher_contents = fs::read_to_string(&publisher_log).unwrap();
+        assert!(publisher_contents.contains("\"topic\":\"vm:alpha\""));
+        let target_log = dir.path().join("alpha.log");
+        assert!(target_log.exists());
+        let target_contents = fs::read_to_string(&target_log).unwrap();
+        assert!(target_contents.contains("\"vm\":\"host\""));
+        let shared = fs::read_to_string(dir.path().join("bus.log")).unwrap();
+        assert!(shared.contains("\"topic\":\"vm:alpha\""));
     }
 }

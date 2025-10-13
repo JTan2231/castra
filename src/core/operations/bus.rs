@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
-use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, Write};
+use std::fs;
+use std::io::{self, BufRead, Read, Write};
+use std::net::TcpStream;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::error::{Error, Result};
 
@@ -12,6 +14,11 @@ use crate::core::outcome::{
     OperationResult,
 };
 use crate::core::project::config_state_root;
+use serde_json::Value;
+
+const BUS_MAX_FRAME_SIZE: usize = 64 * 1024;
+const HOST_HANDSHAKE_IDENTITY: &str = "host";
+const HOST_HANDSHAKE_CAPABILITY: &str = "host-bus";
 
 pub fn publish(
     options: BusPublishOptions,
@@ -27,31 +34,8 @@ pub fn publish(
     let (project, _) = load_project_for_operation(&config, &mut diagnostics)?;
     let state_root = config_state_root(&project);
     let bus_dir = state_root.join("logs").join("bus");
-    fs::create_dir_all(&bus_dir).map_err(|err| Error::PreflightFailed {
-        message: format!(
-            "Failed to prepare bus log directory {}: {err}",
-            bus_dir.display()
-        ),
-    })?;
-
-    let entry = serde_json::json!({
-        "timestamp": timestamp_seconds(),
-        "vm": "host",
-        "topic": topic.clone(),
-        "payload": payload,
-    });
-
-    let line = serde_json::to_string(&entry).map_err(|err| Error::PreflightFailed {
-        message: format!("Failed to encode bus payload: {err}"),
-    })?;
-
     let shared_path = bus_dir.join("bus.log");
-    append_line(&shared_path, &line)?;
-
-    if let Some(target_vm) = topic.strip_prefix("vm:") {
-        let vm_path = bus_dir.join(format!("{}.log", sanitize_vm_name(target_vm)));
-        append_line(&vm_path, &line)?;
-    }
+    publish_via_broker(project.broker.port, &topic, &payload)?;
 
     let outcome = BusPublishOutcome {
         log_path: shared_path,
@@ -59,6 +43,172 @@ pub fn publish(
     };
 
     Ok(OperationOutput::new(outcome).with_diagnostics(diagnostics))
+}
+
+fn publish_via_broker(port: u16, topic: &str, payload: &Value) -> Result<()> {
+    let addr = format!("127.0.0.1:{port}");
+    let mut stream = TcpStream::connect(&addr).map_err(|err| Error::BusPublishFailed {
+        message: format!("Failed to connect to broker at {addr}: {err}"),
+    })?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|err| Error::BusPublishFailed {
+            message: format!("Failed to configure broker socket timeout: {err}"),
+        })?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|err| Error::BusPublishFailed {
+            message: format!("Failed to configure broker socket timeout: {err}"),
+        })?;
+
+    // Read and ignore the broker greeting.
+    let _ = read_line(&mut stream).map_err(|err| Error::BusPublishFailed {
+        message: format!("Broker greeting failed: {err}"),
+    })?;
+
+    let handshake = format!(
+        "hello vm:{identity} capabilities=bus-v1,{capability}\n",
+        identity = HOST_HANDSHAKE_IDENTITY,
+        capability = HOST_HANDSHAKE_CAPABILITY
+    );
+    stream
+        .write_all(handshake.as_bytes())
+        .map_err(|err| Error::BusPublishFailed {
+            message: format!("Failed to send broker handshake: {err}"),
+        })?;
+    stream.flush().map_err(|err| Error::BusPublishFailed {
+        message: format!("Failed to flush broker handshake: {err}"),
+    })?;
+
+    let response = read_line(&mut stream).map_err(|err| Error::BusPublishFailed {
+        message: format!("Failed to read broker handshake response: {err}"),
+    })?;
+    if !response.starts_with("ok") {
+        return Err(Error::BusPublishFailed {
+            message: format!("Broker rejected handshake: {response}"),
+        });
+    }
+
+    let frame = serde_json::json!({
+        "type": "publish",
+        "topic": topic,
+        "payload": payload,
+    });
+    let encoded = serde_json::to_vec(&frame).map_err(|err| Error::BusPublishFailed {
+        message: format!("Failed to encode bus payload: {err}"),
+    })?;
+    if encoded.len() > BUS_MAX_FRAME_SIZE {
+        return Err(Error::BusPublishFailed {
+            message: format!(
+                "Encoded frame length {} exceeds broker maximum {} bytes.",
+                encoded.len(),
+                BUS_MAX_FRAME_SIZE
+            ),
+        });
+    }
+
+    let len = (encoded.len() as u32).to_be_bytes();
+    stream
+        .write_all(&len)
+        .map_err(|err| Error::BusPublishFailed {
+            message: format!("Failed to send frame header to broker: {err}"),
+        })?;
+    stream
+        .write_all(&encoded)
+        .map_err(|err| Error::BusPublishFailed {
+            message: format!("Failed to send frame payload to broker: {err}"),
+        })?;
+    stream.flush().map_err(|err| Error::BusPublishFailed {
+        message: format!("Failed to flush frame to broker: {err}"),
+    })?;
+
+    read_publish_ack(&mut stream)?;
+    Ok(())
+}
+
+fn read_line(stream: &mut TcpStream) -> io::Result<String> {
+    let mut buffer = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => {
+                if buffer.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "connection closed before newline",
+                    ));
+                }
+                break;
+            }
+            Ok(_) => {
+                if byte[0] == b'\n' {
+                    break;
+                }
+                buffer.push(byte[0]);
+            }
+            Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(String::from_utf8_lossy(&buffer).trim().to_string())
+}
+
+fn read_publish_ack(stream: &mut TcpStream) -> Result<()> {
+    let mut len_buf = [0u8; 4];
+    stream
+        .read_exact(&mut len_buf)
+        .map_err(|err| Error::BusPublishFailed {
+            message: format!("Failed to read broker acknowledgement header: {err}"),
+        })?;
+    let frame_len = u32::from_be_bytes(len_buf) as usize;
+    if frame_len == 0 || frame_len > BUS_MAX_FRAME_SIZE {
+        return Err(Error::BusPublishFailed {
+            message: format!(
+                "Broker acknowledgement length {frame_len} exceeds limit {BUS_MAX_FRAME_SIZE}."
+            ),
+        });
+    }
+
+    let mut payload = vec![0u8; frame_len];
+    stream
+        .read_exact(&mut payload)
+        .map_err(|err| Error::BusPublishFailed {
+            message: format!("Failed to read broker acknowledgement payload: {err}"),
+        })?;
+
+    let value: Value = serde_json::from_slice(&payload).map_err(|err| Error::BusPublishFailed {
+        message: format!("Failed to decode broker acknowledgement: {err}"),
+    })?;
+    let ack_type = value.get("type").and_then(Value::as_str).unwrap_or("?");
+    if ack_type != "ack" {
+        return Err(Error::BusPublishFailed {
+            message: format!("Unexpected broker response: {value}"),
+        });
+    }
+
+    let ack_kind = value.get("ack").and_then(Value::as_str).unwrap_or("?");
+    if ack_kind != "publish" {
+        return Err(Error::BusPublishFailed {
+            message: format!("Unexpected broker ack `{ack_kind}`."),
+        });
+    }
+
+    let status = value
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("error");
+    if !status.eq_ignore_ascii_case("ok") {
+        let reason = value
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown error");
+        return Err(Error::BusPublishFailed {
+            message: format!("Broker rejected publish: {reason}"),
+        });
+    }
+
+    Ok(())
 }
 
 pub fn tail(
@@ -108,34 +258,6 @@ pub fn tail(
     };
 
     Ok(OperationOutput::new(outcome).with_diagnostics(diagnostics))
-}
-
-fn append_line(path: &Path, line: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| Error::PreflightFailed {
-            message: format!(
-                "Failed to prepare bus log directory {}: {err}",
-                parent.display()
-            ),
-        })?;
-    }
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|err| Error::PreflightFailed {
-            message: format!("Unable to open bus log {}: {err}", path.display()),
-        })?;
-    file.write_all(line.as_bytes())
-        .map_err(|err| Error::PreflightFailed {
-            message: format!("Unable to write bus log {}: {err}", path.display()),
-        })?;
-    file.write_all(b"\n")
-        .map_err(|err| Error::PreflightFailed {
-            message: format!("Unable to finalize bus log {}: {err}", path.display()),
-        })?;
-    Ok(())
 }
 
 fn gather_bus_tail(path: &Path, tail: usize) -> Result<(Vec<LogEntry>, LogSectionState, u64)> {
@@ -213,13 +335,4 @@ fn sanitize_vm_name(name: &str) -> String {
         sanitized = "vm".to_string();
     }
     sanitized
-}
-
-fn timestamp_seconds() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
