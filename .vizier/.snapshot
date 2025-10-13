@@ -1,12 +1,12 @@
-SNAPSHOT v0.7.4 — Castra (VM orchestration harness)
+SNAPSHOT v0.7.5 — Castra (VM orchestration harness)
 
 Edits since last snapshot
-- Delivered parts of Thread 1 (Skip discovery): CLI now enforces that `--skip-discovery` requires `--config` (or `--state-root` for future clean); help text updated. Tests and uniform coverage across subcommands still pending.
-- Delivered core of Thread 3 (Broker freshness): `status --json` exposes `reachable: bool` and `last_handshake_age_ms`; legend/copy added. Need to codify non-blocking guarantees and log/event lines for handshake.
-- Delivered major pieces of Thread 10 (Managed images): Alpine boot profile wired (kernel/initrd); source checksums/size verification added; clearer offline/mismatch diagnostics; emits copy for verified checksums and applied profile. Ensure machine-parseable Events and docs follow-up.
+- Thread 1 (Skip discovery): Enforcement landed across status/up/down/ports/logs — `--skip-discovery` now requires `--config` (and will require `--state-root` for future clean); help text updated; internal path avoids any upward directory walking when the flag is set. Tests still pending.
+- Thread 3 (Broker freshness): `status --json` exposes `reachable: bool` and `last_handshake_age_ms`; legend/copy partially updated. Need tests to codify non-blocking guarantees and deterministic handshake logs/events.
+- Thread 10 (Managed images): Alpine boot profile wiring plus checksum/size verification shipped with clearer diagnostics and success copy. Structured Events and docs remain.
 
 Active threads (intent + acceptance)
-- Thread 1 — Discovery semantics gap [partially delivered]: `--skip-discovery` requires explicit config/path; zero filesystem walking when set; consistent copy and exit codes; tests across commands. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs.
+- Thread 1 — Discovery semantics gap [delivery pending tests]: `--skip-discovery` requires explicit config/path; zero filesystem walking when set; consistent copy and exit codes; tests across commands and parity for future `clean`. Anchors: src/app/common.rs; src/core/options.rs; src/cli.rs; CLEAN.md cross-link.
 - Thread 2 — Lifecycle gap: add multi-phase graceful shutdown before TERM→KILL with ordered Events and configurable timeouts; CLI copy references attempt but runtime behavior not yet implemented. Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
 - Thread 3 — Broker reachability [core fields delivered]: expose non-blocking freshness via reachable and last_handshake_age_ms; cap any initial probe; add deterministic handshake logs/events; document field semantics for automation. Anchors: src/core/status.rs; src/core/broker.rs; src/app/status.rs; src/core/logs.rs.
 - Thread 6 — Ports active mode: add `--active` view; keep columns stable; target <200ms; degrade gracefully if inspection unavailable. Anchors: src/core/ports.rs; src/app/ports.rs; src/core/runtime.rs.
@@ -19,9 +19,9 @@ Active threads (intent + acceptance)
 Current code state (observable surfaces)
 - Versioning/MSRV: build.rs injects version/short SHA; CLI reports it. README declares MSRV=1.77; docs/RELEASING.md present.
 - Feature gating: default features include `cli`; building with --no-default-features succeeds and excludes CLI. AGENTS.md guidance still missing.
-- Skip discovery: CLI enforces explicit-config under `--skip-discovery`; help text updated. Tests for no-walk and exit codes outstanding.
-- Broker status: `reachable` and `last_handshake_age_ms` exposed; legend describes freshness. Non-blocking and handshake log/event lines not yet guaranteed by tests.
-- Managed images: Alpine boot profile delivered; checksum/size verification and improved diagnostics in place; emits copy for verification/profile. Machine-parseable Events and docs pending.
+- Skip discovery: Enforcement active across status/up/down/ports/logs — `--skip-discovery` must pair with `--config`; help text reflects stricter semantics. Tests for no-walk and exit codes outstanding. Future `clean` will accept `--state-root` as explicit path under skip.
+- Broker status: `reachable` and `last_handshake_age_ms` present in JSON; legend partially updated. Non-blocking guarantees and handshake log/event lines not yet proven by tests.
+- Managed images: Alpine boot profile delivered; checksum/size verification and improved diagnostics in place; emits success copy. Machine-parseable Events and docs pending.
 - Gaps outstanding: ports --active view; graceful shutdown behavior/events; `castra clean` command; bus not implemented; bootstrap flow remains documented-only.
 
 Narrative themes
@@ -37,8 +37,8 @@ Narrative themes
 
 Direction of travel
 - Finish Thread 1 with tests and uniform enforcement across commands (and future `clean`).
-- Implement graceful shutdown events/behavior (Thread 2).
-- Solidify Thread 3 non-blocking guarantees and add handshake Events/logs; document JSON fields for automation.
+- Implement graceful shutdown events/behavior (Thread 2) with configurable timeouts.
+- Solidify Thread 3 non-blocking guarantees and add handshake Events/logs; finalize help/legend; document JSON fields for automation.
 - Expose ports --active and wire runtime inspection (Thread 6).
 - Emit structured Events for managed image verification/profile and document cache (Thread 10); cross-link to `clean`.
 - Author AGENTS.md embedder guide (Thread 11).
