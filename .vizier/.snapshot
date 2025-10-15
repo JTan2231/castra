@@ -1,5 +1,8 @@
 SNAPSHOT v0.8.4 — Castra (VM orchestration harness)
 
+Edits since v0.8.4
+- Housekeeping: removed the stale duplicate TODO for managed-image structured events; kept the canonical Thread 10 item with agreed schema and acceptance. No behavior/schema changes.
+
 Edits since v0.8.3
 - Thread 10 consolidation: removed duplicate TODO; kept a single canonical item and clarified acceptance on variant-backed events and durability.
 - Acceptance tightened: managed-image events must be explicit variants in src/core/events.rs and flow through the unified reporter channel; result events require duration_ms for stable ordering; CLEAN must indicate absence of evidence explicitly.
