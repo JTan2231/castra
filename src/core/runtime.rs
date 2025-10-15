@@ -760,10 +760,14 @@ pub fn shutdown_vm(
         GracefulTrigger::Unavailable { .. } => CooperativeMethod::Unavailable,
     };
 
+    let cooperative_timeout_ms = match cooperative_method {
+        CooperativeMethod::Unavailable => 0,
+        _ => graceful_wait_ms,
+    };
     emit_event(Event::CooperativeAttempted {
         vm: vm.name.clone(),
         method: cooperative_method,
-        timeout_ms: graceful_wait_ms,
+        timeout_ms: cooperative_timeout_ms,
     });
 
     match graceful_attempt {
@@ -1773,6 +1777,8 @@ mod tests {
     use std::fs;
     use std::net::TcpListener;
     use std::path::Path;
+    use std::thread;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
@@ -2020,6 +2026,118 @@ mod tests {
             }
             other => panic!("expected ShutdownComplete event, got {other:?}"),
         }
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cooperative_shutdown_handles_unavailable_qmp_channel()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let state_root = temp.path().to_path_buf();
+        let vm = sample_vm(&state_root);
+
+        let child = ForkGuard::spawn();
+        let pid_value = child.pid();
+        let pidfile = state_root.join(format!("{}.pid", vm.name));
+        fs::write(&pidfile, format!("{pid_value}"))?;
+
+        let reaper = thread::spawn(move || {
+            loop {
+                let mut status = 0;
+                let res = unsafe { libc::waitpid(pid_value, &mut status, libc::WNOHANG) };
+                if res == 0 {
+                    thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+                break;
+            }
+        });
+
+        let timeouts = ShutdownTimeouts::new(
+            Duration::from_secs(2),
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+        );
+        let report = shutdown_vm(&vm, &state_root, timeouts, None)?;
+        reaper.join().unwrap();
+
+        assert!(report.changed);
+        assert!(report.diagnostics.is_empty());
+        assert_eq!(report.outcome, ShutdownOutcome::Forced);
+        assert!(!pidfile.exists());
+
+        let mut iter = report.events.iter();
+
+        match iter.next() {
+            Some(Event::ShutdownRequested { vm: event_vm }) => assert_eq!(event_vm, &vm.name),
+            other => panic!("expected ShutdownRequested first, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::CooperativeAttempted {
+                vm: event_vm,
+                method,
+                timeout_ms,
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*method, CooperativeMethod::Unavailable);
+                assert_eq!(*timeout_ms, 0);
+            }
+            other => panic!("expected CooperativeAttempted second, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::CooperativeTimedOut {
+                vm: event_vm,
+                waited_ms,
+                reason,
+                detail,
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*waited_ms, 0);
+                assert_eq!(*reason, CooperativeTimeoutReason::ChannelUnavailable);
+                let detail = detail.as_deref().unwrap_or_default();
+                assert!(
+                    detail.contains(".qmp") || detail.contains("QMP socket"),
+                    "expected detail to mention qmp socket, got {detail}"
+                );
+            }
+            other => panic!("expected CooperativeTimedOut third, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::ShutdownEscalated {
+                vm: event_vm,
+                signal,
+                timeout_ms,
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*signal, ShutdownSignal::Sigterm);
+                assert_eq!(*timeout_ms, Some(200));
+            }
+            other => panic!("expected ShutdownEscalated fourth, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::ShutdownComplete {
+                vm: event_vm,
+                outcome,
+                changed,
+                ..
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*outcome, ShutdownOutcome::Forced);
+                assert!(*changed);
+            }
+            other => panic!("expected ShutdownComplete last, got {other:?}"),
+        }
+
+        assert!(
+            iter.next().is_none(),
+            "no additional events expected after shutdown"
+        );
 
         Ok(())
     }
