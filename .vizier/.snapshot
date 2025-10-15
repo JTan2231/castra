@@ -5,6 +5,7 @@ Edits since v0.8.0
 - Standardized managed-image event names (Thread 10) and tied them to CLEAN/reporting stream.
 - Clarified bootstrap idempotence stamps, event surfaces, and config knobs (Thread 12).
 - Consolidated duplicate bootstrap TODOs into a single thread doc.
+- Consolidated lifecycle TODOs under cooperative_shutdown_lifecycle.md; graceful_shutdown_acpi_qmp folded into Thread 2 canonical with unified event sequence.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (not yet implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -48,3 +49,4 @@ Direction of travel
 Cross‑links
 - BOOTSTRAP.md defines inputs/outputs for Thread 12 and references managed‑image events (Thread 10).
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence.
+- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md (graceful_shutdown_acpi_qmp consolidated here).

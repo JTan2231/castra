@@ -1,16 +1,12 @@
 ---
-Update (Snapshot v0.8.0 alignment)
+Snapshot sync (v0.8.1)
 
-- Clarify event names to match snapshot language and stress durability:
-  - VerificationStarted → ManagedImageVerificationStarted
-  - VerificationResult → ManagedImageVerificationResult
-  - ProfileApplied → ManagedImageProfileApplied
-  - ProfileResult → ManagedImageProfileResult
-- Add requirement that CLEAN links reclaimed bytes to specific ManagedImageVerificationResult entries (by image id/path + timestamp) in output when available.
-- Acceptance addition: reporter emits these via the same channel used by lifecycle events so tools can consume a unified stream.
-- Cross-link: Thread 12 (bootstrap) may read these results to skip bootstrap when profile already applied and hashes match.
+- Keep event names per snapshot: ManagedImageVerificationStarted/Result and ManagedImageProfileApplied/Result.
+- Acceptance clarifications:
+  - Reporter emits via unified channel with lifecycle events; events are durable and appear in per‑VM or image‑scoped logs.
+  - CLEAN output links reclaimed‑bytes evidence to ManagedImageVerificationResult entries (image id/path + timestamp) when available.
+- Cross‑link Thread 12: bootstrap may use these results to short‑circuit when profile already applied and hashes match.
 
-Anchors unchanged.
 
 ---
 
