@@ -1,6 +1,9 @@
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use clap::{Args, Parser, Subcommand};
+
+use castra::BootstrapMode;
 
 const VERSION: &str = env!("CASTRA_VERSION");
 
@@ -93,6 +96,107 @@ pub struct UpArgs {
         help = "Bypass disk/CPU/memory safety checks during preflight (use with caution)"
     )]
     pub force: bool,
+
+    /// Override bootstrap behavior without editing castra.toml.
+    #[arg(
+        long,
+        value_name = "TARGET",
+        help = "Override bootstrap behavior for this run. Use `--bootstrap <mode>` to set a global mode or `--bootstrap <vm>=<mode>` to target a specific VM. Modes: auto, disabled, always."
+    )]
+    pub bootstrap: Vec<BootstrapOverrideArg>,
+}
+
+/// Parsed representation of a bootstrap override request from the CLI.
+#[derive(Debug, Clone)]
+pub enum BootstrapOverrideArg {
+    Global(BootstrapMode),
+    Vm { vm: String, mode: BootstrapMode },
+}
+
+impl FromStr for BootstrapOverrideArg {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err("Bootstrap override cannot be empty.".to_string());
+        }
+
+        if let Some((vm, mode)) = trimmed.split_once('=') {
+            return parse_vm_override(vm, mode);
+        }
+
+        if let Some((vm, mode)) = trimmed.split_once(':') {
+            return parse_vm_override(vm, mode);
+        }
+
+        let mode = trimmed.parse::<BootstrapMode>()?;
+        Ok(BootstrapOverrideArg::Global(mode))
+    }
+}
+
+fn parse_vm_override(vm: &str, mode: &str) -> Result<BootstrapOverrideArg, String> {
+    let vm = vm.trim();
+    if vm.is_empty() {
+        return Err("Bootstrap override requires a VM name before the `=`.".to_string());
+    }
+
+    let mode = mode.trim();
+    if mode.is_empty() {
+        return Err(format!(
+            "Bootstrap override for `{vm}` is missing a mode. Supported values: auto, disabled, always."
+        ));
+    }
+
+    let parsed = mode.parse::<BootstrapMode>()?;
+    Ok(BootstrapOverrideArg::Vm {
+        vm: vm.to_string(),
+        mode: parsed,
+    })
+}
+
+#[cfg(test)]
+mod bootstrap_override_tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_override_arg_parses_global() {
+        match "disabled".parse::<BootstrapOverrideArg>().unwrap() {
+            BootstrapOverrideArg::Global(mode) => assert_eq!(mode, BootstrapMode::Disabled),
+            other => panic!("expected global override, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bootstrap_override_arg_parses_vm_assignment() {
+        match "web=always".parse::<BootstrapOverrideArg>().unwrap() {
+            BootstrapOverrideArg::Vm { vm, mode } => {
+                assert_eq!(vm, "web");
+                assert_eq!(mode, BootstrapMode::Always);
+            }
+            other => panic!("expected vm override, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bootstrap_override_arg_accepts_colon_separator() {
+        match "db:auto".parse::<BootstrapOverrideArg>().unwrap() {
+            BootstrapOverrideArg::Vm { vm, mode } => {
+                assert_eq!(vm, "db");
+                assert_eq!(mode, BootstrapMode::Auto);
+            }
+            other => panic!("expected vm override, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bootstrap_override_arg_rejects_missing_mode() {
+        let err = "db=".parse::<BootstrapOverrideArg>().unwrap_err();
+        assert!(
+            err.contains("missing a mode"),
+            "unexpected error message: {err}"
+        );
+    }
 }
 
 #[derive(Debug, Args, Default)]

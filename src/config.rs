@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -130,20 +131,26 @@ pub enum BootstrapMode {
 }
 
 impl BootstrapMode {
-    fn parse(value: &str) -> Option<Self> {
-        match value.to_ascii_lowercase().as_str() {
-            "disabled" | "off" => Some(Self::Disabled),
-            "auto" | "automatic" | "enabled" => Some(Self::Auto),
-            "always" | "force" => Some(Self::Always),
-            _ => None,
-        }
-    }
-
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
             Self::Auto => "auto",
             Self::Always => "always",
+        }
+    }
+}
+
+impl FromStr for BootstrapMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "disabled" | "off" => Ok(Self::Disabled),
+            "auto" | "automatic" | "enabled" => Ok(Self::Auto),
+            "always" | "force" => Ok(Self::Always),
+            _ => Err(format!(
+                "Unknown bootstrap mode `{value}`. Supported values: auto, disabled, always."
+            )),
         }
     }
 }
@@ -998,14 +1005,9 @@ impl RawLifecycle {
 impl RawBootstrap {
     fn into_config(self, path: &Path) -> Result<BootstrapConfig, Error> {
         let mode = match self.mode.as_deref() {
-            Some(value) => BootstrapMode::parse(value).ok_or_else(|| {
-                invalid_config(
-                    path,
-                    format!(
-                        "Unknown bootstrap mode `{value}`. Supported values: auto, disabled, always."
-                    ),
-                )
-            })?,
+            Some(value) => value
+                .parse::<BootstrapMode>()
+                .map_err(|err| invalid_config(path, err))?,
             None => BootstrapMode::default(),
         };
 
@@ -1016,14 +1018,17 @@ impl RawBootstrap {
 impl RawVmBootstrap {
     fn resolve_mode(&self, path: &Path, context: &str) -> Result<Option<BootstrapMode>, Error> {
         match self.mode.as_deref() {
-            Some(value) => BootstrapMode::parse(value).ok_or_else(|| {
-                invalid_config(
-                    path,
-                    format!(
-                        "{context} has unknown bootstrap.mode `{value}`. Supported values: auto, disabled, always."
-                    ),
-                )
-            }).map(Some),
+            Some(value) => value
+                .parse::<BootstrapMode>()
+                .map_err(|_| {
+                    invalid_config(
+                        path,
+                        format!(
+                            "{context} has unknown bootstrap.mode `{value}`. Supported values: auto, disabled, always."
+                        ),
+                    )
+                })
+                .map(Some),
             None => Ok(None),
         }
     }
@@ -1672,6 +1677,39 @@ memory = "2048 MiB"
             dir.path().join(".castra"),
             "state root uses project override"
         );
+    }
+
+    #[test]
+    fn bootstrap_mode_from_str_supports_aliases() {
+        assert_eq!(
+            "auto".parse::<BootstrapMode>().unwrap(),
+            BootstrapMode::Auto
+        );
+        assert_eq!(
+            "Automatic".parse::<BootstrapMode>().unwrap(),
+            BootstrapMode::Auto
+        );
+        assert_eq!(
+            "enabled".parse::<BootstrapMode>().unwrap(),
+            BootstrapMode::Auto
+        );
+        assert_eq!(
+            "disabled".parse::<BootstrapMode>().unwrap(),
+            BootstrapMode::Disabled
+        );
+        assert_eq!(
+            "off".parse::<BootstrapMode>().unwrap(),
+            BootstrapMode::Disabled
+        );
+        assert_eq!(
+            "always".parse::<BootstrapMode>().unwrap(),
+            BootstrapMode::Always
+        );
+        assert_eq!(
+            "force".parse::<BootstrapMode>().unwrap(),
+            BootstrapMode::Always
+        );
+        assert!("bogus".parse::<BootstrapMode>().is_err());
     }
 
     #[test]

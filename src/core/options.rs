@@ -1,7 +1,10 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::Value;
+
+use crate::config::BootstrapMode;
 
 /// Source used when resolving a Castra configuration.
 #[derive(Debug, Clone)]
@@ -74,6 +77,8 @@ pub struct UpOptions {
     pub config: ConfigLoadOptions,
     /// Whether to force operations even if host checks fail.
     pub force: bool,
+    /// Per-invocation overrides for bootstrap behavior.
+    pub bootstrap: BootstrapOverrides,
 }
 
 impl Default for UpOptions {
@@ -81,8 +86,18 @@ impl Default for UpOptions {
         Self {
             config: ConfigLoadOptions::discover(true),
             force: false,
+            bootstrap: BootstrapOverrides::default(),
         }
     }
+}
+
+/// Overrides controlling bootstrap mode resolution for a single invocation.
+#[derive(Debug, Clone, Default)]
+pub struct BootstrapOverrides {
+    /// Global override applied to all VMs when present.
+    pub global: Option<BootstrapMode>,
+    /// Per-VM overrides that take precedence over the global value.
+    pub per_vm: HashMap<String, BootstrapMode>,
 }
 
 /// Options for the `down` operation.

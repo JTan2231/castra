@@ -24,8 +24,9 @@ use super::events::{
 };
 use super::logs as logs_core;
 use super::options::{
-    BrokerOptions, BusPublishOptions, BusTailOptions, CleanOptions, ConfigLoadOptions, DownOptions,
-    InitOptions, LogsOptions, PortsOptions, StatusOptions, UpOptions,
+    BootstrapOverrides, BrokerOptions, BusPublishOptions, BusTailOptions, CleanOptions,
+    ConfigLoadOptions, DownOptions, InitOptions, LogsOptions, PortsOptions, StatusOptions,
+    UpOptions,
 };
 use super::outcome::{
     BootstrapRunStatus, BrokerLaunchOutcome, BrokerShutdownOutcome, BusPublishOutcome,
@@ -113,7 +114,8 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
     let mut diagnostics = Vec::new();
     let mut events = Vec::new();
 
-    let (project, _) = load_project_for_operation(&options.config, &mut diagnostics)?;
+    let (mut project, _) = load_project_for_operation(&options.config, &mut diagnostics)?;
+    apply_bootstrap_overrides(&mut project, &options.bootstrap)?;
 
     let outcome = {
         let mut reporter = ReporterProxy::new(reporter, &mut events);
@@ -488,6 +490,49 @@ pub(super) fn load_project_for_operation(
     Ok((config, synthetic))
 }
 
+fn apply_bootstrap_overrides(
+    project: &mut ProjectConfig,
+    overrides: &BootstrapOverrides,
+) -> Result<()> {
+    if overrides.global.is_none() && overrides.per_vm.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(mode) = overrides.global {
+        project.bootstrap.mode = mode;
+        for vm in &mut project.vms {
+            vm.bootstrap.mode = mode;
+        }
+    }
+
+    if overrides.per_vm.is_empty() {
+        return Ok(());
+    }
+
+    for (vm_name, mode) in &overrides.per_vm {
+        match project.vms.iter_mut().find(|vm| vm.name == *vm_name) {
+            Some(vm) => {
+                vm.bootstrap.mode = *mode;
+            }
+            None => {
+                let available = project
+                    .vms
+                    .iter()
+                    .map(|vm| vm.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(Error::PreflightFailed {
+                    message: format!(
+                        "Bootstrap override references unknown VM `{vm_name}`. Available VMs: {available}."
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn emit_managed_acquisition_events(
     reporter: &mut ReporterProxy<'_, '_>,
     context: &RuntimeContext,
@@ -762,9 +807,11 @@ pub fn bus_tail(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DEFAULT_BROKER_PORT;
     use crate::config::{
-        BaseImageSource, BootstrapMode, ManagedDiskKind, ManagedImageReference, MemorySpec,
-        VmBootstrapConfig,
+        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig, LifecycleConfig,
+        ManagedDiskKind, ManagedImageReference, MemorySpec, ProjectConfig, VmBootstrapConfig,
+        VmDefinition, Workflows,
     };
     use crate::core::reporter::Reporter;
     use crate::core::runtime::{ManagedAcquisition, RuntimeContext};
@@ -775,11 +822,126 @@ mod tests {
         ManagedImageVerificationOutcome, QemuProfile,
     };
     use serde_json::Value;
-    use std::error::Error;
+    use std::collections::HashMap;
+    use std::error::Error as StdError;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, UNIX_EPOCH};
     use tempfile::tempdir;
+
+    fn sample_vm(name: &str, mode: BootstrapMode) -> VmDefinition {
+        VmDefinition {
+            name: name.to_string(),
+            role_name: name.to_string(),
+            replica_index: 0,
+            description: None,
+            base_image: BaseImageSource::Path(PathBuf::from("/tmp/base.qcow2")),
+            overlay: PathBuf::from(format!("/tmp/{name}.qcow2")),
+            cpus: 1,
+            memory: MemorySpec::new("512 MiB", Some(512 * 1024 * 1024)),
+            port_forwards: Vec::new(),
+            bootstrap: VmBootstrapConfig { mode },
+        }
+    }
+
+    fn sample_project_with_modes(
+        vm_modes: &[(&str, BootstrapMode)],
+        default_mode: BootstrapMode,
+    ) -> ProjectConfig {
+        let vms = vm_modes
+            .iter()
+            .map(|(name, mode)| sample_vm(name, *mode))
+            .collect();
+
+        ProjectConfig {
+            file_path: PathBuf::from("castra.toml"),
+            version: "0.1.0".to_string(),
+            project_name: "demo".to_string(),
+            vms,
+            state_root: PathBuf::from("/tmp/castra"),
+            workflows: Workflows { init: Vec::new() },
+            broker: BrokerConfig {
+                port: DEFAULT_BROKER_PORT,
+            },
+            lifecycle: LifecycleConfig::default(),
+            bootstrap: BootstrapConfig { mode: default_mode },
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn apply_bootstrap_overrides_sets_global_mode() {
+        let mut project = sample_project_with_modes(
+            &[
+                ("api-0", BootstrapMode::Auto),
+                ("api-1", BootstrapMode::Always),
+            ],
+            BootstrapMode::Auto,
+        );
+
+        let overrides = BootstrapOverrides {
+            global: Some(BootstrapMode::Disabled),
+            per_vm: HashMap::new(),
+        };
+
+        apply_bootstrap_overrides(&mut project, &overrides).expect("apply overrides");
+
+        assert_eq!(project.bootstrap.mode, BootstrapMode::Disabled);
+        for vm in &project.vms {
+            assert_eq!(vm.bootstrap.mode, BootstrapMode::Disabled);
+        }
+    }
+
+    #[test]
+    fn apply_bootstrap_overrides_sets_vm_specific_mode() {
+        let mut project = sample_project_with_modes(
+            &[
+                ("api-0", BootstrapMode::Auto),
+                ("api-1", BootstrapMode::Auto),
+            ],
+            BootstrapMode::Auto,
+        );
+
+        let mut per_vm = HashMap::new();
+        per_vm.insert("api-1".to_string(), BootstrapMode::Always);
+        let overrides = BootstrapOverrides {
+            global: Some(BootstrapMode::Disabled),
+            per_vm,
+        };
+
+        apply_bootstrap_overrides(&mut project, &overrides).expect("apply overrides");
+
+        let api0 = project.vms.iter().find(|vm| vm.name == "api-0").unwrap();
+        let api1 = project.vms.iter().find(|vm| vm.name == "api-1").unwrap();
+
+        assert_eq!(project.bootstrap.mode, BootstrapMode::Disabled);
+        assert_eq!(api0.bootstrap.mode, BootstrapMode::Disabled);
+        assert_eq!(api1.bootstrap.mode, BootstrapMode::Always);
+    }
+
+    #[test]
+    fn apply_bootstrap_overrides_errors_for_unknown_vm() {
+        let mut project =
+            sample_project_with_modes(&[("api-0", BootstrapMode::Auto)], BootstrapMode::Auto);
+
+        let mut per_vm = HashMap::new();
+        per_vm.insert("missing".to_string(), BootstrapMode::Always);
+        let overrides = BootstrapOverrides {
+            global: None,
+            per_vm,
+        };
+
+        let err = apply_bootstrap_overrides(&mut project, &overrides).unwrap_err();
+        match err {
+            Error::PreflightFailed { message } => {
+                assert!(
+                    message.contains("unknown VM `missing`"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 
     #[derive(Default)]
     struct RecordingReporter {
@@ -820,7 +982,8 @@ mod tests {
     }
 
     #[test]
-    fn managed_acquisition_events_align_across_sinks() -> std::result::Result<(), Box<dyn Error>> {
+    fn managed_acquisition_events_align_across_sinks() -> std::result::Result<(), Box<dyn StdError>>
+    {
         let temp = tempdir()?;
         let state_root = temp.path().join("state");
         let log_root = temp.path().join("logs");

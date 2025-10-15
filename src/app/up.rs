@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 
+use crate::Error;
 use crate::Result;
-use crate::cli::UpArgs;
+use crate::cli::{BootstrapOverrideArg, UpArgs};
 use crate::core::diagnostics::Severity;
 use crate::core::events::{
     BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger, Event,
 };
 use crate::core::operations;
-use crate::core::options::UpOptions;
+use crate::core::options::{BootstrapOverrides, UpOptions};
 use crate::core::outcome::{BootstrapRunStatus, UpOutcome};
 use crate::core::project::format_config_warnings;
 use castra::{ManagedImageProfileOutcome, ManagedImageVerificationOutcome};
@@ -15,9 +16,11 @@ use castra::{ManagedImageProfileOutcome, ManagedImageVerificationOutcome};
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
 
 pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> {
+    let bootstrap_overrides = build_bootstrap_overrides(&args.bootstrap)?;
     let options = UpOptions {
         config: config_load_options(config_override, args.skip_discovery, "up")?,
         force: args.force,
+        bootstrap: bootstrap_overrides,
     };
 
     let output = operations::up(options, None)?;
@@ -31,6 +34,47 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
     render_up(&output.value, &output.events);
 
     Ok(())
+}
+
+fn build_bootstrap_overrides(inputs: &[BootstrapOverrideArg]) -> Result<BootstrapOverrides> {
+    let mut overrides = BootstrapOverrides::default();
+
+    for entry in inputs {
+        match entry {
+            BootstrapOverrideArg::Global(mode) => {
+                if let Some(existing) = overrides.global {
+                    if existing != *mode {
+                        return Err(Error::PreflightFailed {
+                            message: format!(
+                                "Conflicting global bootstrap overrides `{}` and `{}`.",
+                                existing.as_str(),
+                                mode.as_str()
+                            ),
+                        });
+                    }
+                } else {
+                    overrides.global = Some(*mode);
+                }
+            }
+            BootstrapOverrideArg::Vm { vm, mode } => {
+                if let Some(existing) = overrides.per_vm.get(vm) {
+                    if existing != mode {
+                        return Err(Error::PreflightFailed {
+                            message: format!(
+                                "Conflicting bootstrap overrides for `{vm}`: `{}` vs `{}`.",
+                                existing.as_str(),
+                                mode.as_str()
+                            ),
+                        });
+                    }
+                } else {
+                    overrides.per_vm.insert(vm.clone(), *mode);
+                }
+            }
+        }
+    }
+
+    Ok(overrides)
 }
 
 fn render_up(outcome: &UpOutcome, events: &[Event]) {
@@ -349,5 +393,70 @@ fn format_step_status(status: &BootstrapStepStatus) -> &'static str {
         BootstrapStepStatus::Success => "success",
         BootstrapStepStatus::Skipped => "skipped",
         BootstrapStepStatus::Failed => "failed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use castra::BootstrapMode;
+
+    #[test]
+    fn build_bootstrap_overrides_supports_global_and_vm_specific_modes() {
+        let overrides = build_bootstrap_overrides(&[
+            BootstrapOverrideArg::Global(BootstrapMode::Disabled),
+            BootstrapOverrideArg::Vm {
+                vm: "api-0".to_string(),
+                mode: BootstrapMode::Always,
+            },
+        ])
+        .expect("build overrides");
+
+        assert_eq!(overrides.global, Some(BootstrapMode::Disabled));
+        assert_eq!(overrides.per_vm.get("api-0"), Some(&BootstrapMode::Always));
+    }
+
+    #[test]
+    fn build_bootstrap_overrides_detects_conflicting_global_modes() {
+        let err = build_bootstrap_overrides(&[
+            BootstrapOverrideArg::Global(BootstrapMode::Auto),
+            BootstrapOverrideArg::Global(BootstrapMode::Always),
+        ])
+        .unwrap_err();
+
+        match err {
+            Error::PreflightFailed { message } => {
+                assert!(
+                    message.contains("Conflicting global bootstrap overrides"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_bootstrap_overrides_detects_conflicting_vm_modes() {
+        let err = build_bootstrap_overrides(&[
+            BootstrapOverrideArg::Vm {
+                vm: "api-0".to_string(),
+                mode: BootstrapMode::Auto,
+            },
+            BootstrapOverrideArg::Vm {
+                vm: "api-0".to_string(),
+                mode: BootstrapMode::Disabled,
+            },
+        ])
+        .unwrap_err();
+
+        match err {
+            Error::PreflightFailed { message } => {
+                assert!(
+                    message.contains("Conflicting bootstrap overrides for `api-0`"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
