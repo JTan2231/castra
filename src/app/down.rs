@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::cli::DownArgs;
 use crate::core::diagnostics::Severity;
-use crate::core::events::{Event, GuestCooperativeMethod, ShutdownOutcome};
+use crate::core::events::{CooperativeMethod, Event, ShutdownOutcome};
 use crate::core::operations;
 use crate::core::options::DownOptions;
 use crate::core::project::format_config_warnings;
@@ -51,31 +51,38 @@ fn render_down(events: &[Event]) {
             Event::ShutdownRequested { vm } => {
                 println!("→ {vm}: shutdown requested.");
             }
-            Event::GuestCooperativeAttempted {
+            Event::CooperativeAttempted {
                 vm,
                 method,
                 timeout_ms,
             } => match method {
-                GuestCooperativeMethod::QmpSystemPowerdown => {
+                CooperativeMethod::Acpi => {
                     println!(
                         "→ {vm}: attempting cooperative shutdown via {} (wait up to {}).",
                         method.describe(),
                         format_duration_ms(*timeout_ms)
                     );
                 }
-                GuestCooperativeMethod::Unavailable => {
+                CooperativeMethod::Agent => {
+                    println!(
+                        "→ {vm}: attempting cooperative shutdown via {} (wait up to {}).",
+                        method.describe(),
+                        format_duration_ms(*timeout_ms)
+                    );
+                }
+                CooperativeMethod::Unavailable => {
                     println!(
                         "→ {vm}: no cooperative shutdown channel available; proceeding to host termination."
                     );
                 }
             },
-            Event::GuestCooperativeConfirmed { vm, elapsed_ms } => {
+            Event::CooperativeSucceeded { vm, elapsed_ms } => {
                 println!(
                     "→ {vm}: guest confirmed shutdown in {}.",
                     format_duration_ms(*elapsed_ms)
                 );
             }
-            Event::GuestCooperativeTimeout {
+            Event::CooperativeTimedOut {
                 vm,
                 waited_ms,
                 reason,
@@ -97,27 +104,7 @@ fn render_down(events: &[Event]) {
                     }
                 }
             }
-            Event::HostTerminate {
-                vm,
-                signal,
-                timeout_ms,
-            } => match signal {
-                Some(signal) => {
-                    if let Some(ms) = timeout_ms {
-                        println!(
-                            "→ {vm}: host sent {}; waiting up to {}.",
-                            signal.describe(),
-                            format_duration_ms(*ms)
-                        );
-                    } else {
-                        println!("→ {vm}: host sent {}.", signal.describe());
-                    }
-                }
-                None => {
-                    println!("→ {vm}: host confirmed shutdown without sending signals.");
-                }
-            },
-            Event::HostKill {
+            Event::ShutdownEscalated {
                 vm,
                 signal,
                 timeout_ms,

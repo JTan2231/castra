@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 
 use super::diagnostics::{Diagnostic, Severity};
 use super::events::{
-    Event, GuestCooperativeMethod, GuestCooperativeTimeoutReason, ShutdownOutcome, ShutdownSignal,
+    CooperativeMethod, CooperativeTimeoutReason, Event, ShutdownOutcome, ShutdownSignal,
 };
 
 pub struct RuntimeContext {
@@ -682,13 +682,11 @@ pub fn shutdown_vm(
 
     let graceful_attempt = attempt_graceful_shutdown(state_root, &vm.name);
     let cooperative_method = match graceful_attempt {
-        GracefulTrigger::Initiated | GracefulTrigger::Failed { .. } => {
-            GuestCooperativeMethod::QmpSystemPowerdown
-        }
-        GracefulTrigger::Unavailable { .. } => GuestCooperativeMethod::Unavailable,
+        GracefulTrigger::Initiated | GracefulTrigger::Failed { .. } => CooperativeMethod::Acpi,
+        GracefulTrigger::Unavailable { .. } => CooperativeMethod::Unavailable,
     };
 
-    events.push(Event::GuestCooperativeAttempted {
+    events.push(Event::CooperativeAttempted {
         vm: vm.name.clone(),
         method: cooperative_method,
         timeout_ms: graceful_wait_ms,
@@ -716,14 +714,9 @@ pub fn shutdown_vm(
                 }
                 cleanup_qmp_socket(state_root, &vm.name);
                 let elapsed_ms = duration_to_millis(wait_started.elapsed());
-                events.push(Event::GuestCooperativeConfirmed {
+                events.push(Event::CooperativeSucceeded {
                     vm: vm.name.clone(),
                     elapsed_ms,
-                });
-                events.push(Event::HostTerminate {
-                    vm: vm.name.clone(),
-                    signal: None,
-                    timeout_ms: None,
                 });
                 events.push(Event::ShutdownComplete {
                     vm: vm.name.clone(),
@@ -732,18 +725,18 @@ pub fn shutdown_vm(
                 });
                 return Ok((true, ShutdownOutcome::Graceful));
             }
-            events.push(Event::GuestCooperativeTimeout {
+            events.push(Event::CooperativeTimedOut {
                 vm: vm.name.clone(),
                 waited_ms: graceful_wait_ms,
-                reason: GuestCooperativeTimeoutReason::TimeoutExpired,
+                reason: CooperativeTimeoutReason::TimeoutExpired,
                 detail: None,
             });
         }
         GracefulTrigger::Unavailable { detail } => {
-            events.push(Event::GuestCooperativeTimeout {
+            events.push(Event::CooperativeTimedOut {
                 vm: vm.name.clone(),
                 waited_ms: 0,
-                reason: GuestCooperativeTimeoutReason::ChannelUnavailable,
+                reason: CooperativeTimeoutReason::ChannelUnavailable,
                 detail: Some(detail),
             });
         }
@@ -757,10 +750,10 @@ pub fn shutdown_vm(
                     "Ensure QEMU launched with QMP support or allow Castra to manage the VM lifecycle.",
                 ),
             );
-            events.push(Event::GuestCooperativeTimeout {
+            events.push(Event::CooperativeTimedOut {
                 vm: vm.name.clone(),
                 waited_ms: 0,
-                reason: GuestCooperativeTimeoutReason::ChannelError,
+                reason: CooperativeTimeoutReason::ChannelError,
                 detail: Some(detail),
             });
         }
@@ -782,11 +775,6 @@ pub fn shutdown_vm(
             ));
             let _ = fs::remove_file(&pidfile);
             cleanup_qmp_socket(state_root, &vm.name);
-            events.push(Event::HostTerminate {
-                vm: vm.name.clone(),
-                signal: None,
-                timeout_ms: None,
-            });
             events.push(Event::ShutdownComplete {
                 vm: vm.name.clone(),
                 outcome: ShutdownOutcome::Graceful,
@@ -801,9 +789,9 @@ pub fn shutdown_vm(
         });
     }
 
-    events.push(Event::HostTerminate {
+    events.push(Event::ShutdownEscalated {
         vm: vm.name.clone(),
-        signal: Some(ShutdownSignal::Sigterm),
+        signal: ShutdownSignal::Sigterm,
         timeout_ms: Some(sigterm_wait_ms),
     });
     let outcome = ShutdownOutcome::Forced;
@@ -812,7 +800,7 @@ pub fn shutdown_vm(
         message: format!("Error while waiting for pid {pid} to exit: {err}"),
     })? {
         let kill_res = unsafe { libc::kill(pid, libc::SIGKILL) };
-        events.push(Event::HostKill {
+        events.push(Event::ShutdownEscalated {
             vm: vm.name.clone(),
             signal: ShutdownSignal::Sigkill,
             timeout_ms: Some(sigkill_wait_ms),
