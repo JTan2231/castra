@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::managed::{
     ManagedArtifactEventDetail, ManagedArtifactKind, ManagedImageProfileOutcome, ManagedImageSpec,
@@ -282,6 +282,8 @@ pub struct CleanupManagedImageEvidence {
     pub image_id: String,
     /// Managed image version associated with the verification entry.
     pub image_version: String,
+    /// Filesystem path to the managed image root disk.
+    pub root_disk_path: PathBuf,
     /// Path to the log containing the verification record.
     pub log_path: PathBuf,
     /// Timestamp (UTC seconds since epoch) when verification completed.
@@ -290,6 +292,8 @@ pub struct CleanupManagedImageEvidence {
     pub total_bytes: Option<u64>,
     /// Artifact filenames recorded in the verification result.
     pub artifacts: Vec<String>,
+    /// Absolute difference between verification completion and current on-disk timestamp.
+    pub verification_delta: Option<Duration>,
 }
 
 /// Trigger that initiated a bootstrap run.

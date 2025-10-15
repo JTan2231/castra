@@ -23,6 +23,7 @@
   - Summary table (path, action, bytes reclaimed or reason skipped).
   - Diagnostics via existing reporting channel for warnings (e.g., “broker still running; rerun with `--force` once stopped.”).
   - Events surface through the reporter API so TUI/GUI clients can render progress consistently.
+  - Managed image cleanup entries surface verification evidence (image id, root-disk path, total bytes, verification/filesystem delta) sourced from the latest ManagedImageVerificationResult.
 
 ## Cleanup scope
 - **Managed image cache (default):** `<state_root>/images/**`, `image-manager.log`, manifest files.

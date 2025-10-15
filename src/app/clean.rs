@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::Result;
 use crate::cli::CleanArgs;
@@ -136,13 +136,17 @@ fn render_managed_evidence(kind: CleanupKind, evidence: &[CleanupManagedImageEvi
             .map(format_bytes)
             .unwrap_or_else(|| "unknown".to_string());
         println!(
-            "        image {}@{} verified {} (artifact bytes {}, log {})",
+            "        image {}@{} at {} verified {} (artifact bytes {}, log {})",
             entry.image_id,
             entry.image_version,
+            entry.root_disk_path.display(),
             when,
             bytes_text,
             entry.log_path.display()
         );
+        if let Some(delta) = entry.verification_delta {
+            println!("          filesystem delta: {}", format_duration(delta));
+        }
         if !entry.artifacts.is_empty() {
             println!("          artifacts: {}", entry.artifacts.join(", "));
         }
@@ -169,6 +173,22 @@ fn format_bytes(bytes: u64) -> String {
         format!("{bytes} {}", UNITS[unit])
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    if duration.as_millis() == 0 {
+        return "0ms".to_string();
+    }
+
+    if duration.as_secs() >= 3600 {
+        format!("{:.1}h", duration.as_secs_f64() / 3600.0)
+    } else if duration.as_secs() >= 60 {
+        format!("{:.1}m", duration.as_secs_f64() / 60.0)
+    } else if duration.as_secs() >= 1 {
+        format!("{}s", duration.as_secs())
+    } else {
+        format!("{}ms", duration.as_millis())
     }
 }
 

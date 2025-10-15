@@ -583,10 +583,21 @@ fn collect_managed_image_evidence(path: &Path) -> Vec<CleanupManagedImageEvidenc
 
         let mut artifacts = Vec::new();
         let mut total_bytes: Option<u64> = Some(0);
+        let image_root = path.join(image_id).join(image_version);
+        let mut root_disk_path: Option<PathBuf> = None;
         if let Some(entries) = value.get("artifacts").and_then(|entry| entry.as_array()) {
             for artifact in entries {
                 if let Some(name) = artifact.get("filename").and_then(|field| field.as_str()) {
                     artifacts.push(name.to_string());
+                }
+                if let Some(kind) = artifact.get("kind").and_then(|field| field.as_str()) {
+                    if root_disk_path.is_none() && kind.eq_ignore_ascii_case("root disk") {
+                        if let Some(name) =
+                            artifact.get("filename").and_then(|field| field.as_str())
+                        {
+                            root_disk_path = Some(image_root.join(name));
+                        }
+                    }
                 }
                 match artifact.get("size_bytes").and_then(|field| field.as_u64()) {
                     Some(size) => {
@@ -601,13 +612,23 @@ fn collect_managed_image_evidence(path: &Path) -> Vec<CleanupManagedImageEvidenc
             }
         }
 
+        let root_disk_path = root_disk_path
+            .or_else(|| artifacts.first().map(|name| image_root.join(name)))
+            .unwrap_or(image_root.clone());
+        let verification_delta = fs::metadata(&root_disk_path)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .map(|modified| system_time_abs_diff(modified, verified_at));
+
         let evidence = CleanupManagedImageEvidence {
             image_id: image_id.to_string(),
             image_version: image_version.to_string(),
+            root_disk_path,
             log_path: log_path.clone(),
             verified_at,
             total_bytes,
             artifacts,
+            verification_delta,
         };
 
         match latest.entry((image_id.to_string(), image_version.to_string())) {
@@ -625,9 +646,20 @@ fn collect_managed_image_evidence(path: &Path) -> Vec<CleanupManagedImageEvidenc
     latest.into_values().collect()
 }
 
+fn system_time_abs_diff(a: SystemTime, b: SystemTime) -> Duration {
+    match a.duration_since(b) {
+        Ok(delta) => delta,
+        Err(_) => b
+            .duration_since(a)
+            .unwrap_or_else(|_| Duration::from_secs(0)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     fn base_options(scope: CleanScope) -> CleanOptions {
@@ -696,5 +728,57 @@ mod tests {
         assert!(!pidfile.exists());
         assert!(!result.value.state_roots.is_empty());
         assert!(result.value.state_roots[0].reclaimed_bytes > 0);
+    }
+
+    #[test]
+    fn collect_managed_evidence_includes_root_disk_path() {
+        let temp = tempdir().expect("tempdir");
+        let state_root = temp.path();
+        let images = state_root.join("images");
+        let logs = state_root.join("logs");
+        let image_dir = images.join("alpine").join("v1");
+        fs::create_dir_all(&image_dir).expect("image dir");
+        fs::create_dir_all(&logs).expect("logs dir");
+
+        let disk_path = image_dir.join("disk.qcow2");
+        fs::write(&disk_path, b"managed").expect("disk file");
+        let modified = fs::metadata(&disk_path)
+            .expect("metadata")
+            .modified()
+            .expect("modified");
+        let completed_secs = modified
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_secs(0))
+            .as_secs();
+
+        let log_entry = json!({
+            "ts": completed_secs,
+            "event": "managed-image-verification-result",
+            "image": "alpine",
+            "version": "v1",
+            "completed_at": completed_secs,
+            "artifacts": [{
+                "kind": "root disk",
+                "filename": "disk.qcow2",
+                "size_bytes": 7
+            }]
+        });
+        let log_path = logs.join("image-manager.log");
+        fs::write(&log_path, format!("{log_entry}\n")).expect("log write");
+
+        let evidence = collect_managed_image_evidence(&images);
+        assert_eq!(evidence.len(), 1);
+        let entry = &evidence[0];
+        assert_eq!(entry.image_id, "alpine");
+        assert_eq!(entry.image_version, "v1");
+        assert_eq!(entry.root_disk_path, disk_path);
+        assert_eq!(entry.total_bytes, Some(7));
+        assert_eq!(entry.artifacts, vec!["disk.qcow2".to_string()]);
+        assert!(
+            entry
+                .verification_delta
+                .map(|delta| delta < Duration::from_secs(1))
+                .unwrap_or(false)
+        );
     }
 }
