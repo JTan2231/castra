@@ -256,7 +256,7 @@ pub fn down(
 
     let mut vm_results = Vec::new();
     for vm in &project.vms {
-        let changed = reporter.with_event_buffer(|events| {
+        let (changed, outcome) = reporter.with_event_buffer(|events| {
             shutdown_vm(
                 vm,
                 &state_root,
@@ -268,6 +268,7 @@ pub fn down(
         vm_results.push(VmShutdownOutcome {
             name: vm.name.clone(),
             changed,
+            outcome,
         });
     }
 

@@ -27,7 +27,9 @@ use crate::managed::{
 use serde_json::{Value, json};
 
 use super::diagnostics::{Diagnostic, Severity};
-use super::events::{Event, ShutdownMethod, ShutdownOutcome, ShutdownSignal};
+use super::events::{
+    Event, GuestCooperativeMethod, GuestCooperativeTimeoutReason, ShutdownOutcome, ShutdownSignal,
+};
 
 pub struct RuntimeContext {
     pub state_root: PathBuf,
@@ -617,7 +619,11 @@ pub fn shutdown_vm(
     lifecycle: &LifecycleConfig,
     events: &mut Vec<Event>,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Result<bool> {
+) -> Result<(bool, ShutdownOutcome)> {
+    events.push(Event::ShutdownRequested {
+        vm: vm.name.clone(),
+    });
+
     let pidfile = state_root.join(format!("{}.pid", vm.name));
     if !pidfile.is_file() {
         cleanup_qmp_socket(state_root, &vm.name);
@@ -626,7 +632,7 @@ pub fn shutdown_vm(
             outcome: ShutdownOutcome::Graceful,
             changed: false,
         });
-        return Ok(false);
+        return Ok((false, ShutdownOutcome::Graceful));
     }
 
     let contents = fs::read_to_string(&pidfile).map_err(|err| Error::ShutdownFailed {
@@ -655,7 +661,7 @@ pub fn shutdown_vm(
             outcome: ShutdownOutcome::Graceful,
             changed: false,
         });
-        return Ok(false);
+        return Ok((false, ShutdownOutcome::Graceful));
     }
 
     let pid: pid_t = trimmed.parse().map_err(|_| Error::ShutdownFailed {
@@ -670,9 +676,27 @@ pub fn shutdown_vm(
     let graceful_wait = lifecycle.graceful_wait();
     let sigterm_wait = lifecycle.sigterm_wait();
     let sigkill_wait = lifecycle.sigkill_wait();
+    let graceful_wait_ms = duration_to_millis(graceful_wait);
+    let sigterm_wait_ms = duration_to_millis(sigterm_wait);
+    let sigkill_wait_ms = duration_to_millis(sigkill_wait);
 
-    match attempt_graceful_shutdown(state_root, &vm.name, events) {
+    let graceful_attempt = attempt_graceful_shutdown(state_root, &vm.name);
+    let cooperative_method = match graceful_attempt {
+        GracefulTrigger::Initiated | GracefulTrigger::Failed { .. } => {
+            GuestCooperativeMethod::QmpSystemPowerdown
+        }
+        GracefulTrigger::Unavailable { .. } => GuestCooperativeMethod::Unavailable,
+    };
+
+    events.push(Event::GuestCooperativeAttempted {
+        vm: vm.name.clone(),
+        method: cooperative_method,
+        timeout_ms: graceful_wait_ms,
+    });
+
+    match graceful_attempt {
         GracefulTrigger::Initiated => {
+            let wait_started = Instant::now();
             if wait_for_process_exit(pid, graceful_wait).map_err(|err| Error::ShutdownFailed {
                 vm: vm.name.clone(),
                 message: format!(
@@ -691,33 +715,53 @@ pub fn shutdown_vm(
                     }
                 }
                 cleanup_qmp_socket(state_root, &vm.name);
+                let elapsed_ms = duration_to_millis(wait_started.elapsed());
+                events.push(Event::GuestCooperativeConfirmed {
+                    vm: vm.name.clone(),
+                    elapsed_ms,
+                });
+                events.push(Event::HostTerminate {
+                    vm: vm.name.clone(),
+                    signal: None,
+                    timeout_ms: None,
+                });
                 events.push(Event::ShutdownComplete {
                     vm: vm.name.clone(),
                     outcome: ShutdownOutcome::Graceful,
                     changed: true,
                 });
-                return Ok(true);
+                return Ok((true, ShutdownOutcome::Graceful));
             }
-        }
-        GracefulTrigger::Unavailable => {
-            events.push(Event::ShutdownInitiated {
+            events.push(Event::GuestCooperativeTimeout {
                 vm: vm.name.clone(),
-                method: ShutdownMethod::Signals,
+                waited_ms: graceful_wait_ms,
+                reason: GuestCooperativeTimeoutReason::TimeoutExpired,
+                detail: None,
             });
         }
-        GracefulTrigger::Failed(message) => {
+        GracefulTrigger::Unavailable { detail } => {
+            events.push(Event::GuestCooperativeTimeout {
+                vm: vm.name.clone(),
+                waited_ms: 0,
+                reason: GuestCooperativeTimeoutReason::ChannelUnavailable,
+                detail: Some(detail),
+            });
+        }
+        GracefulTrigger::Failed { detail } => {
             diagnostics.push(
                 Diagnostic::new(
                     Severity::Warning,
-                    format!("Failed graceful shutdown for VM `{}`: {message}", vm.name),
+                    format!("Failed graceful shutdown for VM `{}`: {detail}", vm.name),
                 )
                 .with_help(
                     "Ensure QEMU launched with QMP support or allow Castra to manage the VM lifecycle.",
                 ),
             );
-            events.push(Event::ShutdownInitiated {
+            events.push(Event::GuestCooperativeTimeout {
                 vm: vm.name.clone(),
-                method: ShutdownMethod::Signals,
+                waited_ms: 0,
+                reason: GuestCooperativeTimeoutReason::ChannelError,
+                detail: Some(detail),
             });
         }
     }
@@ -738,12 +782,17 @@ pub fn shutdown_vm(
             ));
             let _ = fs::remove_file(&pidfile);
             cleanup_qmp_socket(state_root, &vm.name);
+            events.push(Event::HostTerminate {
+                vm: vm.name.clone(),
+                signal: None,
+                timeout_ms: None,
+            });
             events.push(Event::ShutdownComplete {
                 vm: vm.name.clone(),
                 outcome: ShutdownOutcome::Graceful,
                 changed: false,
             });
-            return Ok(false);
+            return Ok((false, ShutdownOutcome::Graceful));
         }
 
         return Err(Error::ShutdownFailed {
@@ -752,18 +801,21 @@ pub fn shutdown_vm(
         });
     }
 
-    events.push(Event::ShutdownEscalation {
+    events.push(Event::HostTerminate {
         vm: vm.name.clone(),
-        signal: ShutdownSignal::Sigterm,
+        signal: Some(ShutdownSignal::Sigterm),
+        timeout_ms: Some(sigterm_wait_ms),
     });
+    let outcome = ShutdownOutcome::Forced;
     if !wait_for_process_exit(pid, sigterm_wait).map_err(|err| Error::ShutdownFailed {
         vm: vm.name.clone(),
         message: format!("Error while waiting for pid {pid} to exit: {err}"),
     })? {
         let kill_res = unsafe { libc::kill(pid, libc::SIGKILL) };
-        events.push(Event::ShutdownEscalation {
+        events.push(Event::HostKill {
             vm: vm.name.clone(),
             signal: ShutdownSignal::Sigkill,
+            timeout_ms: Some(sigkill_wait_ms),
         });
         if kill_res != 0 {
             let errno = io::Error::last_os_error()
@@ -802,10 +854,10 @@ pub fn shutdown_vm(
     cleanup_qmp_socket(state_root, &vm.name);
     events.push(Event::ShutdownComplete {
         vm: vm.name.clone(),
-        outcome: ShutdownOutcome::Forced,
+        outcome,
         changed: true,
     });
-    Ok(true)
+    Ok((true, outcome))
 }
 
 pub fn shutdown_broker(
@@ -1101,39 +1153,41 @@ pub(crate) fn broker_handshake_dir_from_root(state_root: &Path) -> PathBuf {
 #[derive(Debug)]
 enum GracefulTrigger {
     Initiated,
-    Unavailable,
-    Failed(String),
+    Unavailable { detail: String },
+    Failed { detail: String },
 }
 
-fn attempt_graceful_shutdown(
-    state_root: &Path,
-    vm_name: &str,
-    events: &mut Vec<Event>,
-) -> GracefulTrigger {
+fn attempt_graceful_shutdown(state_root: &Path, vm_name: &str) -> GracefulTrigger {
     #[cfg(unix)]
     {
         let socket = qmp_socket_path(state_root, vm_name);
         match send_qmp_powerdown(&socket) {
-            Ok(()) => {
-                events.push(Event::ShutdownInitiated {
-                    vm: vm_name.to_string(),
-                    method: ShutdownMethod::Graceful,
-                });
-                GracefulTrigger::Initiated
+            Ok(()) => GracefulTrigger::Initiated,
+            Err(GracefulShutdownError::Unavailable) => GracefulTrigger::Unavailable {
+                detail: format!(
+                    "QMP socket {} not available for `{vm_name}`",
+                    socket.display(),
+                    vm_name = vm_name
+                ),
+            },
+            Err(GracefulShutdownError::Io(err)) => GracefulTrigger::Failed {
+                detail: format!(
+                    "QMP connection error via {} while powering down `{vm_name}`: {err}",
+                    socket.display(),
+                    vm_name = vm_name
+                ),
+            },
+            Err(GracefulShutdownError::Protocol(reason)) => {
+                GracefulTrigger::Failed { detail: reason }
             }
-            Err(GracefulShutdownError::Unavailable) => GracefulTrigger::Unavailable,
-            Err(GracefulShutdownError::Io(err)) => GracefulTrigger::Failed(format!(
-                "QMP connection error via {} while powering down `{vm_name}`: {err}",
-                socket.display(),
-                vm_name = vm_name
-            )),
-            Err(GracefulShutdownError::Protocol(reason)) => GracefulTrigger::Failed(reason),
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = (state_root, vm_name, events);
-        GracefulTrigger::Unavailable
+        let _ = (state_root, vm_name);
+        GracefulTrigger::Unavailable {
+            detail: "cooperative shutdown not supported on this platform".to_string(),
+        }
     }
 }
 
@@ -1559,6 +1613,10 @@ fn build_netdev_args(forwards: &[PortForward]) -> String {
         net.push_str(&forward.guest.to_string());
     }
     net
+}
+
+fn duration_to_millis(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn wait_for_pidfile(pidfile: &Path, timeout: Duration) -> io::Result<()> {

@@ -5,7 +5,7 @@ use crate::config::{BrokerConfig, PortForward};
 use crate::managed::ManagedImagePaths;
 
 use super::diagnostics::Diagnostic;
-use super::events::{CleanupKind, Event, ManagedImageSpecHandle};
+use super::events::{CleanupKind, Event, ManagedImageSpecHandle, ShutdownOutcome};
 use super::options::{BusLogTarget, PortsView};
 
 /// Result wrapper returned by high-level operations.
@@ -95,6 +95,7 @@ pub struct DownOutcome {
 pub struct VmShutdownOutcome {
     pub name: String,
     pub changed: bool,
+    pub outcome: ShutdownOutcome,
 }
 
 #[derive(Debug)]

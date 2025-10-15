@@ -798,9 +798,7 @@ struct StoredBusState {
 }
 
 fn ensure_bus_state(record: &mut StoredHandshake) -> &mut StoredBusState {
-    record
-        .bus
-        .get_or_insert_with(StoredBusState::default)
+    record.bus.get_or_insert_with(StoredBusState::default)
 }
 
 fn initialize_bus_session_record(record: &mut StoredHandshake, timestamp: u64) {

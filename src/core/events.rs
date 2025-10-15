@@ -65,19 +65,55 @@ pub enum Event {
         /// Operating system process identifier.
         pid: u32,
     },
-    /// Notification that a coordinated shutdown was initiated for a VM.
-    ShutdownInitiated {
+    /// Ordered lifecycle events for VM shutdown.
+    ShutdownRequested {
         /// Name of the VM.
         vm: String,
-        /// Method used to initiate the shutdown sequence.
-        method: ShutdownMethod,
     },
-    /// Notification that the shutdown path is escalating to a stronger signal.
-    ShutdownEscalation {
+    /// A guest-cooperative shutdown channel was attempted.
+    GuestCooperativeAttempted {
+        /// Name of the VM.
+        vm: String,
+        /// Cooperative channel used for the attempt.
+        method: GuestCooperativeMethod,
+        /// Milliseconds the host will wait before escalating.
+        timeout_ms: u64,
+    },
+    /// Guest acknowledged and completed the cooperative shutdown.
+    GuestCooperativeConfirmed {
+        /// Name of the VM.
+        vm: String,
+        /// Milliseconds elapsed before the VM exited.
+        elapsed_ms: u64,
+    },
+    /// Guest failed to exit within the cooperative window.
+    GuestCooperativeTimeout {
+        /// Name of the VM.
+        vm: String,
+        /// Milliseconds waited for the cooperative shutdown.
+        waited_ms: u64,
+        /// Structured reason explaining why the cooperative phase concluded.
+        reason: GuestCooperativeTimeoutReason,
+        /// Optional detail string for diagnostics (e.g. socket errors).
+        detail: Option<String>,
+    },
+    /// Host-side termination began (signals or verification).
+    HostTerminate {
+        /// Name of the VM.
+        vm: String,
+        /// Signal sent to the host process, when applicable.
+        signal: Option<ShutdownSignal>,
+        /// Milliseconds the host will wait for the process to exit.
+        timeout_ms: Option<u64>,
+    },
+    /// Host forced termination through SIGKILL or equivalent.
+    HostKill {
         /// Name of the VM.
         vm: String,
         /// Signal that was sent to the process.
         signal: ShutdownSignal,
+        /// Optional wait the host will observe after issuing the kill.
+        timeout_ms: Option<u64>,
     },
     /// Notification that a VM completed its shutdown sequence.
     ShutdownComplete {
@@ -113,21 +149,43 @@ pub enum Event {
     },
 }
 
-/// Strategy used to initiate a shutdown.
+/// Cooperative channel used during guest shutdown attempts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShutdownMethod {
-    /// Cooperative shutdown via guest-aware channel (e.g., ACPI/QMP).
-    Graceful,
-    /// Signal-based shutdown when cooperative paths are unavailable.
-    Signals,
+pub enum GuestCooperativeMethod {
+    /// QMP `system_powerdown`, typically routed through ACPI.
+    QmpSystemPowerdown,
+    /// No cooperative channel was available.
+    Unavailable,
 }
 
-impl ShutdownMethod {
+impl GuestCooperativeMethod {
     /// Human-friendly label for rendering.
     pub fn describe(self) -> &'static str {
         match self {
-            ShutdownMethod::Graceful => "graceful (ACPI)",
-            ShutdownMethod::Signals => "signals (TERM/KILL)",
+            GuestCooperativeMethod::QmpSystemPowerdown => "QMP system_powerdown (ACPI)",
+            GuestCooperativeMethod::Unavailable => "no cooperative channel",
+        }
+    }
+}
+
+/// Why the cooperative phase concluded without confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestCooperativeTimeoutReason {
+    /// The VM remained running until the timeout expired.
+    TimeoutExpired,
+    /// No cooperative channel was available.
+    ChannelUnavailable,
+    /// Attempt failed due to I/O or protocol error.
+    ChannelError,
+}
+
+impl GuestCooperativeTimeoutReason {
+    /// Human-friendly label for rendering.
+    pub fn describe(self) -> &'static str {
+        match self {
+            GuestCooperativeTimeoutReason::TimeoutExpired => "timeout expired",
+            GuestCooperativeTimeoutReason::ChannelUnavailable => "channel unavailable",
+            GuestCooperativeTimeoutReason::ChannelError => "channel error",
         }
     }
 }

@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use crate::Result;
 use crate::cli::DownArgs;
 use crate::core::diagnostics::Severity;
-use crate::core::events::{Event, ShutdownMethod, ShutdownOutcome, ShutdownSignal};
+use crate::core::events::{Event, GuestCooperativeMethod, ShutdownOutcome};
 use crate::core::operations;
 use crate::core::options::DownOptions;
 use crate::core::project::format_config_warnings;
+use crate::{Error, Result};
 
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
 
@@ -25,6 +25,18 @@ pub fn handle_down(args: DownArgs, config_override: Option<&PathBuf>) -> Result<
 
     render_down(&output.events);
 
+    let forced: Vec<String> = output
+        .value
+        .vm_results
+        .iter()
+        .filter(|vm| vm.changed && vm.outcome == ShutdownOutcome::Forced)
+        .map(|vm| vm.name.clone())
+        .collect();
+
+    if !forced.is_empty() {
+        return Err(Error::ShutdownForced { vms: forced });
+    }
+
     Ok(())
 }
 
@@ -36,22 +48,90 @@ fn render_down(events: &[Event]) {
                 Severity::Warning => eprintln!("Warning: {text}"),
                 Severity::Error => eprintln!("Error: {text}"),
             },
-            Event::ShutdownInitiated { vm, method } => match method {
-                ShutdownMethod::Graceful => {
-                    println!("→ {vm}: sent graceful shutdown request (ACPI/QMP).");
+            Event::ShutdownRequested { vm } => {
+                println!("→ {vm}: shutdown requested.");
+            }
+            Event::GuestCooperativeAttempted {
+                vm,
+                method,
+                timeout_ms,
+            } => match method {
+                GuestCooperativeMethod::QmpSystemPowerdown => {
+                    println!(
+                        "→ {vm}: attempting cooperative shutdown via {} (wait up to {}).",
+                        method.describe(),
+                        format_duration_ms(*timeout_ms)
+                    );
                 }
-                ShutdownMethod::Signals => {
-                    println!("→ {vm}: initiating signal-based shutdown (SIGTERM/SIGKILL path).");
+                GuestCooperativeMethod::Unavailable => {
+                    println!(
+                        "→ {vm}: no cooperative shutdown channel available; proceeding to host termination."
+                    );
                 }
             },
-            Event::ShutdownEscalation { vm, signal } => match signal {
-                ShutdownSignal::Sigterm => {
-                    println!("→ {vm}: escalating to SIGTERM.");
+            Event::GuestCooperativeConfirmed { vm, elapsed_ms } => {
+                println!(
+                    "→ {vm}: guest confirmed shutdown in {}.",
+                    format_duration_ms(*elapsed_ms)
+                );
+            }
+            Event::GuestCooperativeTimeout {
+                vm,
+                waited_ms,
+                reason,
+                detail,
+            } => {
+                let reason_text = reason.describe();
+                match detail {
+                    Some(detail) if !detail.is_empty() => {
+                        println!(
+                            "→ {vm}: cooperative shutdown {reason_text} after {} ({detail}).",
+                            format_duration_ms(*waited_ms)
+                        );
+                    }
+                    _ => {
+                        println!(
+                            "→ {vm}: cooperative shutdown {reason_text} after {}.",
+                            format_duration_ms(*waited_ms)
+                        );
+                    }
                 }
-                ShutdownSignal::Sigkill => {
-                    println!("→ {vm}: escalating to SIGKILL.");
+            }
+            Event::HostTerminate {
+                vm,
+                signal,
+                timeout_ms,
+            } => match signal {
+                Some(signal) => {
+                    if let Some(ms) = timeout_ms {
+                        println!(
+                            "→ {vm}: host sent {}; waiting up to {}.",
+                            signal.describe(),
+                            format_duration_ms(*ms)
+                        );
+                    } else {
+                        println!("→ {vm}: host sent {}.", signal.describe());
+                    }
+                }
+                None => {
+                    println!("→ {vm}: host confirmed shutdown without sending signals.");
                 }
             },
+            Event::HostKill {
+                vm,
+                signal,
+                timeout_ms,
+            } => {
+                if let Some(ms) = timeout_ms {
+                    println!(
+                        "→ {vm}: escalating to {}; waiting up to {}.",
+                        signal.describe(),
+                        format_duration_ms(*ms)
+                    );
+                } else {
+                    println!("→ {vm}: escalating to {}.", signal.describe());
+                }
+            }
             Event::ShutdownComplete {
                 vm,
                 outcome,
@@ -79,5 +159,22 @@ fn render_down(events: &[Event]) {
             }
             _ => {}
         }
+    }
+}
+
+fn format_duration_ms(ms: u64) -> String {
+    if ms == 0 {
+        return "0s".to_string();
+    }
+
+    if ms % 1000 == 0 {
+        return format!("{}s", ms / 1000);
+    }
+
+    let seconds = ms as f64 / 1000.0;
+    if seconds >= 1.0 {
+        format!("{seconds:.1}s")
+    } else {
+        format!("{ms}ms")
     }
 }
