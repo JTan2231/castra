@@ -61,3 +61,10 @@ Cross‑links
 - Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md (notes total_ms progress and next slice).
 - Thread 10 canonical TODO updated with shipped state and remaining durability/docs gaps.
 - Thread 12 canonical TODO clarified with trigger/idempotence details and first implementation slice.
+
+Editorial housekeeping (v0.8.5)
+- Removed duplicate TODO variants with extra .md extensions; retained canonical files:
+  - todo_cooperative_shutdown_lifecycle.md.md
+  - todo_managed_image_structured_events.md.md
+  - todo_post_boot_bootstrap_pipeline.md.md
+- Updated Threads 2 and 10 TODOs with v0.8.5 shipped progress and next slices; left Thread 12 TODO intact with clarified acceptance.
