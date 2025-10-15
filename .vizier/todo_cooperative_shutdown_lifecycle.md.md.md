@@ -18,6 +18,10 @@ Next acceptance slice
 - Emit CooperativeAttempted and CooperativeSucceeded/CooperativeTimedOut prior to TERM/KILL, respecting configurable timeouts and preserving per-VM isolation.
 ---
 
-
+---
+Recent progress (tests)
+- Added unix-gated cooperative shutdown tests that simulate QMP-driven success and timeout/escalation paths, asserting ordered events and outcomes to lock in the lifecycle contract.
 ---
 
+
+---
