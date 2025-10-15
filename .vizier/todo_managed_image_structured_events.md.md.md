@@ -40,3 +40,21 @@ Pointers (non-prescriptive anchors)
 Cross-links
 - Thread 12 may consume these results to short-circuit when profile already applied and hashes match.
 ---
+
+
+---
+Shipped in v0.8.5
+- Event variants added: ManagedImageVerificationStarted/Result, ManagedImageProfileApplied/Result.
+- Support types (plans, reports, checksums, steps[]) emitted; CLI renders durations, sizes, and steps.
+- CLEAN links reclaimed-bytes evidence to latest verification result per image.
+
+Outstanding
+- Reporter durability across sinks (unified stream + per-image logs) with smoke tests.
+- Document field stability and example payloads in docs and CLEAN.md.
+
+Acceptance stays the same; the above narrows remaining scope to durability and documentation.
+---
+
+
+---
+

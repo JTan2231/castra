@@ -8,6 +8,8 @@ Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (partially implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
   Progress:
   - total_ms added to ShutdownComplete and rendered in `down`; groundwork for ordered timing.
+  Next slice:
+  - Emit CooperativeAttempted and CooperativeSucceeded/CooperativeTimedOut prior to TERM/KILL, honoring configurable timeouts and preserving per‑VM isolation.
   Acceptance (per VM):
   - Event order: ShutdownRequested → CooperativeAttempted(method: ACPI|QMP|Agent) → CooperativeSucceeded | CooperativeTimedOut → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete(outcome: Graceful|Forced, total_ms).
   - Timeouts configurable via CLI/opts; status/UI remain responsive; per‑VM isolation maintained; idempotent behavior; stable JSON fields in logs/output.
@@ -20,13 +22,19 @@ Active threads (intent + acceptance)
   - Emission path in src/core/operations/mod.rs::up; app/up.rs renders durations, sizes, and steps.
   - CLEAN integrates reclaimed‑bytes evidence with latest ManagedImageVerificationResult per image and surfaces linkage in CLI output.
   Outstanding:
-  - Ensure reporter durability across sinks (unified stream + per‑image logs) with smoke tests; document field stability.
+  - Ensure reporter durability across sinks (unified stream + per‑image logs) with smoke tests; document field stability with example payloads (docs + CLEAN.md).
   Anchors: src/managed/mod.rs; src/core/events.rs; src/core/logs.rs; src/core/reporter.rs; src/core/operations/clean.rs; src/app/clean.rs; CLEAN.md.
 
 - Thread 12 — Post‑boot bootstrap pipeline (not yet implemented): After first successful broker handshake for a VM, apply a host‑provided bootstrap (e.g., Nix flake) over SSH idempotently.
+  Clarifications:
+  - Triggered exactly once per VM per (base_image_hash, bootstrap_artifact_hash) change; handshake signal from status (reachable, last_handshake_age_ms) is the gate.
+  - May consume ManagedImageVerificationResult (Thread 10) to validate inputs but must not block when absent.
+  - Config knobs to disable or force ("always") bootstrap per‑VM or globally; safe defaults favor "once per stamp" with clear eventing.
+  Next slice:
+  - Emit BootstrapStarted/Completed(NoOp|Success) with durable step logs (connect, transfer, apply, verify) for a single‑VM path behind an opt‑in flag.
   Acceptance:
   - Triggered exactly once per VM per image/content hash change (idempotence stamps include base image hash + bootstrap artifact hash under state root).
-  - Events: BootstrapStarted / BootstrapCompleted(status: Success|NoOp) / BootstrapFailed emitted via reporter; durable step logs (connect, transfer, apply, verify) with durations.
+  - Events: BootstrapStarted / BootstrapCompleted(status: Success|NoOp) / BootstrapFailed emitted via reporter; durable step logs with durations.
   - Config knobs to disable or force ("always") bootstrap per‑VM or globally; safe defaults; responsive status during long runs.
   - Safe re‑runs: when inputs unchanged, emits NoOp without side effects.
   Anchors: docs/BOOTSTRAP.md; src/core/status.rs (handshake fields); state‑root conventions.
@@ -50,5 +58,6 @@ Direction of travel
 
 Cross‑links
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; CLEAN.md documents the narrative.
-- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md (notes total_ms progress).
-- Thread 10 canonical TODO updated with shipped state and remaining gaps.
+- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md (notes total_ms progress and next slice).
+- Thread 10 canonical TODO updated with shipped state and remaining durability/docs gaps.
+- Thread 12 canonical TODO clarified with trigger/idempotence details and first implementation slice.
