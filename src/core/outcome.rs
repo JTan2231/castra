@@ -5,7 +5,9 @@ use crate::config::{BrokerConfig, PortForward};
 use crate::managed::ManagedImagePaths;
 
 use super::diagnostics::Diagnostic;
-use super::events::{CleanupKind, Event, ManagedImageSpecHandle, ShutdownOutcome};
+use super::events::{
+    CleanupKind, CleanupManagedImageEvidence, Event, ManagedImageSpecHandle, ShutdownOutcome,
+};
 use super::options::{BusLogTarget, PortsView};
 
 /// Result wrapper returned by high-level operations.
@@ -319,6 +321,8 @@ pub enum CleanupAction {
         bytes: u64,
         /// Kind of artifact that was removed.
         kind: CleanupKind,
+        /// Managed image evidence associated with the removal, when available.
+        managed_evidence: Vec<CleanupManagedImageEvidence>,
     },
     /// The path was skipped for the provided reason.
     Skipped {
@@ -328,6 +332,8 @@ pub enum CleanupAction {
         reason: SkipReason,
         /// Kind of artifact associated with the path.
         kind: CleanupKind,
+        /// Managed image evidence associated with the skipped action, when available.
+        managed_evidence: Vec<CleanupManagedImageEvidence>,
     },
 }
 

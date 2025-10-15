@@ -376,6 +376,7 @@ fn clean_state_root(
                     SkipReason::FlagDisabled
                 },
                 kind: CleanupKind::Overlay,
+                managed_evidence: Vec::new(),
             });
         }
     }
@@ -430,6 +431,7 @@ fn process_target(
             path: path.to_path_buf(),
             reason: SkipReason::FlagDisabled,
             kind,
+            managed_evidence: Vec::new(),
         });
         return Ok(0);
     }
@@ -439,6 +441,7 @@ fn process_target(
             path: path.to_path_buf(),
             reason: SkipReason::ManagedOnly,
             kind,
+            managed_evidence: Vec::new(),
         });
         return Ok(0);
     }
@@ -448,6 +451,7 @@ fn process_target(
             path: path.to_path_buf(),
             reason: SkipReason::Missing,
             kind,
+            managed_evidence: Vec::new(),
         });
         return Ok(0);
     }
@@ -465,6 +469,7 @@ fn process_target(
                 path: path.to_path_buf(),
                 reason: SkipReason::Io(err.to_string()),
                 kind,
+                managed_evidence: evidence,
             });
             return Ok(0);
         }
@@ -476,12 +481,13 @@ fn process_target(
             kind,
             bytes: size,
             dry_run: true,
-            managed_evidence: evidence,
+            managed_evidence: evidence.clone(),
         });
         actions.push(CleanupAction::Skipped {
             path: path.to_path_buf(),
             reason: SkipReason::DryRun,
             kind,
+            managed_evidence: evidence,
         });
         return Ok(0);
     }
@@ -505,6 +511,7 @@ fn process_target(
                 path: path.to_path_buf(),
                 bytes: size,
                 kind,
+                managed_evidence: evidence,
             });
             Ok(size)
         }
@@ -513,6 +520,7 @@ fn process_target(
                 path: path.to_path_buf(),
                 reason: SkipReason::Io(err.to_string()),
                 kind,
+                managed_evidence: evidence,
             });
             Ok(0)
         }
@@ -573,27 +581,38 @@ fn collect_managed_image_evidence(path: &Path) -> Vec<CleanupManagedImageEvidenc
         };
         let verified_at: SystemTime = UNIX_EPOCH + Duration::from_secs(ts);
 
-        let artifacts = value
-            .get("artifacts")
-            .and_then(|entry| entry.as_array())
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|artifact| {
-                        artifact
-                            .get("filename")
-                            .and_then(|field| field.as_str())
-                            .map(str::to_string)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let mut artifacts = Vec::new();
+        let mut total_bytes: Option<u64> = Some(0);
+        if let Some(entries) = value.get("artifacts").and_then(|entry| entry.as_array()) {
+            for artifact in entries {
+                if let Some(name) = artifact
+                    .get("filename")
+                    .and_then(|field| field.as_str())
+                {
+                    artifacts.push(name.to_string());
+                }
+                match artifact
+                    .get("size_bytes")
+                    .and_then(|field| field.as_u64())
+                {
+                    Some(size) => {
+                        if let Some(acc) = total_bytes.as_mut() {
+                            *acc += size;
+                        }
+                    }
+                    None => {
+                        total_bytes = None;
+                    }
+                }
+            }
+        }
 
         let evidence = CleanupManagedImageEvidence {
             image_id: image_id.to_string(),
             image_version: image_version.to_string(),
             log_path: log_path.clone(),
             verified_at,
+            total_bytes,
             artifacts,
         };
 

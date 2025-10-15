@@ -239,6 +239,8 @@ pub struct CleanupManagedImageEvidence {
     pub log_path: PathBuf,
     /// Timestamp (UTC seconds since epoch) when verification completed.
     pub verified_at: SystemTime,
+    /// Total artifact bytes recorded in the verification result (if present).
+    pub total_bytes: Option<u64>,
     /// Artifact filenames recorded in the verification result.
     pub artifacts: Vec<String>,
 }

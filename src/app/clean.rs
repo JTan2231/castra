@@ -1,13 +1,16 @@
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use crate::Result;
 use crate::cli::CleanArgs;
 use crate::core::operations;
 use crate::core::options::{CleanOptions, CleanScope, ProjectSelector};
 use crate::core::outcome::{CleanOutcome, CleanupAction, SkipReason};
+use crate::core::events::{CleanupKind, CleanupManagedImageEvidence};
 use crate::core::project::{default_projects_root, format_config_warnings};
 
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub fn handle_clean(args: CleanArgs, config_override: Option<&PathBuf>) -> Result<()> {
     let scope = if args.global {
@@ -74,21 +77,33 @@ fn render_clean(outcome: &CleanOutcome) {
             println!("  Actions:");
             for action in &cleanup.actions {
                 match action {
-                    CleanupAction::Removed { path, bytes, kind } => {
+                    CleanupAction::Removed {
+                        path,
+                        bytes,
+                        kind,
+                        managed_evidence,
+                    } => {
                         println!(
                             "    removed {:<15} {} ({})",
                             kind.describe(),
                             path.display(),
                             format_bytes(*bytes)
                         );
+                        render_managed_evidence(*kind, managed_evidence);
                     }
-                    CleanupAction::Skipped { path, reason, kind } => {
+                    CleanupAction::Skipped {
+                        path,
+                        reason,
+                        kind,
+                        managed_evidence,
+                    } => {
                         println!(
                             "    skipped {:<15} {} ({})",
                             kind.describe(),
                             path.display(),
                             format_skip_reason(reason)
                         );
+                        render_managed_evidence(*kind, managed_evidence);
                     }
                 }
             }
@@ -101,6 +116,47 @@ fn render_clean(outcome: &CleanOutcome) {
         "Total reclaimed: {}{qualifier}.",
         format_bytes(total_reclaimed)
     );
+}
+
+fn render_managed_evidence(kind: CleanupKind, evidence: &[CleanupManagedImageEvidence]) {
+    if !matches!(kind, CleanupKind::ManagedImages) {
+        return;
+    }
+
+    if evidence.is_empty() {
+        println!(
+            "      evidence: none (no managed-image verification records found)"
+        );
+        return;
+    }
+
+    println!("      evidence:");
+    for entry in evidence {
+        let when = format_verified_at(&entry.verified_at);
+        let bytes_text = entry
+            .total_bytes
+            .map(format_bytes)
+            .unwrap_or_else(|| "unknown".to_string());
+        println!(
+            "        image {}@{} verified {} (artifact bytes {}, log {})",
+            entry.image_id,
+            entry.image_version,
+            when,
+            bytes_text,
+            entry.log_path.display()
+        );
+        if !entry.artifacts.is_empty() {
+            println!("          artifacts: {}", entry.artifacts.join(", "));
+        }
+    }
+}
+
+fn format_verified_at(time: &SystemTime) -> String {
+    let datetime: OffsetDateTime = (*time).into();
+    match datetime.format(&Rfc3339) {
+        Ok(formatted) => formatted,
+        Err(_) => "<invalid timestamp>".to_string(),
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
