@@ -3,7 +3,7 @@ SNAPSHOT v0.8.5 — Castra (VM orchestration harness)
 Edits since v0.8.5 refresh
 - Thread 2 progress: `down` performs parallel per‑VM shutdown and streams events live, improving responsiveness and isolation. Runtime now emits CooperativeAttempted with timeout_ms=0 when the cooperative channel is unavailable (fixes misleading inherited waits). Added unix‑gated tests for QMP success/timeout paths and unavailable‑channel path (asserts ChannelUnavailable reason and ordered events). Remaining: full cooperative attempt/timeout/escalation sequencing in runtime for available channels.
 - Thread 10 steady: Managed‑image evidence linkage in CLEAN is live and rendered (root disk path, bytes, verification delta). No new behavior changes; durability/docs remain outstanding.
-- Thread 12 progress: Bootstrap pipeline now surfaces handshake timeout failures. On handshake wait failure, we emit a failed WaitHandshake step and BootstrapFailed, and persist a failed run log with the timeout detail. Added a unix‑gated test forcing a 0s handshake timeout to assert: BootstrapStarted → BootstrapStep(WaitHandshake, Failed) → BootstrapFailed, and a single failed run log. PATH_LOCK introduced to serialize PATH mutations in tests.
+- Thread 12 progress: Bootstrap pipeline now surfaces handshake timeout failures. On handshake wait failure we emit a failed WaitHandshake step and BootstrapFailed, and persist a failed run log with the timeout detail. Polling now honours configured timeouts with 500 ms slices to keep waits bounded, and the unix-gated timeout test asserts the failure log JSON (PATH_LOCK still serializes PATH mutations).
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (partially implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -37,8 +37,9 @@ Active threads (intent + acceptance)
   Progress:
   - Unix‑gated integration test exercises the pipeline end‑to‑end with stubbed ssh/scp/qemu, covering step events, stamps, durable logs, and NoOp replay.
   - Handshake timeout failures are now observable and durable: WaitHandshake step marked Failed, BootstrapFailed emitted, and a single failed run log persisted with error detail.
+  - Handshake polling now uses sub-second slices to respect configured deadlines, and failure run logs are validated for content.
   Next slice:
-  - Emit BootstrapStarted/Completed(NoOp|Success) with durable step logs (connect, transfer, apply, verify) for a single‑VM path behind an opt‑in flag.
+  - Add per-invocation bootstrap overrides (for example `castra up --bootstrap <mode>`) and document emitted event/log payloads so automation can rely on them.
   Acceptance:
   - Triggered exactly once per VM per image/content hash change (idempotence stamps include base image hash + bootstrap artifact hash under state root).
   - Events: BootstrapStarted / BootstrapCompleted(status: Success|NoOp) / BootstrapFailed emitted via reporter; durable step logs with durations; handshake failures surface as Failed step + BootstrapFailed with durable error log.
@@ -62,7 +63,7 @@ Narrative themes
 Direction of travel
 - Implement cooperative shutdown events/behavior (Thread 2) honoring lifecycle waits and emitting ordered events; expand fields where already shipping (timeout_ms=0 on unavailable path, reason when timed out).
 - For Thread 10, add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
-- Build the post‑boot bootstrap pipeline keyed to handshake and guarded by idempotence stamps (Thread 12); continue hardening failure visibility/durability (step‑level statuses, run logs).
+- Build the post-boot bootstrap pipeline keyed to handshake and guarded by idempotence stamps (Thread 12); follow up with CLI overrides and documentation for bootstrap events/log payloads.
 
 Cross‑links
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; CLEAN.md documents the narrative.

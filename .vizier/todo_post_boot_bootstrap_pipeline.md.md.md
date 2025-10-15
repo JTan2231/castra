@@ -2,11 +2,12 @@
 ---
 Progress update (v0.8.5+)
 - Handshake timeout failures are observable and durable: WaitHandshake step marked Failed, BootstrapFailed emitted, and a single failed run log persisted with timeout detail.
+- Handshake polling now honours configured timeouts with 500 ms slices; the timeout test asserts the failure log JSON payload.
 - Unix-gated integration test exercises pipeline with stubbed ssh/scp/qemu covering step events, stamps, durable logs, and NoOp replay.
 
 Next slice
-- Emit BootstrapStarted/Completed(NoOp|Success) with durable per-step logs (connect, transfer, apply, verify) for a single-VM path behind an opt-in flag.
-- Enforce idempotence stamp composed of (base_image_hash, bootstrap_artifact_hash) under state root; NoOp when unchanged.
+- Add per-invocation bootstrap overrides (e.g. CLI flag) so operators can force/skip runs without editing config; document the behaviour.
+- Publish sample bootstrap event/log payloads (docs + CLEAN.md) and ensure JSON/TTY surfaces stay aligned for automation.
 
 Acceptance refinements
 - Triggered exactly once per stamp change; safe re-runs emit NoOp without side effects.
@@ -23,4 +24,3 @@ Anchors
 
 
 ---
-
