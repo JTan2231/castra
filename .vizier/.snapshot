@@ -72,3 +72,4 @@ Editorial housekeeping
   - todo_cooperative_shutdown_lifecycle.md.md
   - todo_managed_image_structured_events.md.md
   - todo_post_boot_bootstrap_pipeline.md.md
+- Duplicate TODO stubs detected with suffix .md.md.md in index; treat as non-canonical. Keep edits to the above canonical files only.
