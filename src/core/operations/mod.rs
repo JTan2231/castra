@@ -1,4 +1,7 @@
+use std::panic;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Instant, SystemTime};
 
 mod bus;
@@ -17,7 +20,7 @@ use super::broker as broker_core;
 use super::diagnostics::{Diagnostic, Severity};
 use super::events::{
     Event, ManagedImageArtifactPlan, ManagedImageArtifactReport, ManagedImageChecksum,
-    ManagedImageSpecHandle,
+    ManagedImageSpecHandle, ShutdownOutcome,
 };
 use super::logs as logs_core;
 use super::options::{
@@ -376,17 +379,73 @@ pub fn down(
             .unwrap_or_else(|| project.lifecycle.sigkill_wait()),
     );
 
-    let mut vm_results = Vec::new();
-    for vm in &project.vms {
-        let (changed, outcome) = reporter.with_event_buffer(|events| {
-            shutdown_vm(vm, &state_root, shutdown_timeouts, events, &mut diagnostics)
-        })?;
-        vm_results.push(VmShutdownOutcome {
-            name: vm.name.clone(),
-            changed,
-            outcome,
-        });
+    struct VmShutdownThreadResult {
+        index: usize,
+        name: String,
+        changed: bool,
+        outcome: ShutdownOutcome,
+        diagnostics: Vec<Diagnostic>,
     }
+
+    let (event_tx, event_rx) = mpsc::channel::<Event>();
+    let mut handles = Vec::new();
+
+    for (index, vm) in project.vms.iter().cloned().enumerate() {
+        let tx_clone = event_tx.clone();
+        let vm_name = vm.name.clone();
+        let vm_state_root = state_root.clone();
+        handles.push(thread::spawn(move || -> Result<VmShutdownThreadResult> {
+            let report = shutdown_vm(&vm, &vm_state_root, shutdown_timeouts, Some(&tx_clone))?;
+
+            Ok(VmShutdownThreadResult {
+                index,
+                name: vm_name,
+                changed: report.changed,
+                outcome: report.outcome,
+                diagnostics: report.diagnostics,
+            })
+        }));
+    }
+    drop(event_tx);
+
+    while let Ok(event) = event_rx.recv() {
+        reporter.emit(event);
+    }
+
+    let mut first_error: Option<Error> = None;
+    let mut vm_slots: Vec<Option<VmShutdownOutcome>> = vec![None; project.vms.len()];
+
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok(result)) => {
+                diagnostics.extend(result.diagnostics);
+                vm_slots[result.index] = Some(VmShutdownOutcome {
+                    name: result.name,
+                    changed: result.changed,
+                    outcome: result.outcome,
+                });
+            }
+            Ok(Err(err)) => {
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+            Err(payload) => panic::resume_unwind(payload),
+        }
+    }
+
+    if let Some(err) = first_error {
+        return Err(err);
+    }
+
+    let vm_results = vm_slots
+        .into_iter()
+        .map(|slot| {
+            slot.unwrap_or_else(|| {
+                panic!("shutdown worker did not produce a result for configured VM")
+            })
+        })
+        .collect::<Vec<_>>();
 
     let broker_changed = reporter
         .with_event_buffer(|events| shutdown_broker(&state_root, events, &mut diagnostics))?;

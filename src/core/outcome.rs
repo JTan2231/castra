@@ -109,7 +109,7 @@ pub struct DownOutcome {
     pub broker: BrokerShutdownOutcome,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VmShutdownOutcome {
     pub name: String,
     pub changed: bool,
