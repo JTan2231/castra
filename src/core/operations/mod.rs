@@ -183,6 +183,16 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
                     };
                     let profile_started_at = SystemTime::now();
                     let profile_timer = Instant::now();
+                    context.image_manager.log_profile_application_started(
+                        managed.spec,
+                        &vm.name,
+                        components.kernel.as_path(),
+                        components.initrd.as_deref(),
+                        &components.append,
+                        &components.extra_args,
+                        components.machine.as_deref(),
+                        profile_started_at,
+                    );
                     reporter.emit(Event::ManagedImageProfileApplied {
                         spec: handle.clone(),
                         vm: vm.name.clone(),

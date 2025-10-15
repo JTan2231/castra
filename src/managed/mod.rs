@@ -510,6 +510,35 @@ impl ImageManager {
         self.log_line(&payload.to_string());
     }
 
+    pub(crate) fn log_profile_application_started(
+        &self,
+        spec: &ManagedImageSpec,
+        vm: &str,
+        kernel: &Path,
+        initrd: Option<&Path>,
+        append: &str,
+        extra_args: &[String],
+        machine: Option<&str>,
+        started_at: SystemTime,
+    ) {
+        let payload = json!({
+            "ts": timestamp_seconds(),
+            "event": "managed-image-profile-applied",
+            "image": spec.id,
+            "version": spec.version,
+            "vm": vm,
+            "started_at": system_time_to_secs(started_at),
+            "components": Self::profile_components_payload(
+                kernel,
+                initrd,
+                append,
+                extra_args,
+                machine,
+            ),
+        });
+        self.log_line(&payload.to_string());
+    }
+
     pub(crate) fn log_verification_result(
         &self,
         spec: &ManagedImageSpec,
@@ -583,18 +612,34 @@ impl ImageManager {
             "started_at": system_time_to_secs(started_at),
             "duration_ms": duration.as_millis(),
             "outcome": outcome.status_label(),
-            "components": {
-                "kernel": kernel.display().to_string(),
-                "initrd": initrd.map(|path| path.display().to_string()),
-                "append": append,
-                "extra_args": extra_args.iter().cloned().collect::<Vec<String>>(),
-                "machine": machine,
-            },
+            "components": Self::profile_components_payload(
+                kernel,
+                initrd,
+                append,
+                extra_args,
+                machine,
+            ),
         });
         if let Some(reason) = outcome.failure_reason() {
             payload["failure_reason"] = json!(reason);
         }
         self.log_line(&payload.to_string());
+    }
+
+    fn profile_components_payload(
+        kernel: &Path,
+        initrd: Option<&Path>,
+        append: &str,
+        extra_args: &[String],
+        machine: Option<&str>,
+    ) -> serde_json::Value {
+        json!({
+            "kernel": kernel.display().to_string(),
+            "initrd": initrd.map(|path| path.display().to_string()),
+            "append": append,
+            "extra_args": extra_args.iter().cloned().collect::<Vec<String>>(),
+            "machine": machine,
+        })
     }
 
     fn log_line(&self, line: &str) {
@@ -1427,6 +1472,45 @@ mod tests {
         assert_eq!(value["components"]["initrd"], initrd.display().to_string());
         assert_eq!(value["components"]["append"], "console=ttyS0");
         assert_eq!(value["components"]["extra_args"][0], "arg1");
+        assert_eq!(value["components"]["machine"], "pc-q35");
+    }
+
+    #[test]
+    fn log_profile_application_started_writes_json_line() {
+        let dir = tempdir().unwrap();
+        let storage_root = dir.path().join("storage");
+        let log_root = dir.path().join("logs");
+        fs::create_dir_all(&storage_root).unwrap();
+        fs::create_dir_all(&log_root).unwrap();
+        let manager = ImageManager::new(storage_root, log_root.clone(), None);
+
+        let kernel = dir.path().join("vmlinuz");
+        let initrd = dir.path().join("initrd.img");
+        let extra_args = vec!["debug".to_string()];
+        let started_at = UNIX_EPOCH + Duration::from_secs(7);
+
+        manager.log_profile_application_started(
+            &ALPINE_MINIMAL_V1,
+            "vm-start",
+            &kernel,
+            Some(&initrd),
+            "console=ttyS0",
+            &extra_args,
+            Some("pc-q35"),
+            started_at,
+        );
+
+        let log_path = log_root.join("image-manager.log");
+        let contents = fs::read_to_string(&log_path).expect("log file");
+        let line = contents.trim();
+        let value: Value = serde_json::from_str(line).expect("json line");
+        assert_eq!(value["event"], "managed-image-profile-applied");
+        assert_eq!(value["vm"], "vm-start");
+        assert_eq!(value["started_at"], 7);
+        assert_eq!(value["components"]["kernel"], kernel.display().to_string());
+        assert_eq!(value["components"]["initrd"], initrd.display().to_string());
+        assert_eq!(value["components"]["append"], "console=ttyS0");
+        assert_eq!(value["components"]["extra_args"][0], "debug");
         assert_eq!(value["components"]["machine"], "pc-q35");
     }
 }
