@@ -6,12 +6,19 @@ mod clean;
 
 use crate::config::{self, ProjectConfig};
 use crate::error::{Error, Result};
-use crate::managed::ManagedImageProfileOutcome;
+use crate::managed::{
+    ManagedArtifactKind, ManagedImageArtifactExpectation, ManagedImageArtifactSummary,
+    ManagedImagePaths, ManagedImageProfileOutcome, ManagedImageSpec,
+    ManagedImageVerificationOutcome,
+};
 
 use super::bootstrap;
 use super::broker as broker_core;
 use super::diagnostics::{Diagnostic, Severity};
-use super::events::{Event, ManagedImageProfileComponents, ManagedImageSpecHandle};
+use super::events::{
+    Event, ManagedImageArtifactPlan, ManagedImageArtifactReport, ManagedImageChecksum,
+    ManagedImageSpecHandle,
+};
 use super::logs as logs_core;
 use super::options::{
     BrokerOptions, BusPublishOptions, BusTailOptions, CleanOptions, ConfigLoadOptions, DownOptions,
@@ -30,9 +37,9 @@ use super::project::{
 };
 use super::reporter::Reporter;
 use super::runtime::{
-    BrokerProcessState, CheckOutcome, ShutdownTimeouts, check_disk_space, check_host_capacity,
-    ensure_ports_available, ensure_vm_assets, launch_vm, prepare_runtime_context, shutdown_broker,
-    shutdown_vm, start_broker,
+    BootOverrides, BrokerProcessState, CheckOutcome, ShutdownTimeouts, check_disk_space,
+    check_host_capacity, ensure_ports_available, ensure_vm_assets, launch_vm,
+    prepare_runtime_context, shutdown_broker, shutdown_vm, start_broker,
 };
 use super::status as status_core;
 
@@ -153,6 +160,9 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
             let prep = ensure_vm_assets(vm, &context)?;
             if let Some(managed) = &prep.managed {
                 let handle = ManagedImageSpecHandle::from(managed.spec);
+                let image_id = managed.spec.id.to_string();
+                let image_version = managed.spec.version.to_string();
+                let image_path = managed.paths.root_disk.clone();
                 for event in &managed.events {
                     reporter.emit(Event::ManagedArtifact {
                         spec: handle.clone(),
@@ -161,66 +171,94 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
                         text: event.message.clone(),
                     });
                 }
+                let verification_plan: Vec<ManagedImageArtifactPlan> = managed
+                    .verification
+                    .plan
+                    .iter()
+                    .map(|expectation| build_managed_artifact_plan(expectation, &managed.paths))
+                    .collect();
                 reporter.emit(Event::ManagedImageVerificationStarted {
-                    spec: handle.clone(),
+                    image_id: image_id.clone(),
+                    image_version: image_version.clone(),
+                    image_path: image_path.clone(),
                     started_at: managed.verification.started_at,
-                    plan: managed.verification.plan.clone(),
+                    plan: verification_plan,
                 });
+                let verification_artifacts: Vec<ManagedImageArtifactReport> = managed
+                    .verification
+                    .artifacts
+                    .iter()
+                    .map(|summary| build_managed_artifact_report(summary, &managed.paths))
+                    .collect();
+                let mut total_size_bytes = 0u64;
+                for artifact in &verification_artifacts {
+                    if let Some(size) = artifact.size_bytes {
+                        total_size_bytes = total_size_bytes.saturating_add(size);
+                    }
+                }
+                let verification_error = match &managed.verification.outcome {
+                    ManagedImageVerificationOutcome::Failure { reason } => Some(reason.clone()),
+                    _ => None,
+                };
                 reporter.emit(Event::ManagedImageVerificationResult {
-                    spec: handle.clone(),
+                    image_id: image_id.clone(),
+                    image_version: image_version.clone(),
+                    image_path: image_path.clone(),
                     completed_at: managed.verification.completed_at,
                     duration_ms: managed.verification.duration.as_millis() as u64,
                     outcome: managed.verification.outcome.clone(),
-                    artifacts: managed.verification.artifacts.clone(),
+                    error: verification_error,
+                    size_bytes: total_size_bytes,
+                    artifacts: verification_artifacts,
                 });
                 if let Some(boot) = prep.assets.boot.as_ref() {
-                    let components = ManagedImageProfileComponents {
-                        kernel: boot.kernel.clone(),
-                        initrd: boot.initrd.clone(),
-                        append: boot.append.clone(),
-                        extra_args: boot.extra_args.clone(),
-                        machine: boot.machine.clone(),
-                    };
+                    let profile_id = managed_profile_id(managed.spec);
+                    let profile_steps = build_profile_steps(boot);
                     let profile_started_at = SystemTime::now();
                     let profile_timer = Instant::now();
                     context.image_manager.log_profile_application_started(
                         managed.spec,
                         &vm.name,
-                        components.kernel.as_path(),
-                        components.initrd.as_deref(),
-                        &components.append,
-                        &components.extra_args,
-                        components.machine.as_deref(),
+                        boot.kernel.as_path(),
+                        boot.initrd.as_deref(),
+                        &boot.append,
+                        &boot.extra_args,
+                        boot.machine.as_deref(),
                         profile_started_at,
                     );
                     reporter.emit(Event::ManagedImageProfileApplied {
-                        spec: handle.clone(),
+                        image_id: image_id.clone(),
+                        image_version: image_version.clone(),
                         vm: vm.name.clone(),
+                        profile_id: profile_id.clone(),
                         started_at: profile_started_at,
-                        components: components.clone(),
+                        steps: profile_steps.clone(),
                     });
                     let profile_outcome = ManagedImageProfileOutcome::Applied;
                     let profile_duration = profile_timer.elapsed();
                     context.image_manager.log_profile_application(
                         managed.spec,
                         &vm.name,
-                        components.kernel.as_path(),
-                        components.initrd.as_deref(),
-                        &components.append,
-                        &components.extra_args,
-                        components.machine.as_deref(),
+                        boot.kernel.as_path(),
+                        boot.initrd.as_deref(),
+                        &boot.append,
+                        &boot.extra_args,
+                        boot.machine.as_deref(),
                         profile_started_at,
                         profile_duration,
                         &profile_outcome,
                     );
                     let profile_completed_at = SystemTime::now();
                     reporter.emit(Event::ManagedImageProfileResult {
-                        spec: handle.clone(),
+                        image_id: image_id.clone(),
+                        image_version: image_version.clone(),
                         vm: vm.name.clone(),
+                        profile_id,
                         completed_at: profile_completed_at,
                         duration_ms: profile_duration.as_millis() as u64,
                         outcome: profile_outcome,
-                        components,
+                        error: None,
+                        steps: profile_steps,
                     });
                 }
             }
@@ -483,6 +521,77 @@ pub(super) fn load_project_for_operation(
     } = load_project(options)?;
     diagnostics.extend(diag);
     Ok((config, synthetic))
+}
+
+fn build_managed_artifact_plan(
+    expectation: &ManagedImageArtifactExpectation,
+    paths: &ManagedImagePaths,
+) -> ManagedImageArtifactPlan {
+    ManagedImageArtifactPlan {
+        kind: expectation.kind,
+        filename: expectation.filename.clone(),
+        path: managed_artifact_path(paths, expectation.kind),
+        expected_sha256: expectation.expected_sha256.clone(),
+        expected_size_bytes: expectation.expected_size_bytes,
+    }
+}
+
+fn build_managed_artifact_report(
+    summary: &ManagedImageArtifactSummary,
+    paths: &ManagedImagePaths,
+) -> ManagedImageArtifactReport {
+    ManagedImageArtifactReport {
+        kind: summary.kind,
+        filename: summary.filename.clone(),
+        path: managed_artifact_path(paths, summary.kind),
+        size_bytes: Some(summary.size_bytes),
+        checksums: managed_artifact_checksums(summary),
+    }
+}
+
+fn managed_artifact_path(paths: &ManagedImagePaths, kind: ManagedArtifactKind) -> Option<PathBuf> {
+    match kind {
+        ManagedArtifactKind::RootDisk => Some(paths.root_disk.clone()),
+        ManagedArtifactKind::Kernel => paths.kernel.clone(),
+        ManagedArtifactKind::Initrd => paths.initrd.clone(),
+    }
+}
+
+fn managed_artifact_checksums(summary: &ManagedImageArtifactSummary) -> Vec<ManagedImageChecksum> {
+    let mut checksums = Vec::new();
+    checksums.push(ManagedImageChecksum {
+        algo: "sha256".to_string(),
+        value: summary.final_sha256.clone(),
+    });
+    if let Some(source) = &summary.source_sha256 {
+        checksums.push(ManagedImageChecksum {
+            algo: "source_sha256".to_string(),
+            value: source.clone(),
+        });
+    }
+    checksums
+}
+
+fn build_profile_steps(boot: &BootOverrides) -> Vec<String> {
+    let mut steps = Vec::new();
+    steps.push(format!("kernel={}", boot.kernel.display()));
+    if let Some(initrd) = &boot.initrd {
+        steps.push(format!("initrd={}", initrd.display()));
+    }
+    if !boot.append.trim().is_empty() {
+        steps.push(format!("append={}", boot.append));
+    }
+    if !boot.extra_args.is_empty() {
+        steps.push(format!("extra_args={}", boot.extra_args.join(" ")));
+    }
+    if let Some(machine) = &boot.machine {
+        steps.push(format!("machine={}", machine));
+    }
+    steps
+}
+
+fn managed_profile_id(spec: &ManagedImageSpec) -> String {
+    format!("{}@{}::boot", spec.id, spec.version)
 }
 
 fn process_check(

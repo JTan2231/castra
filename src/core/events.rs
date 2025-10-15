@@ -2,8 +2,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::managed::{
-    ManagedArtifactEventDetail, ManagedArtifactKind, ManagedImageArtifactExpectation,
-    ManagedImageArtifactSummary, ManagedImageProfileOutcome, ManagedImageSpec,
+    ManagedArtifactEventDetail, ManagedArtifactKind, ManagedImageProfileOutcome, ManagedImageSpec,
     ManagedImageVerificationOutcome,
 };
 
@@ -21,51 +20,73 @@ pub enum Event {
     },
     /// Managed image verification started and expectations recorded.
     ManagedImageVerificationStarted {
-        /// The managed image specification undergoing verification.
-        spec: ManagedImageSpecHandle,
+        /// Identifier of the managed image being verified.
+        image_id: String,
+        /// Version of the managed image.
+        image_version: String,
+        /// Filesystem path to the managed image root disk on disk.
+        image_path: PathBuf,
         /// When verification was initiated.
         started_at: SystemTime,
-        /// Expected artifacts (filenames, hashes) planned for verification.
-        plan: Vec<ManagedImageArtifactExpectation>,
+        /// Expected artifacts (paths, hashes, sizes) planned for verification.
+        plan: Vec<ManagedImageArtifactPlan>,
     },
     /// Outcome of managed image verification including artifacts.
     ManagedImageVerificationResult {
-        /// The managed image specification that was verified.
-        spec: ManagedImageSpecHandle,
+        /// Identifier of the managed image that was verified.
+        image_id: String,
+        /// Version of the managed image.
+        image_version: String,
+        /// Filesystem path to the managed image root disk on disk.
+        image_path: PathBuf,
         /// When verification completed.
         completed_at: SystemTime,
         /// Milliseconds spent verifying artifacts.
         duration_ms: u64,
         /// Outcome of the verification.
         outcome: ManagedImageVerificationOutcome,
-        /// Artifact summaries including filenames, sizes, and checksums.
-        artifacts: Vec<ManagedImageArtifactSummary>,
+        /// Optional failure detail when outcome is unsuccessful.
+        error: Option<String>,
+        /// Total size of verified artifacts (bytes).
+        size_bytes: u64,
+        /// Artifact summaries including paths, sizes, and checksums.
+        artifacts: Vec<ManagedImageArtifactReport>,
     },
     /// Structured details about a boot profile being applied to a VM.
     ManagedImageProfileApplied {
-        /// The managed image specification providing the profile.
-        spec: ManagedImageSpecHandle,
+        /// Identifier of the managed image providing the profile.
+        image_id: String,
+        /// Version of the managed image providing the profile.
+        image_version: String,
         /// VM name receiving the profile.
         vm: String,
+        /// Identifier of the applied profile.
+        profile_id: String,
         /// When profile application started.
         started_at: SystemTime,
-        /// Components that will be applied to the VM boot configuration.
-        components: ManagedImageProfileComponents,
+        /// Steps that will be applied to the VM boot configuration.
+        steps: Vec<String>,
     },
     /// Result of applying the managed image profile to a VM.
     ManagedImageProfileResult {
-        /// The managed image specification providing the profile.
-        spec: ManagedImageSpecHandle,
+        /// Identifier of the managed image providing the profile.
+        image_id: String,
+        /// Version of the managed image providing the profile.
+        image_version: String,
         /// VM name receiving the profile.
         vm: String,
+        /// Identifier of the applied profile.
+        profile_id: String,
         /// When profile application completed.
         completed_at: SystemTime,
         /// Milliseconds spent preparing the profile application.
         duration_ms: u64,
         /// Outcome of the profile application.
         outcome: ManagedImageProfileOutcome,
-        /// Components that were applied to the VM boot configuration.
-        components: ManagedImageProfileComponents,
+        /// Optional failure detail when outcome is unsuccessful.
+        error: Option<String>,
+        /// Steps that were applied to the VM boot configuration.
+        steps: Vec<String>,
     },
     /// Status update for managed artifact acquisition.
     ManagedArtifact {
@@ -215,19 +236,43 @@ pub enum Event {
     },
 }
 
-/// Components that comprise a managed image boot profile.
+/// Planned managed image artifact verification entry.
 #[derive(Debug, Clone)]
-pub struct ManagedImageProfileComponents {
-    /// Resolved kernel path on disk.
-    pub kernel: PathBuf,
-    /// Optional initrd path.
-    pub initrd: Option<PathBuf>,
-    /// Kernel append/cmdline used.
-    pub append: String,
-    /// Additional QEMU arguments supplied by the profile.
-    pub extra_args: Vec<String>,
-    /// Machine type override if provided.
-    pub machine: Option<String>,
+pub struct ManagedImageArtifactPlan {
+    /// Artifact kind (root disk, kernel, initrd, ...).
+    pub kind: ManagedArtifactKind,
+    /// Artifact filename as referenced in the manifest.
+    pub filename: String,
+    /// Resolved filesystem path, when known.
+    pub path: Option<PathBuf>,
+    /// Expected SHA-256 checksum for the artifact.
+    pub expected_sha256: Option<String>,
+    /// Expected size in bytes for the artifact.
+    pub expected_size_bytes: Option<u64>,
+}
+
+/// Verification summary for a managed image artifact.
+#[derive(Debug, Clone)]
+pub struct ManagedImageArtifactReport {
+    /// Artifact kind (root disk, kernel, initrd, ...).
+    pub kind: ManagedArtifactKind,
+    /// Artifact filename as recorded in the manifest.
+    pub filename: String,
+    /// Resolved filesystem path, when known.
+    pub path: Option<PathBuf>,
+    /// Observed size in bytes for the artifact.
+    pub size_bytes: Option<u64>,
+    /// Checksums recorded during verification.
+    pub checksums: Vec<ManagedImageChecksum>,
+}
+
+/// Recorded checksum for a managed image artifact.
+#[derive(Debug, Clone)]
+pub struct ManagedImageChecksum {
+    /// Algorithm label (e.g. `sha256`, `source_sha256`).
+    pub algo: String,
+    /// Hex-encoded checksum value.
+    pub value: String,
 }
 
 /// Evidence linking cleanup actions to prior managed image verification events.

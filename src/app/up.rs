@@ -5,7 +5,6 @@ use crate::cli::UpArgs;
 use crate::core::diagnostics::Severity;
 use crate::core::events::{
     BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger, Event,
-    ManagedImageProfileComponents,
 };
 use crate::core::operations;
 use crate::core::options::UpOptions;
@@ -40,26 +39,34 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
             Event::ManagedArtifact { spec, text, .. } => {
                 println!("→ {} {}: {}", spec.id, spec.version, text);
             }
-            Event::ManagedImageVerificationStarted { spec, plan, .. } => {
+            Event::ManagedImageVerificationStarted {
+                image_id,
+                image_version,
+                plan,
+                ..
+            } => {
                 let kinds: Vec<&str> = plan
                     .iter()
                     .map(|artifact| artifact.kind.describe())
                     .collect();
                 if kinds.is_empty() {
-                    println!("→ {} {}: verification started.", spec.id, spec.version);
+                    println!("→ {} {}: verification started.", image_id, image_version);
                 } else {
                     println!(
                         "→ {} {}: verification started for {}.",
-                        spec.id,
-                        spec.version,
+                        image_id,
+                        image_version,
                         kinds.join(", ")
                     );
                 }
             }
             Event::ManagedImageVerificationResult {
-                spec,
+                image_id,
+                image_version,
                 duration_ms,
                 outcome,
+                error,
+                size_bytes,
                 artifacts,
                 ..
             } => {
@@ -68,77 +75,86 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                     .map(|artifact| artifact.kind.describe())
                     .collect();
                 let duration = format_duration_ms(*duration_ms);
+                let size_text = format_bytes(*size_bytes);
                 match outcome {
                     ManagedImageVerificationOutcome::Success => {
                         if kinds.is_empty() {
                             println!(
-                                "→ {} {}: verification completed in {}.",
-                                spec.id, spec.version, duration
+                                "→ {} {}: verification completed in {} ({}).",
+                                image_id, image_version, duration, size_text
                             );
                         } else {
                             println!(
-                                "→ {} {}: verification completed in {} ({}).",
-                                spec.id,
-                                spec.version,
+                                "→ {} {}: verification completed in {} ({}; {}).",
+                                image_id,
+                                image_version,
                                 duration,
+                                size_text,
                                 kinds.join(", ")
                             );
                         }
                     }
                     ManagedImageVerificationOutcome::Failure { reason } => {
+                        let detail = error.as_deref().unwrap_or(reason);
                         println!(
                             "→ {} {}: verification failed after {} ({}).",
-                            spec.id, spec.version, duration, reason
+                            image_id, image_version, duration, detail
                         );
                     }
                 }
             }
             Event::ManagedImageProfileApplied {
-                spec,
+                image_id,
+                image_version,
                 vm,
-                components,
+                profile_id,
+                steps,
                 ..
             } => {
-                let labels = describe_profile_components(components);
                 println!(
-                    "→ {} {}: applying boot profile for VM `{}` ({}).",
-                    spec.id,
-                    spec.version,
+                    "→ {} {}: applying profile `{}` to VM `{}` ({}).",
+                    image_id,
+                    image_version,
+                    profile_id,
                     vm,
-                    labels.join(", ")
+                    format_steps(steps)
                 );
             }
             Event::ManagedImageProfileResult {
-                spec,
+                image_id,
+                image_version,
                 vm,
+                profile_id,
                 duration_ms,
                 outcome,
-                components,
+                error,
+                steps,
                 ..
             } => {
-                let labels = describe_profile_components(components);
                 let duration = format_duration_ms(*duration_ms);
                 match outcome {
                     ManagedImageProfileOutcome::Applied => {
                         println!(
-                            "→ {} {}: boot profile applied to `{}` in {} ({}).",
-                            spec.id,
-                            spec.version,
+                            "→ {} {}: profile `{}` applied to `{}` in {} ({}).",
+                            image_id,
+                            image_version,
+                            profile_id,
                             vm,
                             duration,
-                            labels.join(", ")
+                            format_steps(steps)
                         );
                     }
                     ManagedImageProfileOutcome::NoOp => {
                         println!(
-                            "→ {} {}: boot profile skipped (no changes needed).",
-                            spec.id, spec.version
+                            "→ {} {}: profile `{}` skipped (no changes needed).",
+                            image_id, image_version, profile_id
                         );
                     }
                     ManagedImageProfileOutcome::Failed { reason } => {
+                        let detail = error.as_deref().unwrap_or(reason);
                         println!(
-                            "→ {} {}: boot profile failed for `{}` ({reason}).",
-                            spec.id, spec.version, vm
+                            "→ {} {}: profile `{}` failed for `{}` ({detail}).",
+                            image_id, image_version, profile_id, vm
                         );
                     }
                 }
@@ -263,21 +279,12 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
     }
 }
 
-fn describe_profile_components(components: &ManagedImageProfileComponents) -> Vec<String> {
-    let mut labels = vec!["kernel".to_string()];
-    if components.initrd.is_some() {
-        labels.push("initrd".to_string());
+fn format_steps(steps: &[String]) -> String {
+    if steps.is_empty() {
+        "no steps".to_string()
+    } else {
+        steps.join(", ")
     }
-    if !components.append.is_empty() {
-        labels.push("append".to_string());
-    }
-    if !components.extra_args.is_empty() {
-        labels.push(format!("extra_args={}", components.extra_args.len()));
-    }
-    if let Some(machine) = &components.machine {
-        labels.push(format!("machine={machine}"));
-    }
-    labels
 }
 
 fn format_duration_ms(ms: u64) -> String {
@@ -294,6 +301,21 @@ fn format_duration_ms(ms: u64) -> String {
         format!("{seconds:.1}s")
     } else {
         format!("{ms}ms")
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut index = 0usize;
+    while value >= 1024.0 && index < UNITS.len() - 1 {
+        value /= 1024.0;
+        index += 1;
+    }
+    if index == 0 {
+        format!("{bytes} {}", UNITS[index])
+    } else {
+        format!("{value:.1} {}", UNITS[index])
     }
 }
 
