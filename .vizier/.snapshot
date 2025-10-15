@@ -3,6 +3,7 @@ SNAPSHOT v0.8.3 — Castra (VM orchestration harness)
 Edits since v0.8.2
 - Thread 10 tightened: structured managed-image events must be represented as variants in src/core/events.rs; `castra clean` surfaces linkage evidence; durations required for ordering.
 - Anchors expanded for Thread 10: added src/app/clean.rs and CLEAN.md to reflect user-facing reclaimed-bytes evidence.
+- Canonicalization: Consolidated duplicate TODO for Thread 10; clarified acceptance to explicitly require events.rs variants, duration_ms in Result events, and concise linkage surfaced by `castra clean` when evidence exists.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (not yet implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -16,7 +17,7 @@ Active threads (intent + acceptance)
   - Emit: ManagedImageVerificationStarted/ManagedImageVerificationResult and ManagedImageProfileApplied/ManagedImageProfileResult with stable fields (checksums, sizes, durations, outcomes, error?).
   - Events are expressed as variants in src/core/events.rs to guarantee type‑stable emission across reporters.
   - Reporter emits via the same unified channel used by lifecycle events; events are durable and appear in per‑VM or image‑scoped logs.
-  - CLEAN links reclaimed‑bytes evidence to specific ManagedImageVerificationResult entries (by image id/path + timestamp proximity) when available; `castra clean` surfaces this linkage succinctly per image.
+  - CLEAN links reclaimed‑bytes evidence to specific ManagedImageVerificationResult entries (by image id/path + timestamp proximity) when available; `castra clean` surfaces this linkage succinctly per image; absence of evidence is explicitly indicated.
   - Result events include duration_ms (or sufficient monotonic timing) to enable ordering without wall‑clock dependency.
   Anchors: src/managed/mod.rs; src/core/events.rs; src/core/logs.rs; src/core/reporter.rs; src/core/operations/clean.rs; src/app/clean.rs; CLEAN.md.
 

@@ -1,14 +1,31 @@
-Updates (clarifications)
-- Acceptance expands: Events must flow through src/core/events.rs variants to ensure type-stable emission across reporters.
-- Anchors added: src/app/clean.rs (surface linkage evidence to users) and CLEAN.md (narrative for reclaimed-bytes reporting).
-
-Acceptance additions
-- Human-facing `castra clean` output surfaces (when available) the linked ManagedImageVerificationResult evidence in a concise line item per image (e.g., shows image_id/path and size_bytes reclaimed); absence of evidence is still a valid, clearly indicated case.
-- Event payloads include monotonic step timestamps or durations sufficient for ordering without wall-clock; at minimum, duration_ms per Result events is required and tested.
-
-Trade space (left open)
-- Internal checksum algorithms and profiling step taxonomy are not prescribed so long as declared in the event payloads and fields remain stable.
-
-
 ---
+Thread 10 — Managed images: structured verification/profile events (canonical)
 
+Tension
+- Verification/profile steps occur but lack machine-parseable events; CLEAN and automation cannot reliably consume results.
+
+Change (product-level)
+- Emit structured events around managed-image verification and profile application via the unified reporter channel.
+
+Event names (stable)
+- ManagedImageVerificationStarted { image_id, path }
+- ManagedImageVerificationResult { image_id, path, checksums: { algo, value }[], size_bytes, duration_ms, outcome: Success | Failure, error? }
+- ManagedImageProfileApplied { image_id, profile_id, steps: string[] }
+- ManagedImageProfileResult { image_id, profile_id, duration_ms, outcome: Success | Failure | NoOp, error? }
+
+Acceptance criteria
+- Events appear in per-image logs and unified streams alongside lifecycle events.
+- CLEAN command can, when available, link reclaimed-bytes evidence to a prior ManagedImageVerificationResult (by image_id/path + timestamp proximity) and surface that linkage in output.
+- Fields are stable and JSON-safe to support downstream tooling.
+- Result events include duration_ms (or equivalent monotonic timing) sufficient for ordering without wall-clock dependency.
+- Human-facing `castra clean` output should, when evidence exists, show a concise per-image linkage (image_id/path + reclaimed size); absence of evidence is explicitly indicated.
+
+Pointers (non-prescriptive anchors)
+- src/managed/mod.rs (verification/profile flow)
+- src/core/events.rs; src/core/reporter.rs; src/core/logs.rs (emission/durability)
+- src/core/operations/clean.rs; src/app/clean.rs (linkage to events, user surface)
+- CLEAN.md (narrative for reclaimed-bytes reporting)
+
+Cross-links
+- Thread 12 may consume these results to short-circuit when profile already applied and hashes match.
+---
