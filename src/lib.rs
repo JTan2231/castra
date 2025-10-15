@@ -1,5 +1,7 @@
 //! Castra library crate.
 
+extern crate self as castra;
+
 /// Core library modules and APIs.
 pub mod core;
 

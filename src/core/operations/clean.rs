@@ -1,12 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::error::{Error, Result};
 
 use crate::core::diagnostics::{Diagnostic, Severity};
-use crate::core::events::{CleanupKind, Event};
+use crate::core::events::{CleanupKind, CleanupManagedImageEvidence, Event};
 use crate::core::options::{CleanOptions, CleanScope, ConfigLoadOptions, ProjectSelector};
 use crate::core::outcome::{
     CleanOutcome, CleanupAction, OperationOutput, OperationResult, SkipReason, StateRootCleanup,
@@ -17,6 +18,8 @@ use crate::core::runtime::{
     BrokerProcessState, broker_handshake_dir_from_root, inspect_broker_state, inspect_vm_state,
 };
 use crate::core::status;
+
+use serde_json::Value;
 
 use super::{ReporterProxy, load_project_for_operation};
 
@@ -449,6 +452,12 @@ fn process_target(
         return Ok(0);
     }
 
+    let evidence = if matches!(kind, CleanupKind::ManagedImages) {
+        collect_managed_image_evidence(path)
+    } else {
+        Vec::new()
+    };
+
     let size = match measure_path(path) {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -467,6 +476,7 @@ fn process_target(
             kind,
             bytes: size,
             dry_run: true,
+            managed_evidence: evidence,
         });
         actions.push(CleanupAction::Skipped {
             path: path.to_path_buf(),
@@ -489,6 +499,7 @@ fn process_target(
                 kind,
                 bytes: size,
                 dry_run: false,
+                managed_evidence: evidence.clone(),
             });
             actions.push(CleanupAction::Removed {
                 path: path.to_path_buf(),
@@ -522,6 +533,83 @@ fn measure_path(path: &Path) -> io::Result<u64> {
     } else {
         Ok(0)
     }
+}
+
+fn collect_managed_image_evidence(path: &Path) -> Vec<CleanupManagedImageEvidence> {
+    let state_root = match path.parent() {
+        Some(parent) => parent,
+        None => return Vec::new(),
+    };
+    let log_path = state_root.join("logs").join("image-manager.log");
+    let contents = match fs::read_to_string(&log_path) {
+        Ok(contents) => contents,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut latest: HashMap<(String, String), CleanupManagedImageEvidence> = HashMap::new();
+
+    for line in contents.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if value.get("event").and_then(|entry| entry.as_str())
+            != Some("managed-image-verification-result")
+        {
+            continue;
+        }
+        let (Some(image_id), Some(image_version)) = (
+            value.get("image").and_then(|entry| entry.as_str()),
+            value.get("version").and_then(|entry| entry.as_str()),
+        ) else {
+            continue;
+        };
+
+        let timestamp = value
+            .get("completed_at")
+            .and_then(|entry| entry.as_u64())
+            .or_else(|| value.get("ts").and_then(|entry| entry.as_u64()));
+        let Some(ts) = timestamp else {
+            continue;
+        };
+        let verified_at: SystemTime = UNIX_EPOCH + Duration::from_secs(ts);
+
+        let artifacts = value
+            .get("artifacts")
+            .and_then(|entry| entry.as_array())
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|artifact| {
+                        artifact
+                            .get("filename")
+                            .and_then(|field| field.as_str())
+                            .map(str::to_string)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let evidence = CleanupManagedImageEvidence {
+            image_id: image_id.to_string(),
+            image_version: image_version.to_string(),
+            log_path: log_path.clone(),
+            verified_at,
+            artifacts,
+        };
+
+        match latest.entry((image_id.to_string(), image_version.to_string())) {
+            Entry::Occupied(mut occupied) => {
+                if evidence.verified_at > occupied.get().verified_at {
+                    occupied.insert(evidence);
+                }
+            }
+            Entry::Vacant(vacant) => {
+                vacant.insert(evidence);
+            }
+        }
+    }
+
+    latest.into_values().collect()
 }
 
 #[cfg(test)]

@@ -1,14 +1,16 @@
 use std::path::PathBuf;
+use std::time::{Instant, SystemTime};
 
 mod bus;
 mod clean;
 
 use crate::config::{self, ProjectConfig};
 use crate::error::{Error, Result};
+use crate::managed::ManagedImageProfileOutcome;
 
 use super::broker as broker_core;
 use super::diagnostics::{Diagnostic, Severity};
-use super::events::{Event, ManagedImageSpecHandle};
+use super::events::{Event, ManagedImageProfileComponents, ManagedImageSpecHandle};
 use super::logs as logs_core;
 use super::options::{
     BrokerOptions, BusPublishOptions, BusTailOptions, CleanOptions, ConfigLoadOptions, DownOptions,
@@ -157,28 +159,56 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
                         text: event.message.clone(),
                     });
                 }
-                reporter.emit(Event::ManagedImageVerified {
+                reporter.emit(Event::ManagedImageVerificationStarted {
                     spec: handle.clone(),
+                    started_at: managed.verification.started_at,
+                    plan: managed.verification.plan.clone(),
+                });
+                reporter.emit(Event::ManagedImageVerificationResult {
+                    spec: handle.clone(),
+                    completed_at: managed.verification.completed_at,
+                    duration_ms: managed.verification.duration.as_millis() as u64,
+                    outcome: managed.verification.outcome.clone(),
                     artifacts: managed.verification.artifacts.clone(),
                 });
                 if let Some(boot) = prep.assets.boot.as_ref() {
-                    context.image_manager.log_profile_application(
-                        managed.spec,
-                        &vm.name,
-                        &boot.kernel,
-                        boot.initrd.as_deref(),
-                        &boot.append,
-                        &boot.extra_args,
-                        boot.machine.as_deref(),
-                    );
-                    reporter.emit(Event::ManagedImageProfileApplied {
-                        spec: handle,
-                        vm: vm.name.clone(),
+                    let components = ManagedImageProfileComponents {
                         kernel: boot.kernel.clone(),
                         initrd: boot.initrd.clone(),
                         append: boot.append.clone(),
                         extra_args: boot.extra_args.clone(),
                         machine: boot.machine.clone(),
+                    };
+                    let profile_started_at = SystemTime::now();
+                    let profile_timer = Instant::now();
+                    reporter.emit(Event::ManagedImageProfileApplied {
+                        spec: handle.clone(),
+                        vm: vm.name.clone(),
+                        started_at: profile_started_at,
+                        components: components.clone(),
+                    });
+                    let profile_outcome = ManagedImageProfileOutcome::Applied;
+                    let profile_duration = profile_timer.elapsed();
+                    context.image_manager.log_profile_application(
+                        managed.spec,
+                        &vm.name,
+                        components.kernel.as_path(),
+                        components.initrd.as_deref(),
+                        &components.append,
+                        &components.extra_args,
+                        components.machine.as_deref(),
+                        profile_started_at,
+                        profile_duration,
+                        &profile_outcome,
+                    );
+                    let profile_completed_at = SystemTime::now();
+                    reporter.emit(Event::ManagedImageProfileResult {
+                        spec: handle.clone(),
+                        vm: vm.name.clone(),
+                        completed_at: profile_completed_at,
+                        duration_ms: profile_duration.as_millis() as u64,
+                        outcome: profile_outcome,
+                        components,
                     });
                 }
             }

@@ -1,7 +1,10 @@
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use crate::managed::{
-    ManagedArtifactEventDetail, ManagedArtifactKind, ManagedImageArtifactSummary, ManagedImageSpec,
+    ManagedArtifactEventDetail, ManagedArtifactKind, ManagedImageArtifactExpectation,
+    ManagedImageArtifactSummary, ManagedImageProfileOutcome, ManagedImageSpec,
+    ManagedImageVerificationOutcome,
 };
 
 use super::diagnostics::Severity;
@@ -16,29 +19,53 @@ pub enum Event {
         /// Human-readable text.
         text: String,
     },
-    /// Structured summary confirming managed image verification.
-    ManagedImageVerified {
+    /// Managed image verification started and expectations recorded.
+    ManagedImageVerificationStarted {
+        /// The managed image specification undergoing verification.
+        spec: ManagedImageSpecHandle,
+        /// When verification was initiated.
+        started_at: SystemTime,
+        /// Expected artifacts (filenames, hashes) planned for verification.
+        plan: Vec<ManagedImageArtifactExpectation>,
+    },
+    /// Outcome of managed image verification including artifacts.
+    ManagedImageVerificationResult {
         /// The managed image specification that was verified.
         spec: ManagedImageSpecHandle,
+        /// When verification completed.
+        completed_at: SystemTime,
+        /// Milliseconds spent verifying artifacts.
+        duration_ms: u64,
+        /// Outcome of the verification.
+        outcome: ManagedImageVerificationOutcome,
         /// Artifact summaries including filenames, sizes, and checksums.
         artifacts: Vec<ManagedImageArtifactSummary>,
     },
-    /// Structured details about a boot profile applied to a VM.
+    /// Structured details about a boot profile being applied to a VM.
     ManagedImageProfileApplied {
         /// The managed image specification providing the profile.
         spec: ManagedImageSpecHandle,
         /// VM name receiving the profile.
         vm: String,
-        /// Resolved kernel path on disk.
-        kernel: PathBuf,
-        /// Optional initrd path.
-        initrd: Option<PathBuf>,
-        /// Kernel append/cmdline used.
-        append: String,
-        /// Additional QEMU arguments supplied by the profile.
-        extra_args: Vec<String>,
-        /// Machine type override if provided.
-        machine: Option<String>,
+        /// When profile application started.
+        started_at: SystemTime,
+        /// Components that will be applied to the VM boot configuration.
+        components: ManagedImageProfileComponents,
+    },
+    /// Result of applying the managed image profile to a VM.
+    ManagedImageProfileResult {
+        /// The managed image specification providing the profile.
+        spec: ManagedImageSpecHandle,
+        /// VM name receiving the profile.
+        vm: String,
+        /// When profile application completed.
+        completed_at: SystemTime,
+        /// Milliseconds spent preparing the profile application.
+        duration_ms: u64,
+        /// Outcome of the profile application.
+        outcome: ManagedImageProfileOutcome,
+        /// Components that were applied to the VM boot configuration.
+        components: ManagedImageProfileComponents,
     },
     /// Status update for managed artifact acquisition.
     ManagedArtifact {
@@ -146,7 +173,39 @@ pub enum Event {
         bytes: u64,
         /// Whether the action occurred in dry-run mode.
         dry_run: bool,
+        /// Evidence linking reclaimed bytes to managed image verification results, when available.
+        managed_evidence: Vec<CleanupManagedImageEvidence>,
     },
+}
+
+/// Components that comprise a managed image boot profile.
+#[derive(Debug, Clone)]
+pub struct ManagedImageProfileComponents {
+    /// Resolved kernel path on disk.
+    pub kernel: PathBuf,
+    /// Optional initrd path.
+    pub initrd: Option<PathBuf>,
+    /// Kernel append/cmdline used.
+    pub append: String,
+    /// Additional QEMU arguments supplied by the profile.
+    pub extra_args: Vec<String>,
+    /// Machine type override if provided.
+    pub machine: Option<String>,
+}
+
+/// Evidence linking cleanup actions to prior managed image verification events.
+#[derive(Debug, Clone)]
+pub struct CleanupManagedImageEvidence {
+    /// Managed image identifier.
+    pub image_id: String,
+    /// Managed image version associated with the verification entry.
+    pub image_version: String,
+    /// Path to the log containing the verification record.
+    pub log_path: PathBuf,
+    /// Timestamp (UTC seconds since epoch) when verification completed.
+    pub verified_at: SystemTime,
+    /// Artifact filenames recorded in the verification result.
+    pub artifacts: Vec<String>,
 }
 
 /// Cooperative channel used during guest shutdown attempts.

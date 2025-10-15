@@ -3,7 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hex::encode as hex_encode;
 use serde::{Deserialize, Serialize};
@@ -45,8 +45,51 @@ pub struct ManagedImageArtifactSummary {
 }
 
 #[derive(Debug, Clone)]
+pub struct ManagedImageArtifactExpectation {
+    pub kind: ManagedArtifactKind,
+    pub filename: String,
+    pub expected_sha256: Option<String>,
+    pub expected_size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedImageVerificationOutcome {
+    Success,
+    Failure { reason: String },
+}
+
+#[derive(Debug, Clone)]
 pub struct ManagedImageVerification {
+    pub plan: Vec<ManagedImageArtifactExpectation>,
     pub artifacts: Vec<ManagedImageArtifactSummary>,
+    pub started_at: SystemTime,
+    pub completed_at: SystemTime,
+    pub duration: Duration,
+    pub outcome: ManagedImageVerificationOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedImageProfileOutcome {
+    Applied,
+    NoOp,
+    Failed { reason: String },
+}
+
+impl ManagedImageProfileOutcome {
+    fn status_label(&self) -> &'static str {
+        match self {
+            ManagedImageProfileOutcome::Applied => "applied",
+            ManagedImageProfileOutcome::NoOp => "noop",
+            ManagedImageProfileOutcome::Failed { .. } => "failed",
+        }
+    }
+
+    fn failure_reason(&self) -> Option<&str> {
+        match self {
+            ManagedImageProfileOutcome::Failed { reason } => Some(reason.as_str()),
+            _ => None,
+        }
+    }
 }
 
 impl ManagedImagePaths {
@@ -200,6 +243,20 @@ impl ImageManager {
             manifest = ImageManifest::new(fingerprint.clone());
         }
 
+        let verification_plan: Vec<ManagedImageArtifactExpectation> = spec
+            .artifacts
+            .iter()
+            .map(|artifact| ManagedImageArtifactExpectation {
+                kind: artifact.kind,
+                filename: artifact.final_filename.to_string(),
+                expected_sha256: artifact.source.sha256.map(str::to_string),
+                expected_size_bytes: artifact.source.size,
+            })
+            .collect();
+        let started_at = SystemTime::now();
+        let started_instant = Instant::now();
+        self.log_verification_started(spec, &verification_plan, started_at);
+
         let mut events = Vec::new();
         let mut resolved_paths: HashMap<ManagedArtifactKind, PathBuf> = HashMap::new();
 
@@ -240,6 +297,20 @@ impl ImageManager {
                 self.download_artifact(spec, &image_root, artifact, &cache_state, &mut events)?;
             if let Some(expected) = artifact.source.sha256 {
                 if let Err(err) = verify_checksum(&download_path, expected) {
+                    let completed_at = SystemTime::now();
+                    let duration = started_instant.elapsed();
+                    self.log_verification_failure(
+                        spec,
+                        &verification_plan,
+                        started_at,
+                        completed_at,
+                        duration,
+                        &format!(
+                            "Checksum mismatch for {} (expected {expected}). Remove {} and retry: {err}",
+                            artifact.source.url,
+                            download_path.display()
+                        ),
+                    );
                     return Err(Error::PreflightFailed {
                         message: format!(
                             "Checksum mismatch for {} (expected {expected}). Remove {} and retry: {err}",
@@ -311,6 +382,7 @@ impl ImageManager {
 
         manifest.last_checked = Some(timestamp_seconds());
         let verification = ManagedImageVerification {
+            plan: verification_plan.clone(),
             artifacts: spec
                 .artifacts
                 .iter()
@@ -327,9 +399,13 @@ impl ImageManager {
                         })
                 })
                 .collect(),
+            started_at,
+            completed_at: SystemTime::now(),
+            duration: started_instant.elapsed(),
+            outcome: ManagedImageVerificationOutcome::Success,
         };
         save_manifest(&manifest_path, &manifest)?;
-        self.log_verification(spec, &verification);
+        self.log_verification_result(spec, &verification);
 
         self.push_event(
             spec,
@@ -370,11 +446,87 @@ impl ImageManager {
         self.log_line(&line);
     }
 
-    pub(crate) fn log_verification(
+    pub(crate) fn log_verification_started(
+        &self,
+        spec: &ManagedImageSpec,
+        plan: &[ManagedImageArtifactExpectation],
+        started_at: SystemTime,
+    ) {
+        let artifacts: Vec<_> = plan
+            .iter()
+            .map(|artifact| {
+                json!({
+                    "kind": artifact.kind.describe(),
+                    "filename": &artifact.filename,
+                    "expected_sha256": &artifact.expected_sha256,
+                    "expected_size_bytes": artifact.expected_size_bytes,
+                })
+            })
+            .collect();
+        let payload = json!({
+            "ts": timestamp_seconds(),
+            "event": "managed-image-verification-started",
+            "image": spec.id,
+            "version": spec.version,
+            "started_at": system_time_to_secs(started_at),
+            "plan": artifacts,
+        });
+        self.log_line(&payload.to_string());
+    }
+
+    pub(crate) fn log_verification_failure(
+        &self,
+        spec: &ManagedImageSpec,
+        plan: &[ManagedImageArtifactExpectation],
+        started_at: SystemTime,
+        completed_at: SystemTime,
+        duration: Duration,
+        reason: &str,
+    ) {
+        let plan_artifacts: Vec<_> = plan
+            .iter()
+            .map(|artifact| {
+                json!({
+                    "kind": artifact.kind.describe(),
+                    "filename": &artifact.filename,
+                    "expected_sha256": &artifact.expected_sha256,
+                    "expected_size_bytes": artifact.expected_size_bytes,
+                })
+            })
+            .collect();
+        let payload = json!({
+            "ts": timestamp_seconds(),
+            "event": "managed-image-verification-result",
+            "image": spec.id,
+            "version": spec.version,
+            "started_at": system_time_to_secs(started_at),
+            "completed_at": system_time_to_secs(completed_at),
+            "duration_ms": duration.as_millis(),
+            "outcome": "failure",
+            "failure_reason": reason,
+            "plan": plan_artifacts,
+            "artifacts": [],
+        });
+        self.log_line(&payload.to_string());
+    }
+
+    pub(crate) fn log_verification_result(
         &self,
         spec: &ManagedImageSpec,
         verification: &ManagedImageVerification,
     ) {
+        let plan: Vec<_> = verification
+            .plan
+            .iter()
+            .map(|artifact| {
+                json!({
+                    "kind": artifact.kind.describe(),
+                    "filename": &artifact.filename,
+                    "expected_sha256": &artifact.expected_sha256,
+                    "expected_size_bytes": artifact.expected_size_bytes,
+                })
+            })
+            .collect();
         let artifacts: Vec<_> = verification
             .artifacts
             .iter()
@@ -388,13 +540,24 @@ impl ImageManager {
                 })
             })
             .collect();
-        let payload = json!({
+        let mut payload = json!({
             "ts": timestamp_seconds(),
-            "event": "managed-image-verified",
+            "event": "managed-image-verification-result",
             "image": spec.id,
             "version": spec.version,
+            "started_at": system_time_to_secs(verification.started_at),
+            "completed_at": system_time_to_secs(verification.completed_at),
+            "duration_ms": verification.duration.as_millis(),
+            "outcome": match &verification.outcome {
+                ManagedImageVerificationOutcome::Success => "success",
+                ManagedImageVerificationOutcome::Failure { .. } => "failure",
+            },
+            "plan": plan,
             "artifacts": artifacts,
         });
+        if let ManagedImageVerificationOutcome::Failure { reason } = &verification.outcome {
+            payload["failure_reason"] = json!(reason);
+        }
         self.log_line(&payload.to_string());
     }
 
@@ -407,13 +570,19 @@ impl ImageManager {
         append: &str,
         extra_args: &[String],
         machine: Option<&str>,
+        started_at: SystemTime,
+        duration: Duration,
+        outcome: &ManagedImageProfileOutcome,
     ) {
-        let payload = json!({
+        let mut payload = json!({
             "ts": timestamp_seconds(),
-            "event": "managed-image-profile-applied",
+            "event": "managed-image-profile-result",
             "image": spec.id,
             "version": spec.version,
             "vm": vm,
+            "started_at": system_time_to_secs(started_at),
+            "duration_ms": duration.as_millis(),
+            "outcome": outcome.status_label(),
             "components": {
                 "kernel": kernel.display().to_string(),
                 "initrd": initrd.map(|path| path.display().to_string()),
@@ -422,6 +591,9 @@ impl ImageManager {
                 "machine": machine,
             },
         });
+        if let Some(reason) = outcome.failure_reason() {
+            payload["failure_reason"] = json!(reason);
+        }
         self.log_line(&payload.to_string());
     }
 
@@ -816,10 +988,16 @@ fn save_manifest(path: &Path, manifest: &ImageManifest) -> Result<()> {
     })
 }
 
+fn system_time_to_secs(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs()
+}
+
 fn timestamp_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+        .unwrap_or_else(|_| Duration::from_secs(0))
         .as_secs()
 }
 
@@ -1160,7 +1338,15 @@ mod tests {
         fs::create_dir_all(&log_root).unwrap();
         let manager = ImageManager::new(storage_root, log_root.clone(), None);
 
+        let plan = vec![ManagedImageArtifactExpectation {
+            kind: ManagedArtifactKind::RootDisk,
+            filename: "disk.qcow2".to_string(),
+            expected_sha256: Some("def456".to_string()),
+            expected_size_bytes: Some(10),
+        }];
+
         let verification = ManagedImageVerification {
+            plan: plan.clone(),
             artifacts: vec![ManagedImageArtifactSummary {
                 kind: ManagedArtifactKind::RootDisk,
                 filename: "disk.qcow2".to_string(),
@@ -1168,23 +1354,34 @@ mod tests {
                 final_sha256: "abc123".to_string(),
                 source_sha256: Some("def456".to_string()),
             }],
+            started_at: UNIX_EPOCH + Duration::from_secs(100),
+            completed_at: UNIX_EPOCH + Duration::from_secs(103),
+            duration: Duration::from_secs(3),
+            outcome: ManagedImageVerificationOutcome::Success,
         };
 
-        manager.log_verification(&ALPINE_MINIMAL_V1, &verification);
+        manager.log_verification_started(&ALPINE_MINIMAL_V1, &plan, verification.started_at);
+        manager.log_verification_result(&ALPINE_MINIMAL_V1, &verification);
 
         let log_path = log_root.join("image-manager.log");
         let contents = fs::read_to_string(&log_path).expect("log file");
-        let line = contents.trim();
-        let value: Value = serde_json::from_str(line).expect("json line");
-        assert_eq!(value["event"], "managed-image-verified");
-        assert_eq!(value["image"], ALPINE_MINIMAL_V1.id);
-        assert_eq!(value["version"], ALPINE_MINIMAL_V1.version);
+        let mut lines = contents.lines();
+        let start_line = lines.next().expect("start line");
+        let result_line = lines.next().expect("result line");
+        assert!(lines.next().is_none());
+
+        let start_value: Value = serde_json::from_str(start_line).expect("start json");
+        assert_eq!(start_value["event"], "managed-image-verification-started");
+        assert_eq!(start_value["image"], ALPINE_MINIMAL_V1.id);
+        assert_eq!(start_value["plan"][0]["filename"], "disk.qcow2");
+
+        let result_value: Value = serde_json::from_str(result_line).expect("result json");
+        assert_eq!(result_value["event"], "managed-image-verification-result");
+        assert_eq!(result_value["image"], ALPINE_MINIMAL_V1.id);
+        assert_eq!(result_value["outcome"], "success");
+        assert_eq!(result_value["duration_ms"], 3000);
         assert_eq!(
-            value["artifacts"][0]["filename"],
-            verification.artifacts[0].filename
-        );
-        assert_eq!(
-            value["artifacts"][0]["final_sha256"],
+            result_value["artifacts"][0]["final_sha256"],
             verification.artifacts[0].final_sha256
         );
     }
@@ -1201,6 +1398,8 @@ mod tests {
         let kernel = dir.path().join("vmlinuz");
         let initrd = dir.path().join("initrd.img");
         let extra_args = vec!["arg1".to_string(), "arg2".to_string()];
+        let started_at = UNIX_EPOCH + Duration::from_secs(42);
+        let outcome = ManagedImageProfileOutcome::Applied;
 
         manager.log_profile_application(
             &ALPINE_MINIMAL_V1,
@@ -1210,14 +1409,20 @@ mod tests {
             "console=ttyS0",
             &extra_args,
             Some("pc-q35"),
+            started_at,
+            Duration::from_millis(25),
+            &outcome,
         );
 
         let log_path = log_root.join("image-manager.log");
         let contents = fs::read_to_string(&log_path).expect("log file");
         let line = contents.trim();
         let value: Value = serde_json::from_str(line).expect("json line");
-        assert_eq!(value["event"], "managed-image-profile-applied");
+        assert_eq!(value["event"], "managed-image-profile-result");
         assert_eq!(value["vm"], "vm-test");
+        assert_eq!(value["outcome"], "applied");
+        assert_eq!(value["duration_ms"], 25);
+        assert_eq!(value["started_at"], 42);
         assert_eq!(value["components"]["kernel"], kernel.display().to_string());
         assert_eq!(value["components"]["initrd"], initrd.display().to_string());
         assert_eq!(value["components"]["append"], "console=ttyS0");

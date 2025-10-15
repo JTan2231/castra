@@ -3,11 +3,12 @@ use std::path::PathBuf;
 use crate::Result;
 use crate::cli::UpArgs;
 use crate::core::diagnostics::Severity;
-use crate::core::events::Event;
+use crate::core::events::{Event, ManagedImageProfileComponents};
 use crate::core::operations;
 use crate::core::options::UpOptions;
 use crate::core::outcome::UpOutcome;
 use crate::core::project::format_config_warnings;
+use castra::{ManagedImageProfileOutcome, ManagedImageVerificationOutcome};
 
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
 
@@ -36,46 +37,108 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
             Event::ManagedArtifact { spec, text, .. } => {
                 println!("→ {} {}: {}", spec.id, spec.version, text);
             }
-            Event::ManagedImageVerified { spec, artifacts } => {
-                let kinds: Vec<&str> = artifacts
+            Event::ManagedImageVerificationStarted { spec, plan, .. } => {
+                let kinds: Vec<&str> = plan
                     .iter()
                     .map(|artifact| artifact.kind.describe())
                     .collect();
                 if kinds.is_empty() {
-                    println!(
-                        "→ {} {}: verified managed artifacts.",
-                        spec.id, spec.version
-                    );
+                    println!("→ {} {}: verification started.", spec.id, spec.version);
                 } else {
                     println!(
-                        "→ {} {}: verified managed artifacts ({}).",
+                        "→ {} {}: verification started for {}.",
                         spec.id,
                         spec.version,
                         kinds.join(", ")
                     );
                 }
             }
+            Event::ManagedImageVerificationResult {
+                spec,
+                duration_ms,
+                outcome,
+                artifacts,
+                ..
+            } => {
+                let kinds: Vec<&str> = artifacts
+                    .iter()
+                    .map(|artifact| artifact.kind.describe())
+                    .collect();
+                let duration = format_duration_ms(*duration_ms);
+                match outcome {
+                    ManagedImageVerificationOutcome::Success => {
+                        if kinds.is_empty() {
+                            println!(
+                                "→ {} {}: verification completed in {}.",
+                                spec.id, spec.version, duration
+                            );
+                        } else {
+                            println!(
+                                "→ {} {}: verification completed in {} ({}).",
+                                spec.id,
+                                spec.version,
+                                duration,
+                                kinds.join(", ")
+                            );
+                        }
+                    }
+                    ManagedImageVerificationOutcome::Failure { reason } => {
+                        println!(
+                            "→ {} {}: verification failed after {} ({}).",
+                            spec.id, spec.version, duration, reason
+                        );
+                    }
+                }
+            }
             Event::ManagedImageProfileApplied {
                 spec,
                 vm,
-                initrd,
-                machine,
+                components,
                 ..
             } => {
-                let mut components = vec!["kernel".to_string()];
-                if initrd.is_some() {
-                    components.push("initrd".to_string());
-                }
-                if let Some(machine) = machine {
-                    components.push(format!("machine={machine}"));
-                }
+                let labels = describe_profile_components(components);
                 println!(
-                    "→ {} {}: applied boot profile for VM `{}` ({}).",
+                    "→ {} {}: applying boot profile for VM `{}` ({}).",
                     spec.id,
                     spec.version,
                     vm,
-                    components.join(", ")
+                    labels.join(", ")
                 );
+            }
+            Event::ManagedImageProfileResult {
+                spec,
+                vm,
+                duration_ms,
+                outcome,
+                components,
+                ..
+            } => {
+                let labels = describe_profile_components(components);
+                let duration = format_duration_ms(*duration_ms);
+                match outcome {
+                    ManagedImageProfileOutcome::Applied => {
+                        println!(
+                            "→ {} {}: boot profile applied to `{}` in {} ({}).",
+                            spec.id,
+                            spec.version,
+                            vm,
+                            duration,
+                            labels.join(", ")
+                        );
+                    }
+                    ManagedImageProfileOutcome::NoOp => {
+                        println!(
+                            "→ {} {}: boot profile skipped (no changes needed).",
+                            spec.id, spec.version
+                        );
+                    }
+                    ManagedImageProfileOutcome::Failed { reason } => {
+                        println!(
+                            "→ {} {}: boot profile failed for `{}` ({reason}).",
+                            spec.id, spec.version, vm
+                        );
+                    }
+                }
             }
             Event::OverlayPrepared { vm, overlay_path } => {
                 println!(
@@ -97,5 +160,39 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
             },
             _ => {}
         }
+    }
+}
+
+fn describe_profile_components(components: &ManagedImageProfileComponents) -> Vec<String> {
+    let mut labels = vec!["kernel".to_string()];
+    if components.initrd.is_some() {
+        labels.push("initrd".to_string());
+    }
+    if !components.append.is_empty() {
+        labels.push("append".to_string());
+    }
+    if !components.extra_args.is_empty() {
+        labels.push(format!("extra_args={}", components.extra_args.len()));
+    }
+    if let Some(machine) = &components.machine {
+        labels.push(format!("machine={machine}"));
+    }
+    labels
+}
+
+fn format_duration_ms(ms: u64) -> String {
+    if ms == 0 {
+        return "0s".to_string();
+    }
+
+    if ms % 1000 == 0 {
+        return format!("{}s", ms / 1000);
+    }
+
+    let seconds = ms as f64 / 1000.0;
+    if seconds >= 1.0 {
+        format!("{seconds:.1}s")
+    } else {
+        format!("{ms}ms")
     }
 }
