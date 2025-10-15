@@ -1,28 +1,22 @@
 
-Update — unavailable cooperative channel semantics shipped
-- Runtime now emits CooperativeAttempted with timeout_ms=0 when cooperative method/channel is unavailable, followed by CooperativeTimedOut(reason: ChannelUnavailable) without waiting, before escalating.
-- Tests cover QMP success, QMP timeout→TERM, and unavailable-channel paths with ordered events and field assertions.
-
-Update — forced shutdown success semantics
-- `castra down` now exits successfully when VMs require forced termination, surfacing the forced set via stderr while preserving ordered lifecycle events.
-
-Next slice refinement
-- Implement available-channel cooperative attempt in runtime with bounded wait honoring CLI/opts; emit CooperativeSucceeded or CooperativeTimedOut(reason: Timeout) before TERM/KILL.
-- Ensure per-VM isolation and live streaming are preserved under mixed outcomes (some graceful, some forced).
-- Acceptance adds: CooperativeTimedOut includes reason { Timeout | ChannelUnavailable } and records waited_ms; ShutdownComplete includes outcome and total_ms (already present).
-
-
----
-
 ---
 Progress update (v0.8.5+)
-- Runtime now emits CooperativeAttempted with timeout_ms=0 when the cooperative channel is unavailable and CooperativeTimedOut with reason=ChannelUnavailable in that path. Added unix-gated tests asserting ordered events including escalation and ShutdownComplete.
+- `down` executes per-VM shutdown concurrently and streams events live (ensures per-VM isolation and responsiveness).
+- Runtime emits CooperativeAttempted with timeout_ms=0 when the cooperative channel is unavailable; corresponding CooperativeTimedOut may include reason=ChannelUnavailable for clarity.
+- Tests (unix-gated) cover QMP cooperative success and timeout, plus unavailable-channel semantics (ordered events asserted).
 
-Next slice (unchanged)
-- Implement CooperativeAttempted → CooperativeSucceeded/CooperativeTimedOut sequencing for available channels before TERM/KILL with configurable waits.
+Next slice
+- Emit full cooperative attempt/timeout/success sequencing for available channels prior to TERM/KILL, honoring configurable timeouts per VM.
+- Preserve ordered per-VM events and stable JSON fields; ensure `total_ms` rendered in ShutdownComplete remains accurate when cooperative path succeeds.
 
-Acceptance clarifications
-- Ensure timeout_ms and reason fields are present and stable in CooperativeTimedOut; preserve per-VM isolation and live streaming during waits.
+Acceptance refinements
+- Event order must be: ShutdownRequested → CooperativeAttempted(method, timeout_ms?) → CooperativeSucceeded | CooperativeTimedOut(timeout_ms, reason?) → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete(outcome, total_ms).
+- When channel is unavailable, CooperativeAttempted emits with timeout_ms=0 and we proceed without delay to escalation; logs show reason.
+- Concurrency: stuck VMs do not block others; UI remains responsive with live streaming.
+- Configurable timeouts via CLI/options; idempotent on re-run.
+
+Anchors
+- src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/core/reporter.rs; src/app/down.rs.
 ---
 
 
