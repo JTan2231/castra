@@ -1,49 +1,42 @@
-
 ---
-Update — Implementation landed in core/events.rs, app/up.rs, and core/operations::up
+Thread 10 — Managed images: structured verification/profile events (canonical)
 
-Observed state
-- Explicit event variants are now defined and emitted:
-  - ManagedImageVerificationStarted { image_id, image_version, image_path, started_at, plan: ManagedImageArtifactPlan[] }
-  - ManagedImageVerificationResult { image_id, image_version, image_path, completed_at, duration_ms, outcome, size_bytes, artifacts: ManagedImageArtifactReport[], error? }
-  - ManagedImageProfileApplied { image_id, image_version, vm, profile_id, started_at, components, steps: string[] }
-  - ManagedImageProfileResult { image_id, image_version, vm, profile_id, completed_at, duration_ms, outcome, components, steps: string[], error? }
-- Supporting types added: ManagedImageArtifactPlan, ManagedImageArtifactReport, ManagedImageChecksum; profile “steps” captured for observability.
-- Emission path wired in operations::up; CLI rendering updated in app/up.rs with size/duration formatting.
-- CLEAN command now links reclaimed managed bytes to the latest ManagedImageVerificationResult per image, surfacing root-disk paths, byte totals, and verification/filesystem delta in CLI output.
+Tension
+- Verification/profile steps occur but lacked machine-parseable events; CLEAN and automation could not reliably consume results.
 
-Remaining gaps (acceptance deltas)
-- Ensure durability/visibility: verify these events flow through all reporters/log sinks (unified channel already used; need per-image log scoping docs/smoke test).
-- Document field stability in docs/library_usage.md and CLEAN.md; include examples with the new plan/report/steps fields.
+Change (product-level)
+- Emit structured events around managed-image verification and profile application via the unified reporter channel.
 
-Acceptance tweaks
-- Keep duration_ms and size_bytes required on Result events (met).
-- Require steps[] to be present (possibly empty) on Profile* events to allow deterministic parsing (now met in emission path).
+Event names (stable)
+- ManagedImageVerificationStarted { image_id, path }
+- ManagedImageVerificationResult { image_id, path, checksums: { algo, value }[], size_bytes, duration_ms, outcome: Success | Failure, error? }
+- ManagedImageProfileApplied { image_id, profile_id, steps: string[] }
+- ManagedImageProfileResult { image_id, profile_id, duration_ms, outcome: Success | Failure | NoOp, error? }
 
-Next steps (Thread 10)
-- Extend reporter/JSON docs with sample ManagedImage events and CLEAN evidence payload; verify non-CLI reporters persist managed evidence details.
-- Add a minimal JSON example to docs showing the four events and their fields.
+Acceptance criteria
+- Events appear in per-image logs and unified streams alongside lifecycle events.
+- CLEAN command can, when available, link reclaimed-bytes evidence to a prior ManagedImageVerificationResult (by image_id/path + timestamp proximity) and surface that linkage in output.
+- Fields are stable and JSON-safe to support downstream tooling.
+
+Update (v0.8.5)
+- Shipped: Structured events for verification/profile (Started/Result), with size_bytes, duration_ms, checksums, and steps[]. Emission wired in up; app/up renders sizes, durations, and steps.
+- Shipped: CLEAN links reclaimed-bytes evidence to ManagedImageVerificationResult and surfaces linkage in CLI.
+- Outstanding: Ensure reporter durability across sinks (unified stream + per-image logs) via smoke tests; document field stability and provide JSON examples in docs and CLEAN.md.
+
+Refined acceptance (remaining)
+- Events are durable and visible in both unified and per-image logs under stress (concurrent VMs; long runs), verified by smoke tests.
+- Docs enumerate stable fields with examples; CLEAN.md references these fields explicitly.
+
+Verification plan (smoke)
+- Launch 2+ VMs with managed images; verify both sinks receive Started/Result for verification and profile; assert field presence (image_id, path, size_bytes, duration_ms, checksums, steps).
+- Run CLEAN; confirm evidence link back to the latest verification result appears in CLI and JSON.
+- Repeat runs (idempotent) to ensure stability and absence of field drift.
+
+Pointers (non-prescriptive anchors)
+- src/managed/mod.rs (verification/profile flow)
+- src/core/reporter.rs; src/core/logs.rs (emission/durability)
+- src/core/operations/clean.rs (linkage to events)
+
+Cross-links
+- Thread 12 may consume these results to short-circuit when profile already applied and hashes match.
 ---
-
-
----
-
----
-Update — v0.8.5 shipped CLEAN linkage and profile steps; remaining work scoped
-
-Shipped
-- Event variants and fields (Started/Result for Verification and Profile) are emitted with duration_ms and size_bytes where applicable.
-- app/up.rs renders steps/durations/sizes.
-- CLEAN now links reclaimed-bytes evidence to the latest ManagedImageVerificationResult per image and surfaces linkage in CLI output.
-
-Remaining acceptance (narrowed)
-- Reporter durability: verify events appear in both unified streams and per-image logs across all configured sinks; add smoke tests.
-- Documentation: add stable-field references and JSON examples to docs/library_usage.md and CLEAN.md covering plan/report/steps and CLEAN linkage.
-
-Acceptance verification
-- Add a smoke test that runs `castra up` with a managed image and captures JSON logs to assert presence of the four ManagedImage* events with required fields, then runs `castra clean` and asserts evidence linkage appears with matching image id/path.
----
-
-
----
-

@@ -1,12 +1,15 @@
 SNAPSHOT v0.8.5 — Castra (VM orchestration harness)
 
 Edits since v0.8.4
-- Thread 10 landed: Introduced explicit managed-image structured events and wiring in operations::up with corresponding CLI rendering updates. Added plan/report/checksum structs; result events now include duration_ms and size_bytes. Profile events capture steps[]. CLEAN now links reclaimed-bytes evidence to ManagedImageVerificationResult. No behavioral changes to shutdown or bootstrap.
+- Thread 10 landed: Introduced explicit managed-image structured events and wiring in operations::up with corresponding CLI rendering updates. Added plan/report/checksum structs; result events now include duration_ms and size_bytes. Profile events capture steps[]. CLEAN now links reclaimed-bytes evidence to ManagedImageVerificationResult.
+- Thread 2 progress: ShutdownComplete now includes total_ms and `castra down` renders per-VM shutdown durations. Cooperative attempt sequence remains pending.
 
 Active threads (intent + acceptance)
-- Thread 2 — Cooperative shutdown lifecycle (not yet implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
+- Thread 2 — Cooperative shutdown lifecycle (partially implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
+  Progress:
+  - total_ms added to ShutdownComplete and rendered in `down`; groundwork for ordered timing.
   Acceptance (per VM):
-  - Event order: ShutdownRequested → CooperativeAttempted(method: ACPI|QMP|Agent) → CooperativeSucceeded | CooperativeTimedOut → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete(outcome: Graceful|Forced).
+  - Event order: ShutdownRequested → CooperativeAttempted(method: ACPI|QMP|Agent) → CooperativeSucceeded | CooperativeTimedOut → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete(outcome: Graceful|Forced, total_ms).
   - Timeouts configurable via CLI/opts; status/UI remain responsive; per‑VM isolation maintained; idempotent behavior; stable JSON fields in logs/output.
   Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/core/reporter.rs; src/app/down.rs.
 
@@ -33,6 +36,7 @@ Current code state (observable surfaces)
 - Status exposes broker reachability (reachable, last_handshake_age_ms) and bus health; designed to remain non‑blocking.
 - Ports view with stable columns; Clean command with byte accounting/safeguards; now links managed‑image evidence where available.
 - Managed images emit structured verification/profile events with plans, reports, checksums, steps; app/up renders size/duration and steps; automation can consume JSON streams.
+- Down command renders per‑VM shutdown durations from ShutdownComplete.total_ms.
 
 Narrative themes
 1) Robust VM lifecycle — predictable, observable cooperative shutdown with bounded waits and clear outcomes.
@@ -46,5 +50,5 @@ Direction of travel
 
 Cross‑links
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; CLEAN.md documents the narrative.
-- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md.
+- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md (notes total_ms progress).
 - Thread 10 canonical TODO updated with shipped state and remaining gaps.
