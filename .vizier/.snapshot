@@ -1,9 +1,8 @@
-SNAPSHOT v0.8.2 — Castra (VM orchestration harness)
+SNAPSHOT v0.8.3 — Castra (VM orchestration harness)
 
-Edits since v0.8.1
-- Canonicalized active TODOs: re-homed lifecycle, managed-image, and bootstrap threads into single canonical TODOs; removed duplicates.
-- Clarified stable event names/ordering across lifecycle (Thread 2), managed-image events (Thread 10), and bootstrap pipeline (Thread 12).
-- Reaffirmed product-level acceptance and non-prescriptive anchors; mechanisms remain open while surfaces/events are fixed.
+Edits since v0.8.2
+- Thread 10 tightened: structured managed-image events must be represented as variants in src/core/events.rs; `castra clean` surfaces linkage evidence; durations required for ordering.
+- Anchors expanded for Thread 10: added src/app/clean.rs and CLEAN.md to reflect user-facing reclaimed-bytes evidence.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (not yet implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -15,9 +14,11 @@ Active threads (intent + acceptance)
 - Thread 10 — Managed images: structured verification/profile events (partially shipped; events missing): Emit machine‑parseable events during verification/profile so downstream tools can rely on them.
   Acceptance:
   - Emit: ManagedImageVerificationStarted/ManagedImageVerificationResult and ManagedImageProfileApplied/ManagedImageProfileResult with stable fields (checksums, sizes, durations, outcomes, error?).
+  - Events are expressed as variants in src/core/events.rs to guarantee type‑stable emission across reporters.
   - Reporter emits via the same unified channel used by lifecycle events; events are durable and appear in per‑VM or image‑scoped logs.
-  - CLEAN links reclaimed‑bytes evidence to specific ManagedImageVerificationResult entries (by image id/path + timestamp) when available.
-  Anchors: src/managed/mod.rs; src/core/logs.rs; src/core/reporter.rs; src/core/operations/clean.rs.
+  - CLEAN links reclaimed‑bytes evidence to specific ManagedImageVerificationResult entries (by image id/path + timestamp proximity) when available; `castra clean` surfaces this linkage succinctly per image.
+  - Result events include duration_ms (or sufficient monotonic timing) to enable ordering without wall‑clock dependency.
+  Anchors: src/managed/mod.rs; src/core/events.rs; src/core/logs.rs; src/core/reporter.rs; src/core/operations/clean.rs; src/app/clean.rs; CLEAN.md.
 
 - Thread 12 — Post‑boot bootstrap pipeline (not yet implemented): After first successful broker handshake for a VM, apply a host‑provided bootstrap (e.g., Nix flake) over SSH idempotently.
   Acceptance:
@@ -40,10 +41,10 @@ Narrative themes
 
 Direction of travel
 - Implement cooperative shutdown events/behavior (Thread 2) honoring lifecycle waits and emitting ordered events.
-- Add structured managed‑image verification/profile events and wire them into reporting/clean (Thread 10).
+- Add structured managed‑image verification/profile events and wire them into events.rs/reporter and clean outputs (Thread 10).
 - Build the post‑boot bootstrap pipeline keyed to handshake and guarded by idempotence stamps (Thread 12).
 
 Cross‑links
 - BOOTSTRAP.md defines inputs/outputs for Thread 12 and references managed‑image events (Thread 10).
-- CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence.
+- CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; CLEAN.md documents the narrative.
 - Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.
