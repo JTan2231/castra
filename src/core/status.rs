@@ -488,8 +488,8 @@ struct StoredHandshakeBusFile {
 mod tests {
     use super::*;
     use crate::config::{
-        BaseImageSource, BrokerConfig, LifecycleConfig, MemorySpec, ProjectConfig, VmDefinition,
-        Workflows,
+        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig, LifecycleConfig, MemorySpec,
+        ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -640,11 +640,15 @@ mod tests {
                 cpus: 2,
                 memory: MemorySpec::new("2048 MiB", Some(2048 * 1024 * 1024)),
                 port_forwards: Vec::new(),
+                bootstrap: VmBootstrapConfig {
+                    mode: BootstrapMode::Auto,
+                },
             }],
             state_root: state_root.to_path_buf(),
             workflows: Workflows { init: Vec::new() },
             broker: BrokerConfig { port: 7070 },
             lifecycle: LifecycleConfig::default(),
+            bootstrap: BootstrapConfig::default(),
             warnings: Vec::new(),
         }
     }

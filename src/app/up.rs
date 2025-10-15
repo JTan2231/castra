@@ -3,10 +3,13 @@ use std::path::PathBuf;
 use crate::Result;
 use crate::cli::UpArgs;
 use crate::core::diagnostics::Severity;
-use crate::core::events::{Event, ManagedImageProfileComponents};
+use crate::core::events::{
+    BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger, Event,
+    ManagedImageProfileComponents,
+};
 use crate::core::operations;
 use crate::core::options::UpOptions;
-use crate::core::outcome::UpOutcome;
+use crate::core::outcome::{BootstrapRunStatus, UpOutcome};
 use crate::core::project::format_config_warnings;
 use castra::{ManagedImageProfileOutcome, ManagedImageVerificationOutcome};
 
@@ -150,6 +153,77 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                 let pidfile = outcome.state_root.join(format!("{vm}.pid"));
                 println!("→ {vm}: launched (pidfile {}).", pidfile.display());
             }
+            Event::BootstrapStarted {
+                vm,
+                base_hash,
+                artifact_hash,
+                trigger,
+            } => {
+                println!(
+                    "→ {}: bootstrap started (artifact {}, base {}) [{}].",
+                    vm,
+                    hash_snippet(artifact_hash),
+                    hash_snippet(base_hash),
+                    format_bootstrap_trigger(trigger)
+                );
+            }
+            Event::BootstrapStep {
+                vm,
+                step,
+                status,
+                duration_ms,
+                detail,
+            } => {
+                let duration = format_duration_ms(*duration_ms);
+                match detail {
+                    Some(text) if !text.is_empty() => println!(
+                        "   - {} {}: {} in {} ({}).",
+                        vm,
+                        format_step_kind(step),
+                        format_step_status(status),
+                        duration,
+                        text
+                    ),
+                    _ => println!(
+                        "   - {} {}: {} in {}.",
+                        vm,
+                        format_step_kind(step),
+                        format_step_status(status),
+                        duration
+                    ),
+                }
+            }
+            Event::BootstrapCompleted {
+                vm,
+                status,
+                duration_ms,
+                stamp,
+            } => {
+                let duration = format_duration_ms(*duration_ms);
+                let stamp_label = stamp.as_deref().unwrap_or("n/a");
+                match status {
+                    BootstrapStatus::Success => {
+                        println!(
+                            "→ {}: bootstrap completed in {} (stamp {}).",
+                            vm, duration, stamp_label
+                        );
+                    }
+                    BootstrapStatus::NoOp => {
+                        println!("→ {}: bootstrap up-to-date (stamp {}).", vm, stamp_label);
+                    }
+                }
+            }
+            Event::BootstrapFailed {
+                vm,
+                duration_ms,
+                error,
+            } => {
+                let duration = format_duration_ms(*duration_ms);
+                eprintln!(
+                    "Bootstrap failed for `{}` after {}: {}",
+                    vm, duration, error
+                );
+            }
             Event::BrokerStarted { pid, port } => {
                 println!("→ broker: launched on 127.0.0.1:{port} (pid {pid}).");
             }
@@ -159,6 +233,32 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                 Severity::Error => eprintln!("Error: {}", text),
             },
             _ => {}
+        }
+    }
+
+    if !outcome.bootstraps.is_empty() {
+        for run in &outcome.bootstraps {
+            match run.status {
+                BootstrapRunStatus::Success => {
+                    let stamp = run.stamp.as_deref().unwrap_or("n/a");
+                    match &run.log_path {
+                        Some(path) => println!(
+                            "→ {}: bootstrap log at {} (stamp {}).",
+                            run.vm,
+                            path.display(),
+                            stamp
+                        ),
+                        None => println!("→ {}: bootstrap completed (stamp {}).", run.vm, stamp),
+                    }
+                }
+                BootstrapRunStatus::NoOp => {
+                    let stamp = run.stamp.as_deref().unwrap_or("n/a");
+                    println!("→ {}: bootstrap no-op (stamp {}).", run.vm, stamp);
+                }
+                BootstrapRunStatus::Skipped => {
+                    println!("→ {}: bootstrap skipped.", run.vm);
+                }
+            }
         }
     }
 }
@@ -194,5 +294,38 @@ fn format_duration_ms(ms: u64) -> String {
         format!("{seconds:.1}s")
     } else {
         format!("{ms}ms")
+    }
+}
+
+fn hash_snippet(value: &str) -> String {
+    if value.len() <= 12 {
+        value.to_string()
+    } else {
+        format!("{}…", &value[..12])
+    }
+}
+
+fn format_bootstrap_trigger(trigger: &BootstrapTrigger) -> &'static str {
+    match trigger {
+        BootstrapTrigger::Auto => "auto",
+        BootstrapTrigger::Always => "always",
+    }
+}
+
+fn format_step_kind(kind: &BootstrapStepKind) -> &'static str {
+    match kind {
+        BootstrapStepKind::WaitHandshake => "wait-handshake",
+        BootstrapStepKind::Connect => "connect",
+        BootstrapStepKind::Transfer => "transfer",
+        BootstrapStepKind::Apply => "apply",
+        BootstrapStepKind::Verify => "verify",
+    }
+}
+
+fn format_step_status(status: &BootstrapStepStatus) -> &'static str {
+    match status {
+        BootstrapStepStatus::Success => "success",
+        BootstrapStepStatus::Skipped => "skipped",
+        BootstrapStepStatus::Failed => "failed",
     }
 }

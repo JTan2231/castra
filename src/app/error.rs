@@ -17,6 +17,7 @@ pub fn exit_code(err: &Error) -> ExitCode {
         Error::PreflightFailed { .. } => ExitCode::from(70),
         Error::LaunchFailed { .. } => ExitCode::from(70),
         Error::ShutdownFailed { .. } => ExitCode::from(70),
+        Error::BootstrapFailed { .. } => ExitCode::from(70),
         Error::ShutdownForced { .. } => ExitCode::from(75),
         Error::BusPublishFailed { .. } => ExitCode::from(70),
         Error::LogReadFailed { .. } => ExitCode::from(74),
@@ -82,6 +83,13 @@ mod tests {
         assert_eq!(
             exit_code(&Error::PreflightFailed {
                 message: "fail".into()
+            }),
+            ExitCode::from(70)
+        );
+        assert_eq!(
+            exit_code(&Error::BootstrapFailed {
+                vm: "vm".into(),
+                message: "err".into()
             }),
             ExitCode::from(70)
         );

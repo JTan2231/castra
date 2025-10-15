@@ -8,6 +8,7 @@ use crate::config::{self, ProjectConfig};
 use crate::error::{Error, Result};
 use crate::managed::ManagedImageProfileOutcome;
 
+use super::bootstrap;
 use super::broker as broker_core;
 use super::diagnostics::{Diagnostic, Severity};
 use super::events::{Event, ManagedImageProfileComponents, ManagedImageSpecHandle};
@@ -17,9 +18,10 @@ use super::options::{
     InitOptions, LogsOptions, PortsOptions, StatusOptions, UpOptions,
 };
 use super::outcome::{
-    BrokerLaunchOutcome, BrokerShutdownOutcome, BusPublishOutcome, BusTailOutcome, CleanOutcome,
-    DownOutcome, InitOutcome, LogsOutcome, ManagedVmAssets, OperationOutput, OperationResult,
-    PortsOutcome, StatusOutcome, UpOutcome, VmLaunchOutcome, VmShutdownOutcome,
+    BootstrapRunStatus, BrokerLaunchOutcome, BrokerShutdownOutcome, BusPublishOutcome,
+    BusTailOutcome, CleanOutcome, DownOutcome, InitOutcome, LogsOutcome, ManagedVmAssets,
+    OperationOutput, OperationResult, PortsOutcome, StatusOutcome, UpOutcome, VmLaunchOutcome,
+    VmShutdownOutcome,
 };
 use super::ports as ports_core;
 use super::project::{
@@ -255,6 +257,36 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
             severity: Severity::Info,
             text: format!("Launched {} VM(s).", launched_vms.len()),
         });
+
+        let bootstrap_runs = bootstrap::run_all(
+            &project,
+            &context,
+            &preparations,
+            &mut reporter,
+            &mut diagnostics,
+        )?;
+
+        if !bootstrap_runs.is_empty() {
+            let success = bootstrap_runs
+                .iter()
+                .filter(|run| matches!(run.status, BootstrapRunStatus::Success))
+                .count();
+            let noop = bootstrap_runs
+                .iter()
+                .filter(|run| matches!(run.status, BootstrapRunStatus::NoOp))
+                .count();
+            let skipped = bootstrap_runs
+                .iter()
+                .filter(|run| matches!(run.status, BootstrapRunStatus::Skipped))
+                .count();
+            reporter.emit(Event::Message {
+                severity: Severity::Info,
+                text: format!(
+                    "Bootstrap pipeline: {success} succeeded, {noop} up-to-date, {skipped} skipped.",
+                ),
+            });
+        }
+
         reporter.emit(Event::Message {
             severity: Severity::Info,
             text: "Use `castra status` to monitor startup progress.".to_string(),
@@ -265,6 +297,7 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
             log_root: context.log_root.clone(),
             launched_vms,
             broker: broker_outcome,
+            bootstraps: bootstrap_runs,
         }
     };
 
@@ -499,6 +532,12 @@ impl<'a, 'b> ReporterProxy<'a, 'b> {
             }
         }
         result
+    }
+}
+
+impl Reporter for ReporterProxy<'_, '_> {
+    fn report(&mut self, event: Event) {
+        self.emit(event);
     }
 }
 

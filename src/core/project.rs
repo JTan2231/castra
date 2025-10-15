@@ -3,8 +3,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    BaseImageSource, BrokerConfig, DEFAULT_BROKER_PORT, LifecycleConfig, ManagedDiskKind,
-    ManagedImageReference, MemorySpec, PortConflict, ProjectConfig, VmDefinition, Workflows,
+    BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig, DEFAULT_BROKER_PORT,
+    LifecycleConfig, ManagedDiskKind, ManagedImageReference, MemorySpec, PortConflict,
+    ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
 };
 use crate::error::{Error, Result};
 
@@ -176,6 +177,9 @@ fn synthesize_default_project(search_root: PathBuf) -> ProjectConfig {
         cpus: 2,
         memory: MemorySpec::new("2048 MiB", Some(2048 * 1024 * 1024)),
         port_forwards: Vec::new(),
+        bootstrap: VmBootstrapConfig {
+            mode: BootstrapMode::Auto,
+        },
     };
 
     ProjectConfig {
@@ -189,6 +193,7 @@ fn synthesize_default_project(search_root: PathBuf) -> ProjectConfig {
             port: DEFAULT_BROKER_PORT,
         },
         lifecycle: LifecycleConfig::default(),
+        bootstrap: BootstrapConfig::default(),
         warnings: vec![],
     }
 }

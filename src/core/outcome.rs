@@ -62,6 +62,7 @@ pub struct UpOutcome {
     pub log_root: PathBuf,
     pub launched_vms: Vec<VmLaunchOutcome>,
     pub broker: Option<BrokerLaunchOutcome>,
+    pub bootstraps: Vec<BootstrapRunOutcome>,
 }
 
 #[derive(Debug)]
@@ -82,6 +83,21 @@ pub struct ManagedVmAssets {
 pub struct BrokerLaunchOutcome {
     pub pid: u32,
     pub config: BrokerConfig,
+}
+
+#[derive(Debug)]
+pub struct BootstrapRunOutcome {
+    pub vm: String,
+    pub status: BootstrapRunStatus,
+    pub stamp: Option<String>,
+    pub log_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapRunStatus {
+    Skipped,
+    NoOp,
+    Success,
 }
 
 /// Outcome of `down`.

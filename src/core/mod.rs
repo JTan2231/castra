@@ -6,6 +6,7 @@ pub mod options;
 pub mod outcome;
 pub mod reporter;
 
+pub mod bootstrap;
 pub mod broker;
 pub mod logs;
 pub mod operations;
@@ -23,10 +24,11 @@ pub use options::{
     PortsView, ProjectSelector, StatusOptions, UpOptions,
 };
 pub use outcome::{
-    BrokerLaunchOutcome, BrokerShutdownOutcome, BrokerState, BusPublishOutcome, BusTailOutcome,
-    CleanOutcome, CleanupAction, DownOutcome, InitOutcome, LogEntry, LogFollower, LogSection,
-    LogSectionState, LogsOutcome, OperationOutput, OperationResult, PortConflictRow,
-    PortForwardRow, PortForwardStatus, PortInactiveReason, PortsOutcome, SkipReason,
-    StateRootCleanup, StatusOutcome, UpOutcome, VmLaunchOutcome, VmPortDetail, VmShutdownOutcome,
+    BootstrapRunOutcome, BootstrapRunStatus, BrokerLaunchOutcome, BrokerShutdownOutcome,
+    BrokerState, BusPublishOutcome, BusTailOutcome, CleanOutcome, CleanupAction, DownOutcome,
+    InitOutcome, LogEntry, LogFollower, LogSection, LogSectionState, LogsOutcome, OperationOutput,
+    OperationResult, PortConflictRow, PortForwardRow, PortForwardStatus, PortInactiveReason,
+    PortsOutcome, SkipReason, StateRootCleanup, StatusOutcome, UpOutcome, VmLaunchOutcome,
+    VmPortDetail, VmShutdownOutcome,
 };
 pub use reporter::Reporter;

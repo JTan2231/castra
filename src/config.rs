@@ -12,6 +12,7 @@ pub const DEFAULT_BROKER_PORT: u16 = 7070;
 pub const DEFAULT_GRACEFUL_SHUTDOWN_WAIT_SECS: u64 = 20;
 pub const DEFAULT_SIGTERM_WAIT_SECS: u64 = 10;
 pub const DEFAULT_SIGKILL_WAIT_SECS: u64 = 5;
+pub const DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS: u64 = 300;
 
 #[derive(Debug, Clone)]
 pub enum BaseImageSource {
@@ -86,6 +87,7 @@ pub struct ProjectConfig {
     pub workflows: Workflows,
     pub broker: BrokerConfig,
     pub lifecycle: LifecycleConfig,
+    pub bootstrap: BootstrapConfig,
     pub warnings: Vec<String>,
 }
 
@@ -118,6 +120,56 @@ impl LifecycleConfig {
     pub fn sigkill_wait(&self) -> Duration {
         Duration::from_secs(self.sigkill_wait_secs)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapMode {
+    Disabled,
+    Auto,
+    Always,
+}
+
+impl BootstrapMode {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "disabled" | "off" => Some(Self::Disabled),
+            "auto" | "automatic" | "enabled" => Some(Self::Auto),
+            "always" | "force" => Some(Self::Always),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Auto => "auto",
+            Self::Always => "always",
+        }
+    }
+}
+
+impl Default for BootstrapMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BootstrapConfig {
+    pub mode: BootstrapMode,
+}
+
+impl Default for BootstrapConfig {
+    fn default() -> Self {
+        Self {
+            mode: BootstrapMode::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VmBootstrapConfig {
+    pub mode: BootstrapMode,
 }
 
 impl ProjectConfig {
@@ -165,6 +217,7 @@ pub struct VmDefinition {
     pub cpus: u32,
     pub memory: MemorySpec,
     pub port_forwards: Vec<PortForward>,
+    pub bootstrap: VmBootstrapConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -796,6 +849,8 @@ struct RawConfig {
     broker: Option<RawBroker>,
     #[serde(default)]
     lifecycle: Option<RawLifecycle>,
+    #[serde(default)]
+    bootstrap: Option<RawBootstrap>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -824,6 +879,8 @@ struct RawVm {
     count: Option<u32>,
     #[serde(default)]
     instances: Vec<RawVmInstance>,
+    #[serde(default)]
+    bootstrap: Option<RawVmBootstrap>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -863,6 +920,18 @@ struct RawManagedImage {
     checksum: Option<String>,
     #[serde(default)]
     size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawBootstrap {
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawVmBootstrap {
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(Debug)]
@@ -926,6 +995,40 @@ impl RawLifecycle {
     }
 }
 
+impl RawBootstrap {
+    fn into_config(self, path: &Path) -> Result<BootstrapConfig, Error> {
+        let mode = match self.mode.as_deref() {
+            Some(value) => BootstrapMode::parse(value).ok_or_else(|| {
+                invalid_config(
+                    path,
+                    format!(
+                        "Unknown bootstrap mode `{value}`. Supported values: auto, disabled, always."
+                    ),
+                )
+            })?,
+            None => BootstrapMode::default(),
+        };
+
+        Ok(BootstrapConfig { mode })
+    }
+}
+
+impl RawVmBootstrap {
+    fn resolve_mode(&self, path: &Path, context: &str) -> Result<Option<BootstrapMode>, Error> {
+        match self.mode.as_deref() {
+            Some(value) => BootstrapMode::parse(value).ok_or_else(|| {
+                invalid_config(
+                    path,
+                    format!(
+                        "{context} has unknown bootstrap.mode `{value}`. Supported values: auto, disabled, always."
+                    ),
+                )
+            }).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
 impl RawConfig {
     fn into_validated(
         self,
@@ -939,6 +1042,7 @@ impl RawConfig {
             workflows,
             broker,
             lifecycle,
+            bootstrap: bootstrap_raw,
         } = self;
 
         let version = version.ok_or_else(|| {
@@ -985,6 +1089,11 @@ impl RawConfig {
             .map(|dir| resolve_path(&project_root, dir))
             .unwrap_or_else(|| default_state_root(&project_name, path));
 
+        let bootstrap_config = match bootstrap_raw {
+            Some(raw) => raw.into_config(path)?,
+            None => BootstrapConfig::default(),
+        };
+
         if vms.is_empty() {
             return Err(invalid_config(
                 path,
@@ -1016,6 +1125,7 @@ impl RawConfig {
                 port_forwards,
                 count,
                 instances,
+                bootstrap,
             } = vm;
 
             let role_name = name.ok_or_else(|| {
@@ -1106,6 +1216,13 @@ impl RawConfig {
                 &port_forwards,
                 warnings,
             )?;
+
+            let base_bootstrap_mode = match bootstrap {
+                Some(config) => config
+                    .resolve_mode(path, &format!("VM `{role_name}`"))?
+                    .unwrap_or(bootstrap_config.mode),
+                None => bootstrap_config.mode,
+            };
 
             let mut overrides = HashMap::new();
             if supports_multi {
@@ -1285,6 +1402,9 @@ impl RawConfig {
                     cpus,
                     memory: memory_spec,
                     port_forwards: forwards,
+                    bootstrap: VmBootstrapConfig {
+                        mode: base_bootstrap_mode,
+                    },
                 });
             }
 
@@ -1321,6 +1441,7 @@ impl RawConfig {
             workflows,
             broker,
             lifecycle,
+            bootstrap: bootstrap_config,
             warnings: warnings.clone(),
         })
     }

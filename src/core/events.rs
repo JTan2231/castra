@@ -142,6 +142,50 @@ pub enum Event {
         /// Whether the VM transitioned state (`true` if it was running, `false` if already stopped).
         changed: bool,
     },
+    /// Host-side bootstrap pipeline started for a VM.
+    BootstrapStarted {
+        /// Name of the VM.
+        vm: String,
+        /// Hash identifying the base image used for the VM.
+        base_hash: String,
+        /// Hash representing the bootstrap artifact contents.
+        artifact_hash: String,
+        /// Trigger that requested the bootstrap run (auto vs always).
+        trigger: BootstrapTrigger,
+    },
+    /// Progress update for a specific bootstrap step.
+    BootstrapStep {
+        /// Name of the VM.
+        vm: String,
+        /// Step within the bootstrap pipeline being reported.
+        step: BootstrapStepKind,
+        /// Outcome of the step execution.
+        status: BootstrapStepStatus,
+        /// Milliseconds spent in the step.
+        duration_ms: u64,
+        /// Optional human-readable detail about the step outcome.
+        detail: Option<String>,
+    },
+    /// Host-side bootstrap pipeline completed successfully or determined it was unnecessary.
+    BootstrapCompleted {
+        /// Name of the VM.
+        vm: String,
+        /// Completion status (success vs noop).
+        status: BootstrapStatus,
+        /// Milliseconds spent across the bootstrap run.
+        duration_ms: u64,
+        /// Optional stamp identifier recorded under the state root.
+        stamp: Option<String>,
+    },
+    /// Host-side bootstrap pipeline failed.
+    BootstrapFailed {
+        /// Name of the VM.
+        vm: String,
+        /// Milliseconds spent before the failure.
+        duration_ms: u64,
+        /// Error message describing the failure cause.
+        error: String,
+    },
     /// The broker process started listening.
     BrokerStarted {
         /// OS process identifier.
@@ -197,6 +241,50 @@ pub struct CleanupManagedImageEvidence {
     pub verified_at: SystemTime,
     /// Artifact filenames recorded in the verification result.
     pub artifacts: Vec<String>,
+}
+
+/// Trigger that initiated a bootstrap run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapTrigger {
+    /// Run initiated in automatic mode after detecting changes.
+    Auto,
+    /// Run forced regardless of previous stamp state.
+    Always,
+}
+
+/// Kind of step recorded during bootstrap execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapStepKind {
+    /// Waiting for a fresh broker handshake to confirm guest reachability.
+    WaitHandshake,
+    /// Establishing SSH connectivity with the guest.
+    Connect,
+    /// Transferring artifacts/scripts to the guest.
+    Transfer,
+    /// Executing the guest bootstrap script.
+    Apply,
+    /// Verifying the bootstrap outcome (remote stamp / host stamp persistence).
+    Verify,
+}
+
+/// Result of executing a bootstrap step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapStepStatus {
+    /// Step succeeded as expected.
+    Success,
+    /// Step was skipped because no work was required.
+    Skipped,
+    /// Step failed; details provided alongside the event.
+    Failed,
+}
+
+/// Final bootstrap completion disposition for a VM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapStatus {
+    /// Bootstrap executed successfully.
+    Success,
+    /// Bootstrap determined no work was required (stamp already satisfied).
+    NoOp,
 }
 
 /// Cooperative channel used during guest shutdown attempts.
