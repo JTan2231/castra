@@ -1766,9 +1766,13 @@ fn find_executable(candidates: &[&str]) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        BaseImageSource, BootstrapMode, MemorySpec, VmBootstrapConfig, VmDefinition,
+    };
     use crate::error::Error;
     use std::fs;
     use std::net::TcpListener;
+    use std::path::Path;
     use tempfile::tempdir;
 
     #[test]
@@ -1839,5 +1843,326 @@ mod tests {
         assert!(accelerator_requested(&available, "accel=hvf:tcg"));
         assert!(!accelerator_requested(&available, "machine=q35"));
         assert!(!accelerator_requested(&available, "accel=tcg"));
+    }
+
+    #[cfg(unix)]
+    fn sample_vm(state_root: &Path) -> VmDefinition {
+        let base = state_root.join("base.img");
+        fs::write(&base, b"base image").unwrap();
+        let overlay = state_root.join("overlay.qcow2");
+        fs::write(&overlay, b"overlay image").unwrap();
+        VmDefinition {
+            name: "devbox".to_string(),
+            role_name: "devbox".to_string(),
+            replica_index: 0,
+            description: None,
+            base_image: BaseImageSource::Path(base),
+            overlay,
+            cpus: 1,
+            memory: MemorySpec::new("512 MiB", Some(512_u64 * 1024 * 1024)),
+            port_forwards: Vec::new(),
+            bootstrap: VmBootstrapConfig {
+                mode: BootstrapMode::Disabled,
+            },
+        }
+    }
+
+    #[cfg(unix)]
+    struct ForkGuard {
+        pid: libc::pid_t,
+    }
+
+    #[cfg(unix)]
+    impl ForkGuard {
+        fn spawn() -> Self {
+            unsafe {
+                let pid = libc::fork();
+                if pid < 0 {
+                    panic!(
+                        "fork failed: {}",
+                        std::io::Error::last_os_error()
+                    );
+                }
+                if pid == 0 {
+                    loop {
+                        libc::pause();
+                    }
+                }
+                Self { pid }
+            }
+        }
+
+        fn pid(&self) -> libc::pid_t {
+            self.pid
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ForkGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = libc::kill(self.pid, libc::SIGKILL);
+                let mut status = 0;
+                let _ = libc::waitpid(self.pid, &mut status, libc::WNOHANG);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cooperative_shutdown_reports_success_via_qmp(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use serde_json::Value;
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        use std::thread;
+        use std::time::Duration;
+
+        let temp = tempdir()?;
+        let state_root = temp.path().to_path_buf();
+        let vm = sample_vm(&state_root);
+
+        let child = ForkGuard::spawn();
+        let pidfile = state_root.join(format!("{}.pid", vm.name));
+        let pid_value = child.pid();
+        fs::write(&pidfile, format!("{pid_value}"))?;
+        let socket_path = state_root.join(format!("{}.qmp", vm.name));
+        let listener = UnixListener::bind(&socket_path)?;
+        let graceful_pid = pid_value;
+
+        let reaper = thread::spawn(move || loop {
+            let mut status = 0;
+            let res = unsafe { libc::waitpid(pid_value, &mut status, libc::WNOHANG) };
+            if res == 0 {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            break;
+        });
+
+        let qmp_thread = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let greeting = r#"{"QMP":{"version":{"qemu":{"major":8,"minor":2,"micro":0}},"capabilities":[]}}"#;
+                stream.write_all(greeting.as_bytes()).unwrap();
+                stream.write_all(b"\n").unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 {
+                        break;
+                    }
+                    let value: Value = serde_json::from_str(&line).unwrap();
+                    if let Some(cmd) = value.get("execute").and_then(|v| v.as_str()) {
+                        stream.write_all(br#"{"return":{}}"#).unwrap();
+                        stream.write_all(b"\n").unwrap();
+                        if cmd == "system_powerdown" {
+                            unsafe {
+                                libc::kill(graceful_pid, libc::SIGTERM);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        let timeouts = ShutdownTimeouts::new(
+            Duration::from_secs(2),
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+        );
+        let report = shutdown_vm(&vm, &state_root, timeouts, None)?;
+        qmp_thread.join().unwrap();
+        reaper.join().unwrap();
+
+        assert!(report.diagnostics.is_empty());
+        assert!(report.changed);
+        assert_eq!(report.outcome, ShutdownOutcome::Graceful);
+        assert!(!pidfile.exists());
+
+        let events = &report.events;
+        assert_eq!(events.len(), 4, "unexpected event sequence: {:?}", events);
+        match &events[0] {
+            Event::ShutdownRequested { vm: event_vm } => assert_eq!(event_vm, &vm.name),
+            other => panic!("expected ShutdownRequested event, got {other:?}"),
+        }
+        match &events[1] {
+            Event::CooperativeAttempted {
+                vm: event_vm,
+                method,
+                timeout_ms,
+            } => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*method, CooperativeMethod::Acpi);
+                assert_eq!(*timeout_ms, 2000);
+            }
+            other => panic!("expected CooperativeAttempted event, got {other:?}"),
+        }
+        match &events[2] {
+            Event::CooperativeSucceeded { vm: event_vm, elapsed_ms } => {
+                assert_eq!(event_vm, &vm.name);
+                assert!(*elapsed_ms <= 2000);
+            }
+            other => panic!("expected CooperativeSucceeded event, got {other:?}"),
+        }
+        match &events[3] {
+            Event::ShutdownComplete {
+                vm: event_vm,
+                outcome,
+                changed,
+                ..
+            } => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*outcome, ShutdownOutcome::Graceful);
+                assert!(*changed);
+            }
+            other => panic!("expected ShutdownComplete event, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cooperative_shutdown_times_out_and_escalates(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use serde_json::Value;
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        use std::thread;
+        use std::time::Duration;
+
+        let temp = tempdir()?;
+        let state_root = temp.path().to_path_buf();
+        let vm = sample_vm(&state_root);
+
+        let child = ForkGuard::spawn();
+        let pidfile = state_root.join(format!("{}.pid", vm.name));
+        let pid_value = child.pid();
+        fs::write(&pidfile, format!("{pid_value}"))?;
+        let socket_path = state_root.join(format!("{}.qmp", vm.name));
+        let listener = UnixListener::bind(&socket_path)?;
+
+        let reaper = thread::spawn(move || loop {
+            let mut status = 0;
+            let res = unsafe { libc::waitpid(pid_value, &mut status, libc::WNOHANG) };
+            if res == 0 {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            break;
+        });
+
+        let qmp_thread = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let greeting = r#"{"QMP":{"version":{"qemu":{"major":8,"minor":2,"micro":0}},"capabilities":[]}}"#;
+                stream.write_all(greeting.as_bytes()).unwrap();
+                stream.write_all(b"\n").unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 {
+                        break;
+                    }
+                    let value: Value = serde_json::from_str(&line).unwrap();
+                    if value.get("execute").is_some() {
+                        stream.write_all(br#"{"return":{}}"#).unwrap();
+                        stream.write_all(b"\n").unwrap();
+                        if value
+                            .get("execute")
+                            .and_then(|v| v.as_str())
+                            .map(|cmd| cmd == "system_powerdown")
+                            .unwrap_or(false)
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        let timeouts = ShutdownTimeouts::new(
+            Duration::from_millis(200),
+            Duration::from_millis(500),
+            Duration::from_millis(500),
+        );
+        let report = shutdown_vm(&vm, &state_root, timeouts, None)?;
+        qmp_thread.join().unwrap();
+        reaper.join().unwrap();
+
+        assert!(report.changed);
+        assert_eq!(report.outcome, ShutdownOutcome::Forced);
+        assert!(!pidfile.exists());
+
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::ShutdownEscalated { signal: ShutdownSignal::Sigterm, .. })),
+            "expected SIGTERM escalation event"
+        );
+
+        let mut iter = report.events.iter();
+
+        match iter.next() {
+            Some(Event::ShutdownRequested { vm: event_vm }) => assert_eq!(event_vm, &vm.name),
+            other => panic!("expected ShutdownRequested first, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::CooperativeAttempted {
+                vm: event_vm,
+                method,
+                timeout_ms,
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*method, CooperativeMethod::Acpi);
+                assert_eq!(*timeout_ms, 200);
+            }
+            other => panic!("expected CooperativeAttempted second, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::CooperativeTimedOut {
+                vm: event_vm,
+                waited_ms,
+                reason,
+                detail,
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*waited_ms, 200);
+                assert_eq!(*reason, CooperativeTimeoutReason::TimeoutExpired);
+                assert!(detail.is_none());
+            }
+            other => panic!("expected CooperativeTimedOut third, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::ShutdownEscalated {
+                vm: event_vm,
+                signal,
+                ..
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*signal, ShutdownSignal::Sigterm);
+            }
+            other => panic!("expected ShutdownEscalated fourth, got {other:?}"),
+        }
+
+        match iter.last() {
+            Some(Event::ShutdownComplete {
+                vm: event_vm,
+                outcome,
+                changed,
+                ..
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*outcome, ShutdownOutcome::Forced);
+                assert!(*changed);
+            }
+            other => panic!("expected ShutdownComplete last, got {other:?}"),
+        }
+
+        Ok(())
     }
 }
