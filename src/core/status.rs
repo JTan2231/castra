@@ -575,6 +575,29 @@ mod tests {
     }
 
     #[test]
+    fn collect_status_handles_cleared_bus_session_state() {
+        let dir = tempdir().unwrap();
+        let mut project = sample_project(dir.path());
+        write_broker_pid(dir.path());
+        write_handshake_with_bus(
+            dir.path(),
+            "devbox",
+            Duration::from_secs(2),
+            false,
+            None,
+            None,
+        );
+
+        let snapshot = collect_status(&project);
+        assert!(!snapshot.rows[0].bus_subscribed);
+        assert!(snapshot.rows[0].last_publish_age.is_none());
+        assert!(snapshot.rows[0].last_heartbeat_age.is_none());
+        assert!(snapshot.rows[0].handshake_age.is_some());
+
+        project.state_root = PathBuf::new();
+    }
+
+    #[test]
     fn collect_status_reports_bus_freshness() {
         let dir = tempdir().unwrap();
         let mut project = sample_project(dir.path());

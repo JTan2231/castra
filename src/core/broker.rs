@@ -797,6 +797,52 @@ struct StoredBusState {
     last_subscribe_ts: Option<u64>,
 }
 
+fn ensure_bus_state(record: &mut StoredHandshake) -> &mut StoredBusState {
+    record
+        .bus
+        .get_or_insert_with(StoredBusState::default)
+}
+
+fn initialize_bus_session_record(record: &mut StoredHandshake, timestamp: u64) {
+    let bus = ensure_bus_state(record);
+    if bus.protocol.is_none() {
+        bus.protocol = Some("bus-v1".to_string());
+    }
+    bus.last_heartbeat_ts = Some(timestamp);
+    bus.last_publish_ts = None;
+    bus.last_subscribe_ts = None;
+    bus.subscribed_topics.clear();
+}
+
+fn record_bus_publish_timestamp(record: &mut StoredHandshake, timestamp: u64) {
+    let bus = ensure_bus_state(record);
+    bus.last_publish_ts = Some(timestamp);
+}
+
+fn record_bus_heartbeat_timestamp(record: &mut StoredHandshake, timestamp: u64) {
+    let bus = ensure_bus_state(record);
+    bus.last_heartbeat_ts = Some(timestamp);
+}
+
+fn record_bus_subscription_state(record: &mut StoredHandshake, topics: &[String], timestamp: u64) {
+    let bus = ensure_bus_state(record);
+    bus.subscribed_topics = topics.to_vec();
+    if topics.is_empty() {
+        bus.last_subscribe_ts = None;
+    } else {
+        bus.last_subscribe_ts = Some(timestamp);
+    }
+}
+
+fn clear_bus_session_record(record: &mut StoredHandshake) {
+    if let Some(bus) = record.bus.as_mut() {
+        bus.subscribed_topics.clear();
+        bus.last_subscribe_ts = None;
+        bus.last_publish_ts = None;
+        bus.last_heartbeat_ts = None;
+    }
+}
+
 fn unix_timestamp_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -918,13 +964,7 @@ fn handle_bus_session(
     if track_handshake {
         if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
             let now = unix_timestamp_seconds();
-            let bus = record.bus.get_or_insert_with(StoredBusState::default);
-            if bus.protocol.is_none() {
-                bus.protocol = Some("bus-v1".to_string());
-            }
-            bus.last_heartbeat_ts = Some(now);
-            bus.subscribed_topics.clear();
-            bus.last_subscribe_ts = None;
+            initialize_bus_session_record(record, now);
         }) {
             let _ = broker_log_line(
                 &logger,
@@ -945,9 +985,7 @@ fn handle_bus_session(
                                 if let Err(err) =
                                     update_handshake_record(&handshake_dir, &vm, |record| {
                                         let now = unix_timestamp_seconds();
-                                        let bus =
-                                            record.bus.get_or_insert_with(StoredBusState::default);
-                                        bus.last_publish_ts = Some(now);
+                                        record_bus_publish_timestamp(record, now);
                                     })
                                 {
                                     let _ = broker_log_line(
@@ -1041,8 +1079,7 @@ fn handle_bus_session(
                     if track_handshake {
                         if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
                             let now = unix_timestamp_seconds();
-                            let bus = record.bus.get_or_insert_with(StoredBusState::default);
-                            bus.last_heartbeat_ts = Some(now);
+                            record_bus_heartbeat_timestamp(record, now);
                         }) {
                             let _ = broker_log_line(
                                 &logger,
@@ -1139,9 +1176,7 @@ fn handle_bus_session(
                     if track_handshake {
                         if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
                             let now = unix_timestamp_seconds();
-                            let bus = record.bus.get_or_insert_with(StoredBusState::default);
-                            bus.subscribed_topics = subscribed_topics.clone();
-                            bus.last_subscribe_ts = Some(now);
+                            record_bus_subscription_state(record, &subscribed_topics, now);
                         }) {
                             let _ = broker_log_line(
                                 &logger,
@@ -1268,10 +1303,7 @@ fn handle_bus_session(
 
     if track_handshake {
         if let Err(err) = update_handshake_record(&handshake_dir, &vm, |record| {
-            if let Some(bus) = record.bus.as_mut() {
-                bus.subscribed_topics.clear();
-                bus.last_subscribe_ts = None;
-            }
+            clear_bus_session_record(record);
         }) {
             let _ = broker_log_line(
                 &logger,
@@ -1579,6 +1611,70 @@ mod tests {
         );
         assert!(message.contains("session_outcome=timeout"));
         assert!(message.contains("reason=read-timeout"));
+    }
+
+    #[test]
+    fn initialize_bus_session_record_resets_previous_state() {
+        let mut record = StoredHandshake {
+            vm: "devbox".to_string(),
+            timestamp: 0,
+            capabilities: vec!["bus-v1".to_string()],
+            bus: Some(StoredBusState {
+                protocol: Some("bus-v1".to_string()),
+                subscribed_topics: vec!["broadcast".to_string()],
+                last_publish_ts: Some(10),
+                last_heartbeat_ts: Some(20),
+                last_subscribe_ts: Some(30),
+            }),
+        };
+
+        initialize_bus_session_record(&mut record, 99);
+
+        let bus = record.bus.expect("bus state");
+        assert_eq!(bus.protocol.as_deref(), Some("bus-v1"));
+        assert_eq!(bus.last_heartbeat_ts, Some(99));
+        assert!(bus.subscribed_topics.is_empty());
+        assert!(bus.last_publish_ts.is_none());
+        assert!(bus.last_subscribe_ts.is_none());
+    }
+
+    #[test]
+    fn bus_session_helpers_record_and_clear_state() {
+        let mut record = StoredHandshake {
+            vm: "devbox".to_string(),
+            timestamp: 0,
+            capabilities: vec!["bus-v1".to_string()],
+            bus: None,
+        };
+
+        initialize_bus_session_record(&mut record, 5);
+        record_bus_publish_timestamp(&mut record, 10);
+        record_bus_heartbeat_timestamp(&mut record, 15);
+        record_bus_subscription_state(
+            &mut record,
+            &[String::from("alerts"), String::from("broadcast")],
+            20,
+        );
+
+        {
+            let bus = record.bus.as_ref().expect("bus state");
+            assert_eq!(bus.protocol.as_deref(), Some("bus-v1"));
+            assert_eq!(bus.last_publish_ts, Some(10));
+            assert_eq!(bus.last_heartbeat_ts, Some(15));
+            assert_eq!(bus.last_subscribe_ts, Some(20));
+            assert_eq!(
+                bus.subscribed_topics,
+                vec!["alerts".to_string(), "broadcast".to_string()]
+            );
+        }
+
+        clear_bus_session_record(&mut record);
+
+        let bus = record.bus.expect("bus state after clear");
+        assert!(bus.subscribed_topics.is_empty());
+        assert!(bus.last_publish_ts.is_none());
+        assert!(bus.last_heartbeat_ts.is_none());
+        assert!(bus.last_subscribe_ts.is_none());
     }
 
     #[test]
