@@ -18,6 +18,7 @@ const BUS_MAX_FRAME_SIZE: usize = 64 * 1024;
 const BUS_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
 const BUS_MAX_SUBSCRIPTIONS: usize = 16;
 const HANDSHAKE_EVENT_LOG: &str = "handshake-events.jsonl";
+const BUS_EVENT_LOG: &str = "bus-events.jsonl";
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -155,6 +156,69 @@ fn append_handshake_event(
     })?;
     file.write_all(b"\n")?;
     file.flush()?;
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct BrokerBusEventRecord {
+    timestamp: u64,
+    vm: String,
+    session: String,
+    reason: String,
+    action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+fn append_bus_event(handshake_dir: &Path, record: &BrokerBusEventRecord) -> io::Result<()> {
+    fs::create_dir_all(handshake_dir)?;
+    let path = handshake_dir.join(BUS_EVENT_LOG);
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    serde_json::to_writer(&mut file, record).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to encode bus event: {err}"),
+        )
+    })?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(())
+}
+
+fn record_bus_backpressure(
+    log: &Arc<Mutex<fs::File>>,
+    handshake_dir: &Path,
+    vm: &str,
+    session: &str,
+    reason: &str,
+    action: &str,
+    detail: Option<&str>,
+) -> Result<()> {
+    let timestamp = unix_timestamp_seconds();
+    let mut message =
+        format!("bus backpressure vm={vm} session={session} reason={reason} action={action}",);
+    if let Some(detail) = detail {
+        message.push(' ');
+        message.push_str("detail=");
+        message.push_str(detail);
+    }
+    broker_log_line(log, "WARN", &message)?;
+
+    let record = BrokerBusEventRecord {
+        timestamp,
+        vm: vm.to_string(),
+        session: session.to_string(),
+        reason: reason.to_string(),
+        action: action.to_string(),
+        detail: detail.map(|value| value.to_string()),
+    };
+    if let Err(err) = append_bus_event(handshake_dir, &record) {
+        broker_log_line(
+            log,
+            "WARN",
+            &format!("failed to record bus event for `{vm}` (session={session}): {err}"),
+        )?;
+    }
     Ok(())
 }
 
@@ -904,6 +968,32 @@ fn handle_bus_session(
                             if let Err(err) =
                                 send_ack(&mut stream, "publish", frame.topic.as_deref(), "ok", None)
                             {
+                                let (reason, detail) = match &err {
+                                    BusError::Io(io_err)
+                                        if matches!(
+                                            io_err.kind(),
+                                            ErrorKind::WouldBlock | ErrorKind::TimedOut
+                                        ) =>
+                                    {
+                                        ("slow_consumer", Some("ack_write_timeout".to_string()))
+                                    }
+                                    BusError::Io(io_err) => {
+                                        ("io_error", Some(format!("io_kind={:?}", io_err.kind())))
+                                    }
+                                    BusError::Protocol(reason) => {
+                                        ("protocol_error", Some(reason.clone()))
+                                    }
+                                    BusError::Timeout => ("timeout", None),
+                                };
+                                let _ = record_bus_backpressure(
+                                    &logger,
+                                    handshake_dir.as_path(),
+                                    &vm,
+                                    &session,
+                                    reason,
+                                    "disconnect",
+                                    detail.as_deref(),
+                                );
                                 let _ = broker_log_line(
                                     &logger,
                                     "WARN",
@@ -917,6 +1007,16 @@ fn handle_bus_session(
                         }
                         Err(err) => {
                             let reason = err.to_string();
+                            let detail_message = format!("error={reason}");
+                            let _ = record_bus_backpressure(
+                                &logger,
+                                handshake_dir.as_path(),
+                                &vm,
+                                &session,
+                                "io_error",
+                                "disconnect",
+                                Some(detail_message.as_str()),
+                            );
                             let _ = broker_log_line(
                                 &logger,
                                 "WARN",
@@ -952,6 +1052,30 @@ fn handle_bus_session(
                         }
                     }
                     if let Err(err) = send_ack(&mut stream, "heartbeat", None, "ok", None) {
+                        let (reason, detail) = match &err {
+                            BusError::Io(io_err)
+                                if matches!(
+                                    io_err.kind(),
+                                    ErrorKind::WouldBlock | ErrorKind::TimedOut
+                                ) =>
+                            {
+                                ("slow_consumer", Some("ack_write_timeout".to_string()))
+                            }
+                            BusError::Io(io_err) => {
+                                ("io_error", Some(format!("io_kind={:?}", io_err.kind())))
+                            }
+                            BusError::Protocol(reason) => ("protocol_error", Some(reason.clone())),
+                            BusError::Timeout => ("timeout", None),
+                        };
+                        let _ = record_bus_backpressure(
+                            &logger,
+                            handshake_dir.as_path(),
+                            &vm,
+                            &session,
+                            reason,
+                            "disconnect",
+                            detail.as_deref(),
+                        );
                         let _ = broker_log_line(
                             &logger,
                             "WARN",
@@ -982,6 +1106,16 @@ fn handle_bus_session(
                         .any(|existing| existing.eq_ignore_ascii_case(topic))
                     {
                         if subscribed_topics.len() >= BUS_MAX_SUBSCRIPTIONS {
+                            let detail = format!("subscription_limit={BUS_MAX_SUBSCRIPTIONS}");
+                            let _ = record_bus_backpressure(
+                                &logger,
+                                handshake_dir.as_path(),
+                                &vm,
+                                &session,
+                                "queue_full",
+                                "reject",
+                                Some(detail.as_str()),
+                            );
                             let reason =
                                 format!("subscription limit {BUS_MAX_SUBSCRIPTIONS} exceeded");
                             let _ = broker_log_line(
@@ -1032,6 +1166,30 @@ fn handle_bus_session(
                         );
                     }
                     if let Err(err) = send_ack(&mut stream, "subscribe", Some(topic), "ok", None) {
+                        let (reason, detail) = match &err {
+                            BusError::Io(io_err)
+                                if matches!(
+                                    io_err.kind(),
+                                    ErrorKind::WouldBlock | ErrorKind::TimedOut
+                                ) =>
+                            {
+                                ("slow_consumer", Some("ack_write_timeout".to_string()))
+                            }
+                            BusError::Io(io_err) => {
+                                ("io_error", Some(format!("io_kind={:?}", io_err.kind())))
+                            }
+                            BusError::Protocol(reason) => ("protocol_error", Some(reason.clone())),
+                            BusError::Timeout => ("timeout", None),
+                        };
+                        let _ = record_bus_backpressure(
+                            &logger,
+                            handshake_dir.as_path(),
+                            &vm,
+                            &session,
+                            reason,
+                            "disconnect",
+                            detail.as_deref(),
+                        );
                         let _ = broker_log_line(
                             &logger,
                             "WARN",
@@ -1050,6 +1208,16 @@ fn handle_bus_session(
             },
             Err(BusError::Timeout) => {
                 if last_heartbeat.elapsed() >= BUS_HEARTBEAT_TIMEOUT {
+                    let detail = format!("elapsed_secs={}", last_heartbeat.elapsed().as_secs());
+                    let _ = record_bus_backpressure(
+                        &logger,
+                        handshake_dir.as_path(),
+                        &vm,
+                        &session,
+                        "heartbeat_timeout",
+                        "disconnect",
+                        Some(detail.as_str()),
+                    );
                     let _ = broker_log_line(
                         &logger,
                         "WARN",
@@ -1060,6 +1228,16 @@ fn handle_bus_session(
                 continue;
             }
             Err(BusError::Io(err)) => {
+                let detail = format!("io_kind={:?}", err.kind());
+                let _ = record_bus_backpressure(
+                    &logger,
+                    handshake_dir.as_path(),
+                    &vm,
+                    &session,
+                    "io_error",
+                    "disconnect",
+                    Some(detail.as_str()),
+                );
                 let _ = broker_log_line(
                     &logger,
                     "WARN",
@@ -1068,6 +1246,15 @@ fn handle_bus_session(
                 break;
             }
             Err(BusError::Protocol(reason)) => {
+                let _ = record_bus_backpressure(
+                    &logger,
+                    handshake_dir.as_path(),
+                    &vm,
+                    &session,
+                    "protocol_error",
+                    "disconnect",
+                    Some(reason.as_str()),
+                );
                 let _ = broker_log_line(
                     &logger,
                     "WARN",
@@ -1446,6 +1633,47 @@ mod tests {
         assert_eq!(json["session_outcome"], "timeout");
         assert_eq!(json["reason"], "read-timeout");
         assert_eq!(json["vm"], "127.0.0.1:5555");
+    }
+
+    #[test]
+    fn record_bus_backpressure_persists_event_and_log() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("broker.log");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .unwrap();
+        let logger = Arc::new(Mutex::new(file));
+
+        record_bus_backpressure(
+            &logger,
+            dir.path(),
+            "devbox",
+            "sess-42",
+            "slow_consumer",
+            "disconnect",
+            Some("ack_write_timeout"),
+        )
+        .expect("record bus backpressure");
+
+        logger.lock().unwrap().flush().unwrap();
+        let log_contents = fs::read_to_string(&log_path).unwrap();
+        assert!(log_contents.contains("bus backpressure"));
+        assert!(log_contents.contains("vm=devbox"));
+        assert!(log_contents.contains("session=sess-42"));
+        assert!(log_contents.contains("reason=slow_consumer"));
+        assert!(log_contents.contains("action=disconnect"));
+        assert!(log_contents.contains("detail=ack_write_timeout"));
+
+        let event_path = dir.path().join(BUS_EVENT_LOG);
+        let raw = fs::read_to_string(event_path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(raw.trim()).unwrap();
+        assert_eq!(json["vm"], "devbox");
+        assert_eq!(json["session"], "sess-42");
+        assert_eq!(json["reason"], "slow_consumer");
+        assert_eq!(json["action"], "disconnect");
+        assert_eq!(json["detail"], "ack_write_timeout");
     }
 
     #[test]
