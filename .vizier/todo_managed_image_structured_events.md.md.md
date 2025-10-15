@@ -27,3 +27,23 @@ Next steps (Thread 10)
 
 
 ---
+
+---
+Update — v0.8.5 shipped CLEAN linkage and profile steps; remaining work scoped
+
+Shipped
+- Event variants and fields (Started/Result for Verification and Profile) are emitted with duration_ms and size_bytes where applicable.
+- app/up.rs renders steps/durations/sizes.
+- CLEAN now links reclaimed-bytes evidence to the latest ManagedImageVerificationResult per image and surfaces linkage in CLI output.
+
+Remaining acceptance (narrowed)
+- Reporter durability: verify events appear in both unified streams and per-image logs across all configured sinks; add smoke tests.
+- Documentation: add stable-field references and JSON examples to docs/library_usage.md and CLEAN.md covering plan/report/steps and CLEAN linkage.
+
+Acceptance verification
+- Add a smoke test that runs `castra up` with a managed image and captures JSON logs to assert presence of the four ManagedImage* events with required fields, then runs `castra clean` and asserts evidence linkage appears with matching image id/path.
+---
+
+
+---
+

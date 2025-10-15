@@ -1,7 +1,7 @@
 SNAPSHOT v0.8.5 — Castra (VM orchestration harness)
 
 Edits since v0.8.4
-- Thread 10 landed: Introduced explicit managed-image structured events and wiring in operations::up with corresponding CLI rendering updates. Added plan/report/checksum structs; result events now include duration_ms and size_bytes. Profile events capture steps[]. No behavioral changes to shutdown or bootstrap.
+- Thread 10 landed: Introduced explicit managed-image structured events and wiring in operations::up with corresponding CLI rendering updates. Added plan/report/checksum structs; result events now include duration_ms and size_bytes. Profile events capture steps[]. CLEAN now links reclaimed-bytes evidence to ManagedImageVerificationResult. No behavioral changes to shutdown or bootstrap.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (not yet implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -10,14 +10,14 @@ Active threads (intent + acceptance)
   - Timeouts configurable via CLI/opts; status/UI remain responsive; per‑VM isolation maintained; idempotent behavior; stable JSON fields in logs/output.
   Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/core/reporter.rs; src/app/down.rs.
 
-- Thread 10 — Managed images: structured verification/profile events (partially shipped; CLEAN linkage pending): Emit machine‑parseable events during verification/profile so downstream tools can rely on them.
+- Thread 10 — Managed images: structured verification/profile events (shipped; docs/durability pending): Emit machine‑parseable events during verification/profile so downstream tools can rely on them.
   Shipped in v0.8.5:
   - New Event variants in src/core/events.rs: ManagedImageVerificationStarted/Result and ManagedImageProfileApplied/Result.
   - Support types: ManagedImageArtifactPlan, ManagedImageArtifactReport, ManagedImageChecksum; Profile components extended with steps[] in events.
   - Emission path in src/core/operations/mod.rs::up; app/up.rs renders durations, sizes, and steps.
+  - CLEAN integrates reclaimed‑bytes evidence with latest ManagedImageVerificationResult per image and surfaces linkage in CLI output.
   Outstanding:
-  - CLEAN links reclaimed‑bytes evidence to ManagedImageVerificationResult entries (by image id/path + timestamp proximity) when available; `castra clean` surfaces this linkage succinctly per image; absence explicitly indicated.
-  - Ensure reporter durability across sinks; document field stability.
+  - Ensure reporter durability across sinks (unified stream + per‑image logs) with smoke tests; document field stability.
   Anchors: src/managed/mod.rs; src/core/events.rs; src/core/logs.rs; src/core/reporter.rs; src/core/operations/clean.rs; src/app/clean.rs; CLEAN.md.
 
 - Thread 12 — Post‑boot bootstrap pipeline (not yet implemented): After first successful broker handshake for a VM, apply a host‑provided bootstrap (e.g., Nix flake) over SSH idempotently.
@@ -31,8 +31,8 @@ Active threads (intent + acceptance)
 Current code state (observable surfaces)
 - CLI/library split via feature gating; default includes CLI; library builds with no‑default‑features.
 - Status exposes broker reachability (reachable, last_handshake_age_ms) and bus health; designed to remain non‑blocking.
-- Ports view with stable columns; Clean command with byte accounting/safeguards.
-- Managed images now emit structured verification/profile events with plans, reports, checksums, steps; app/up renders size/duration and steps; automation can consume JSON streams.
+- Ports view with stable columns; Clean command with byte accounting/safeguards; now links managed‑image evidence where available.
+- Managed images emit structured verification/profile events with plans, reports, checksums, steps; app/up renders size/duration and steps; automation can consume JSON streams.
 
 Narrative themes
 1) Robust VM lifecycle — predictable, observable cooperative shutdown with bounded waits and clear outcomes.
@@ -41,10 +41,10 @@ Narrative themes
 
 Direction of travel
 - Implement cooperative shutdown events/behavior (Thread 2) honoring lifecycle waits and emitting ordered events.
-- Finish Thread 10 by wiring CLEAN evidence linkage and documenting field stability/examples.
+- For Thread 10, add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
 - Build the post‑boot bootstrap pipeline keyed to handshake and guarded by idempotence stamps (Thread 12).
 
 Cross‑links
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; CLEAN.md documents the narrative.
-- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.
-- Thread 10 canonical TODO updated with landed state and remaining gaps.
+- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md.
+- Thread 10 canonical TODO updated with shipped state and remaining gaps.
