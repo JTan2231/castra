@@ -3,6 +3,9 @@ Update — unavailable cooperative channel semantics shipped
 - Runtime now emits CooperativeAttempted with timeout_ms=0 when cooperative method/channel is unavailable, followed by CooperativeTimedOut(reason: ChannelUnavailable) without waiting, before escalating.
 - Tests cover QMP success, QMP timeout→TERM, and unavailable-channel paths with ordered events and field assertions.
 
+Update — forced shutdown success semantics
+- `castra down` now exits successfully when VMs require forced termination, surfacing the forced set via stderr while preserving ordered lifecycle events.
+
 Next slice refinement
 - Implement available-channel cooperative attempt in runtime with bounded wait honoring CLI/opts; emit CooperativeSucceeded or CooperativeTimedOut(reason: Timeout) before TERM/KILL.
 - Ensure per-VM isolation and live streaming are preserved under mixed outcomes (some graceful, some forced).
@@ -10,4 +13,3 @@ Next slice refinement
 
 
 ---
-
