@@ -1,7 +1,9 @@
 use std::fs;
 use std::io::{self, Read};
+use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +24,7 @@ use sha2::{Digest, Sha256};
 const PLAN_FILE_NAME: &str = "plan.json";
 const STAMP_DIR_NAME: &str = "stamps";
 const LOG_SUBDIR: &str = "bootstrap";
+
 /// Execute bootstrap pipelines for all VMs in the project, returning per-VM summaries.
 pub fn run_all(
     project: &ProjectConfig,
@@ -40,20 +43,84 @@ pub fn run_all(
         });
     }
 
-    let mut outcomes = Vec::with_capacity(project.vms.len());
-    for (vm, prep) in project.vms.iter().zip(preparations.iter()) {
-        let outcome = run_for_vm(context, vm, prep, reporter, diagnostics)?;
-        outcomes.push(outcome);
+    let (event_tx, event_rx) = mpsc::channel::<Event>();
+    let mut first_error: Option<Error> = None;
+    let mut vm_slots: Vec<Option<BootstrapRunOutcome>> =
+        (0..project.vms.len()).map(|_| None).collect();
+
+    let state_root = context.state_root.clone();
+    let log_root = context.log_root.clone();
+
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+
+        for (index, (vm, prep)) in project.vms.iter().zip(preparations.iter()).enumerate() {
+            let tx_clone = event_tx.clone();
+            let state_root = state_root.clone();
+            let log_root = log_root.clone();
+            handles.push(scope.spawn(move || {
+                let mut local_diagnostics = Vec::new();
+                let mut emit_event = |event: Event| {
+                    let _ = tx_clone.send(event);
+                };
+                let outcome = run_for_vm(
+                    &state_root,
+                    &log_root,
+                    vm,
+                    prep,
+                    &mut emit_event,
+                    &mut local_diagnostics,
+                );
+                (index, outcome, local_diagnostics)
+            }));
+        }
+
+        drop(event_tx);
+
+        while let Ok(event) = event_rx.recv() {
+            reporter.report(event);
+        }
+
+        for handle in handles {
+            match handle.join() {
+                Ok((index, outcome_result, local_diagnostics)) => {
+                    diagnostics.extend(local_diagnostics);
+                    match outcome_result {
+                        Ok(outcome) => {
+                            vm_slots[index] = Some(outcome);
+                        }
+                        Err(err) => {
+                            if first_error.is_none() {
+                                first_error = Some(err);
+                            }
+                        }
+                    }
+                }
+                Err(payload) => panic::resume_unwind(payload),
+            }
+        }
+    });
+
+    if let Some(err) = first_error {
+        return Err(err);
     }
 
-    Ok(outcomes)
+    Ok(vm_slots
+        .into_iter()
+        .map(|slot| {
+            slot.unwrap_or_else(|| {
+                panic!("bootstrap worker did not produce a result for configured VM")
+            })
+        })
+        .collect())
 }
 
 fn run_for_vm(
-    context: &RuntimeContext,
+    state_root: &Path,
+    log_root: &Path,
     vm: &VmDefinition,
     prep: &AssetPreparation,
-    reporter: &mut dyn Reporter,
+    emit_event: &mut dyn FnMut(Event),
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<BootstrapRunOutcome> {
     match vm.bootstrap.mode {
@@ -72,7 +139,7 @@ fn run_for_vm(
         BootstrapMode::Auto | BootstrapMode::Always => {}
     }
 
-    let plan_dir = context.state_root.join("bootstrap").join(&vm.name);
+    let plan_dir = state_root.join("bootstrap").join(&vm.name);
     let plan_path = plan_dir.join(PLAN_FILE_NAME);
     if !plan_path.is_file() {
         if matches!(vm.bootstrap.mode, BootstrapMode::Always) {
@@ -113,7 +180,7 @@ fn run_for_vm(
         BootstrapTrigger::Auto
     };
 
-    reporter.report(Event::BootstrapStarted {
+    emit_event(Event::BootstrapStarted {
         vm: vm.name.clone(),
         base_hash: base_hash.clone(),
         artifact_hash: plan.artifact_hash.clone(),
@@ -122,7 +189,7 @@ fn run_for_vm(
 
     let start = Instant::now();
     let mut steps = Vec::new();
-    let log_dir = context.log_root.join(LOG_SUBDIR);
+    let log_dir = log_root.join(LOG_SUBDIR);
     let stamps_dir = plan_dir.join(STAMP_DIR_NAME);
     fs::create_dir_all(&stamps_dir).map_err(|err| Error::BootstrapFailed {
         vm: vm.name.clone(),
@@ -141,14 +208,14 @@ fn run_for_vm(
             BootstrapStepKind::WaitHandshake,
             "Existing stamp matches artifact; no work required.",
         ));
-        reporter.report(Event::BootstrapStep {
+        emit_event(Event::BootstrapStep {
             vm: vm.name.clone(),
             step: BootstrapStepKind::WaitHandshake,
             status: BootstrapStepStatus::Skipped,
             duration_ms: 0,
             detail: Some("Bootstrap stamp already satisfied.".to_string()),
         });
-        reporter.report(Event::BootstrapCompleted {
+        emit_event(Event::BootstrapCompleted {
             vm: vm.name.clone(),
             status: BootstrapStatus::NoOp,
             duration_ms,
@@ -173,8 +240,7 @@ fn run_for_vm(
     }
 
     let handshake_start = Instant::now();
-    let handshake_result =
-        wait_for_handshake(&context.state_root, &vm.name, plan.handshake_timeout);
+    let handshake_result = wait_for_handshake(state_root, &vm.name, plan.handshake_timeout);
     let handshake_duration = handshake_start.elapsed();
 
     match handshake_result {
@@ -184,7 +250,7 @@ fn run_for_vm(
                 handshake_duration,
                 Some(format!("Fresh handshake observed at {:?}.", handshake_ts)),
             ));
-            reporter.report(Event::BootstrapStep {
+            emit_event(Event::BootstrapStep {
                 vm: vm.name.clone(),
                 step: BootstrapStepKind::WaitHandshake,
                 status: BootstrapStepStatus::Success,
@@ -203,7 +269,7 @@ fn run_for_vm(
                 handshake_duration,
                 Some(failure_detail.clone()),
             ));
-            reporter.report(Event::BootstrapStep {
+            emit_event(Event::BootstrapStep {
                 vm: vm.name.clone(),
                 step: BootstrapStepKind::WaitHandshake,
                 status: BootstrapStepStatus::Failed,
@@ -211,7 +277,7 @@ fn run_for_vm(
                 detail: Some(failure_detail.clone()),
             });
             let duration_ms = elapsed_ms(start.elapsed());
-            reporter.report(Event::BootstrapFailed {
+            emit_event(Event::BootstrapFailed {
                 vm: vm.name.clone(),
                 duration_ms,
                 error: failure_detail.clone(),
@@ -238,7 +304,7 @@ fn run_for_vm(
 
     let connect_res = check_connectivity(&plan);
     let connect_duration = connect_res.duration;
-    reporter.report(Event::BootstrapStep {
+    emit_event(Event::BootstrapStep {
         vm: vm.name.clone(),
         step: BootstrapStepKind::Connect,
         status: connect_res.status,
@@ -257,7 +323,7 @@ fn run_for_vm(
             .detail
             .clone()
             .unwrap_or_else(|| "Failed to establish SSH connectivity.".to_string());
-        reporter.report(Event::BootstrapFailed {
+        emit_event(Event::BootstrapFailed {
             vm: vm.name.clone(),
             duration_ms,
             error: failure_detail.clone(),
@@ -287,7 +353,7 @@ fn run_for_vm(
 
     let transfer_res = transfer_artifacts(&plan);
     let transfer_duration = transfer_res.duration;
-    reporter.report(Event::BootstrapStep {
+    emit_event(Event::BootstrapStep {
         vm: vm.name.clone(),
         step: BootstrapStepKind::Transfer,
         status: transfer_res.status,
@@ -306,7 +372,7 @@ fn run_for_vm(
             .detail
             .clone()
             .unwrap_or_else(|| "Failed to transfer artifacts.".to_string());
-        reporter.report(Event::BootstrapFailed {
+        emit_event(Event::BootstrapFailed {
             vm: vm.name.clone(),
             duration_ms,
             error: failure_detail.clone(),
@@ -336,7 +402,7 @@ fn run_for_vm(
 
     let apply_res = execute_remote(&plan);
     let apply_duration = apply_res.duration;
-    reporter.report(Event::BootstrapStep {
+    emit_event(Event::BootstrapStep {
         vm: vm.name.clone(),
         step: BootstrapStepKind::Apply,
         status: apply_res.status,
@@ -355,7 +421,7 @@ fn run_for_vm(
             .detail
             .clone()
             .unwrap_or_else(|| "Remote bootstrap execution failed.".to_string());
-        reporter.report(Event::BootstrapFailed {
+        emit_event(Event::BootstrapFailed {
             vm: vm.name.clone(),
             duration_ms,
             error: failure_detail.clone(),
@@ -385,7 +451,7 @@ fn run_for_vm(
 
     let verify_res = verify_outcome(&plan, &stamp_path, &stamp_id, &base_hash, &plan_path);
     let verify_duration = verify_res.duration;
-    reporter.report(Event::BootstrapStep {
+    emit_event(Event::BootstrapStep {
         vm: vm.name.clone(),
         step: BootstrapStepKind::Verify,
         status: verify_res.status,
@@ -404,7 +470,7 @@ fn run_for_vm(
             .detail
             .clone()
             .unwrap_or_else(|| "Bootstrap verification failed.".to_string());
-        reporter.report(Event::BootstrapFailed {
+        emit_event(Event::BootstrapFailed {
             vm: vm.name.clone(),
             duration_ms,
             error: failure_detail.clone(),
@@ -433,7 +499,7 @@ fn run_for_vm(
     }
 
     let total_ms = elapsed_ms(start.elapsed());
-    reporter.report(Event::BootstrapCompleted {
+    emit_event(Event::BootstrapCompleted {
         vm: vm.name.clone(),
         status: BootstrapStatus::Success,
         duration_ms: total_ms,
