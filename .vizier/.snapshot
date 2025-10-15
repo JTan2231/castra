@@ -1,23 +1,20 @@
-SNAPSHOT v0.8.1 — Castra (VM orchestration harness)
+SNAPSHOT v0.8.2 — Castra (VM orchestration harness)
 
-Edits since v0.8.0
-- Aligned lifecycle event names/sequencing for cooperative shutdown (Thread 2).
-- Standardized managed-image event names (Thread 10) and tied them to CLEAN/reporting stream.
-- Clarified bootstrap idempotence stamps, event surfaces, and config knobs (Thread 12).
-- Consolidated duplicate bootstrap TODOs into a single thread doc.
-- Consolidated lifecycle TODOs under cooperative_shutdown_lifecycle.md; graceful_shutdown_acpi_qmp folded into Thread 2 canonical with unified event sequence.
+Edits since v0.8.1
+- Canonicalized active TODOs: re-homed lifecycle, managed-image, and bootstrap threads into single canonical TODOs; removed duplicates.
+- Clarified stable event names/ordering across lifecycle (Thread 2), managed-image events (Thread 10), and bootstrap pipeline (Thread 12).
+- Reaffirmed product-level acceptance and non-prescriptive anchors; mechanisms remain open while surfaces/events are fixed.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (not yet implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
   Acceptance (per VM):
   - Event order: ShutdownRequested → CooperativeAttempted(method: ACPI|QMP|Agent) → CooperativeSucceeded | CooperativeTimedOut → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete(outcome: Graceful|Forced).
-  - Timeouts configurable via CLI/opts; status/UI remain responsive; per‑VM isolation maintained.
-  - Events/logs are machine‑parseable; exit codes reflect success vs forced kill.
-  Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/app/down.rs.
+  - Timeouts configurable via CLI/opts; status/UI remain responsive; per‑VM isolation maintained; idempotent behavior; stable JSON fields in logs/output.
+  Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/core/reporter.rs; src/app/down.rs.
 
 - Thread 10 — Managed images: structured verification/profile events (partially shipped; events missing): Emit machine‑parseable events during verification/profile so downstream tools can rely on them.
   Acceptance:
-  - Emit: ManagedImageVerificationStarted/ManagedImageVerificationResult (checksums, sizes, durations, outcome) and ManagedImageProfileApplied/ManagedImageProfileResult (profile id/name, steps, durations, outcome).
+  - Emit: ManagedImageVerificationStarted/ManagedImageVerificationResult and ManagedImageProfileApplied/ManagedImageProfileResult with stable fields (checksums, sizes, durations, outcomes, error?).
   - Reporter emits via the same unified channel used by lifecycle events; events are durable and appear in per‑VM or image‑scoped logs.
   - CLEAN links reclaimed‑bytes evidence to specific ManagedImageVerificationResult entries (by image id/path + timestamp) when available.
   Anchors: src/managed/mod.rs; src/core/logs.rs; src/core/reporter.rs; src/core/operations/clean.rs.
@@ -26,12 +23,12 @@ Active threads (intent + acceptance)
   Acceptance:
   - Triggered exactly once per VM per image/content hash change (idempotence stamps include base image hash + bootstrap artifact hash under state root).
   - Events: BootstrapStarted / BootstrapCompleted(status: Success|NoOp) / BootstrapFailed emitted via reporter; durable step logs (connect, transfer, apply, verify) with durations.
-  - Config knobs to disable or force ("always") bootstrap per‑VM or globally; safe defaults.
-  - Safe re‑runs: when inputs unchanged, emits NoOp without side effects; status remains responsive during long runs.
+  - Config knobs to disable or force ("always") bootstrap per‑VM or globally; safe defaults; responsive status during long runs.
+  - Safe re‑runs: when inputs unchanged, emits NoOp without side effects.
   Anchors: docs/BOOTSTRAP.md; src/core/status.rs (handshake fields); state‑root conventions.
 
 Current code state (observable surfaces)
-- CLI/library split via feature gating; default includes CLI; library builds with no‑default‐features.
+- CLI/library split via feature gating; default includes CLI; library builds with no‑default‑features.
 - Status exposes broker reachability (reachable, last_handshake_age_ms) and bus health; designed to remain non‑blocking.
 - Ports view with stable columns; Clean command with byte accounting/safeguards; Managed images support profile+checksum verification.
 - These shipped surfaces are stable; remaining work focuses on lifecycle events, image events, and post‑boot automation.
@@ -49,4 +46,4 @@ Direction of travel
 Cross‑links
 - BOOTSTRAP.md defines inputs/outputs for Thread 12 and references managed‑image events (Thread 10).
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence.
-- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md (graceful_shutdown_acpi_qmp consolidated here).
+- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.
