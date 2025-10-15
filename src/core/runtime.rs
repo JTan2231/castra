@@ -1878,10 +1878,7 @@ mod tests {
             unsafe {
                 let pid = libc::fork();
                 if pid < 0 {
-                    panic!(
-                        "fork failed: {}",
-                        std::io::Error::last_os_error()
-                    );
+                    panic!("fork failed: {}", std::io::Error::last_os_error());
                 }
                 if pid == 0 {
                     loop {
@@ -1910,8 +1907,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn cooperative_shutdown_reports_success_via_qmp(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn cooperative_shutdown_reports_success_via_qmp()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         use serde_json::Value;
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -1930,14 +1927,16 @@ mod tests {
         let listener = UnixListener::bind(&socket_path)?;
         let graceful_pid = pid_value;
 
-        let reaper = thread::spawn(move || loop {
-            let mut status = 0;
-            let res = unsafe { libc::waitpid(pid_value, &mut status, libc::WNOHANG) };
-            if res == 0 {
-                thread::sleep(Duration::from_millis(20));
-                continue;
+        let reaper = thread::spawn(move || {
+            loop {
+                let mut status = 0;
+                let res = unsafe { libc::waitpid(pid_value, &mut status, libc::WNOHANG) };
+                if res == 0 {
+                    thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+                break;
             }
-            break;
         });
 
         let qmp_thread = thread::spawn(move || {
@@ -1999,7 +1998,10 @@ mod tests {
             other => panic!("expected CooperativeAttempted event, got {other:?}"),
         }
         match &events[2] {
-            Event::CooperativeSucceeded { vm: event_vm, elapsed_ms } => {
+            Event::CooperativeSucceeded {
+                vm: event_vm,
+                elapsed_ms,
+            } => {
                 assert_eq!(event_vm, &vm.name);
                 assert!(*elapsed_ms <= 2000);
             }
@@ -2024,8 +2026,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn cooperative_shutdown_times_out_and_escalates(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn cooperative_shutdown_times_out_and_escalates()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         use serde_json::Value;
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
@@ -2043,14 +2045,16 @@ mod tests {
         let socket_path = state_root.join(format!("{}.qmp", vm.name));
         let listener = UnixListener::bind(&socket_path)?;
 
-        let reaper = thread::spawn(move || loop {
-            let mut status = 0;
-            let res = unsafe { libc::waitpid(pid_value, &mut status, libc::WNOHANG) };
-            if res == 0 {
-                thread::sleep(Duration::from_millis(20));
-                continue;
+        let reaper = thread::spawn(move || {
+            loop {
+                let mut status = 0;
+                let res = unsafe { libc::waitpid(pid_value, &mut status, libc::WNOHANG) };
+                if res == 0 {
+                    thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+                break;
             }
-            break;
         });
 
         let qmp_thread = thread::spawn(move || {
@@ -2095,10 +2099,13 @@ mod tests {
         assert!(!pidfile.exists());
 
         assert!(
-            report
-                .events
-                .iter()
-                .any(|event| matches!(event, Event::ShutdownEscalated { signal: ShutdownSignal::Sigterm, .. })),
+            report.events.iter().any(|event| matches!(
+                event,
+                Event::ShutdownEscalated {
+                    signal: ShutdownSignal::Sigterm,
+                    ..
+                }
+            )),
             "expected SIGTERM escalation event"
         );
 

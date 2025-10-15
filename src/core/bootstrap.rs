@@ -1123,12 +1123,9 @@ fn write_run_log(dir: &Path, log: &BootstrapRunLog) -> io::Result<PathBuf> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::{
-        ImageManager, LifecycleConfig,
-    };
     use crate::config::{
-        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig, MemorySpec, ProjectConfig,
-        VmBootstrapConfig, VmDefinition, Workflows, DEFAULT_BROKER_PORT,
+        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig, DEFAULT_BROKER_PORT,
+        MemorySpec, ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
     };
     use crate::core::events::{
         BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger, Event,
@@ -1136,6 +1133,7 @@ mod tests {
     use crate::core::outcome::BootstrapRunStatus;
     use crate::core::reporter::Reporter;
     use crate::core::runtime::{AssetPreparation, ResolvedVmAssets, RuntimeContext};
+    use crate::{ImageManager, LifecycleConfig};
     use serde_json::json;
     use std::env;
     use std::ffi::OsString;
@@ -1207,8 +1205,8 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_pipeline_runs_and_is_idempotent(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn bootstrap_pipeline_runs_and_is_idempotent()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let temp_dir = TempDir::new()?;
         let workspace = temp_dir.path();
 
@@ -1318,7 +1316,10 @@ mod tests {
             &mut diagnostics,
         )?;
 
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {diagnostics:?}");
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
         assert_eq!(outcomes.len(), 1);
         let outcome = &outcomes[0];
         assert_eq!(outcome.vm, "devbox");
@@ -1337,12 +1338,13 @@ mod tests {
             "bootstrap log should be written at {}",
             log_path.display()
         );
-        let log_json: serde_json::Value =
-            serde_json::from_slice(&fs::read(log_path)?)?;
+        let log_json: serde_json::Value = serde_json::from_slice(&fs::read(log_path)?)?;
         assert_eq!(log_json["status"], "success");
         assert_eq!(log_json["vm"], "devbox");
 
-        let stamp_path = plan_dir.join("stamps").join(format!("{expected_stamp}.json"));
+        let stamp_path = plan_dir
+            .join("stamps")
+            .join(format!("{expected_stamp}.json"));
         assert!(
             stamp_path.is_file(),
             "stamp should be recorded at {}",
@@ -1374,7 +1376,10 @@ mod tests {
         }
 
         let expected_steps = [
-            (BootstrapStepKind::WaitHandshake, BootstrapStepStatus::Success),
+            (
+                BootstrapStepKind::WaitHandshake,
+                BootstrapStepStatus::Success,
+            ),
             (BootstrapStepKind::Connect, BootstrapStepStatus::Success),
             (BootstrapStepKind::Transfer, BootstrapStepStatus::Success),
             (BootstrapStepKind::Apply, BootstrapStepStatus::Success),
@@ -1384,10 +1389,7 @@ mod tests {
         for (expected_kind, expected_status) in expected_steps {
             match iter.next().expect("bootstrap step event") {
                 Event::BootstrapStep {
-                    vm,
-                    step,
-                    status,
-                    ..
+                    vm, step, status, ..
                 } => {
                     assert_eq!(vm, "devbox");
                     assert_eq!(*step, expected_kind);
@@ -1399,10 +1401,7 @@ mod tests {
 
         match iter.next().expect("bootstrap completion event") {
             Event::BootstrapCompleted {
-                vm,
-                status,
-                stamp,
-                ..
+                vm, status, stamp, ..
             } => {
                 assert_eq!(vm, "devbox");
                 assert_eq!(*status, BootstrapStatus::Success);
@@ -1445,8 +1444,7 @@ mod tests {
             "noop bootstrap log should exist at {}",
             noop_log_path.display()
         );
-        let noop_log: serde_json::Value =
-            serde_json::from_slice(&fs::read(noop_log_path)?)?;
+        let noop_log: serde_json::Value = serde_json::from_slice(&fs::read(noop_log_path)?)?;
         assert_eq!(noop_log["status"], "noop");
         assert_eq!(noop_log["vm"], "devbox");
 
@@ -1471,10 +1469,7 @@ mod tests {
 
         match iter.next().expect("noop wait handshake step") {
             Event::BootstrapStep {
-                vm,
-                step,
-                status,
-                ..
+                vm, step, status, ..
             } => {
                 assert_eq!(vm, "devbox");
                 assert_eq!(*step, BootstrapStepKind::WaitHandshake);
@@ -1485,10 +1480,7 @@ mod tests {
 
         match iter.next().expect("noop completion event") {
             Event::BootstrapCompleted {
-                vm,
-                status,
-                stamp,
-                ..
+                vm, status, stamp, ..
             } => {
                 assert_eq!(vm, "devbox");
                 assert_eq!(*status, BootstrapStatus::NoOp);

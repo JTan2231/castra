@@ -7,7 +7,7 @@ use std::time::{Instant, SystemTime};
 mod bus;
 mod clean;
 
-use crate::config::{self, ProjectConfig};
+use crate::config::{self, ProjectConfig, VmDefinition};
 use crate::error::{Error, Result};
 use crate::managed::{
     ManagedArtifactKind, ManagedImageArtifactExpectation, ManagedImageArtifactSummary,
@@ -40,9 +40,10 @@ use super::project::{
 };
 use super::reporter::Reporter;
 use super::runtime::{
-    BootOverrides, BrokerProcessState, CheckOutcome, ShutdownTimeouts, check_disk_space,
-    check_host_capacity, ensure_ports_available, ensure_vm_assets, launch_vm,
-    prepare_runtime_context, shutdown_broker, shutdown_vm, start_broker,
+    BootOverrides, BrokerProcessState, CheckOutcome, ManagedAcquisition, RuntimeContext,
+    ShutdownTimeouts, check_disk_space, check_host_capacity, ensure_ports_available,
+    ensure_vm_assets, launch_vm, prepare_runtime_context, shutdown_broker, shutdown_vm,
+    start_broker,
 };
 use super::status as status_core;
 
@@ -162,108 +163,13 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
         for vm in &project.vms {
             let prep = ensure_vm_assets(vm, &context)?;
             if let Some(managed) = &prep.managed {
-                let handle = ManagedImageSpecHandle::from(managed.spec);
-                let image_id = managed.spec.id.to_string();
-                let image_version = managed.spec.version.to_string();
-                let image_path = managed.paths.root_disk.clone();
-                for event in &managed.events {
-                    reporter.emit(Event::ManagedArtifact {
-                        spec: handle.clone(),
-                        artifact: event.artifact,
-                        detail: event.detail.clone(),
-                        text: event.message.clone(),
-                    });
-                }
-                let verification_plan: Vec<ManagedImageArtifactPlan> = managed
-                    .verification
-                    .plan
-                    .iter()
-                    .map(|expectation| build_managed_artifact_plan(expectation, &managed.paths))
-                    .collect();
-                reporter.emit(Event::ManagedImageVerificationStarted {
-                    image_id: image_id.clone(),
-                    image_version: image_version.clone(),
-                    image_path: image_path.clone(),
-                    started_at: managed.verification.started_at,
-                    plan: verification_plan,
-                });
-                let verification_artifacts: Vec<ManagedImageArtifactReport> = managed
-                    .verification
-                    .artifacts
-                    .iter()
-                    .map(|summary| build_managed_artifact_report(summary, &managed.paths))
-                    .collect();
-                let mut total_size_bytes = 0u64;
-                for artifact in &verification_artifacts {
-                    if let Some(size) = artifact.size_bytes {
-                        total_size_bytes = total_size_bytes.saturating_add(size);
-                    }
-                }
-                let verification_error = match &managed.verification.outcome {
-                    ManagedImageVerificationOutcome::Failure { reason } => Some(reason.clone()),
-                    _ => None,
-                };
-                reporter.emit(Event::ManagedImageVerificationResult {
-                    image_id: image_id.clone(),
-                    image_version: image_version.clone(),
-                    image_path: image_path.clone(),
-                    completed_at: managed.verification.completed_at,
-                    duration_ms: managed.verification.duration.as_millis() as u64,
-                    outcome: managed.verification.outcome.clone(),
-                    error: verification_error,
-                    size_bytes: total_size_bytes,
-                    artifacts: verification_artifacts,
-                });
-                if let Some(boot) = prep.assets.boot.as_ref() {
-                    let profile_id = managed_profile_id(managed.spec);
-                    let profile_steps = build_profile_steps(boot);
-                    let profile_started_at = SystemTime::now();
-                    let profile_timer = Instant::now();
-                    context.image_manager.log_profile_application_started(
-                        managed.spec,
-                        &vm.name,
-                        boot.kernel.as_path(),
-                        boot.initrd.as_deref(),
-                        &boot.append,
-                        &boot.extra_args,
-                        boot.machine.as_deref(),
-                        profile_started_at,
-                    );
-                    reporter.emit(Event::ManagedImageProfileApplied {
-                        image_id: image_id.clone(),
-                        image_version: image_version.clone(),
-                        vm: vm.name.clone(),
-                        profile_id: profile_id.clone(),
-                        started_at: profile_started_at,
-                        steps: profile_steps.clone(),
-                    });
-                    let profile_outcome = ManagedImageProfileOutcome::Applied;
-                    let profile_duration = profile_timer.elapsed();
-                    context.image_manager.log_profile_application(
-                        managed.spec,
-                        &vm.name,
-                        boot.kernel.as_path(),
-                        boot.initrd.as_deref(),
-                        &boot.append,
-                        &boot.extra_args,
-                        boot.machine.as_deref(),
-                        profile_started_at,
-                        profile_duration,
-                        &profile_outcome,
-                    );
-                    let profile_completed_at = SystemTime::now();
-                    reporter.emit(Event::ManagedImageProfileResult {
-                        image_id: image_id.clone(),
-                        image_version: image_version.clone(),
-                        vm: vm.name.clone(),
-                        profile_id,
-                        completed_at: profile_completed_at,
-                        duration_ms: profile_duration.as_millis() as u64,
-                        outcome: profile_outcome,
-                        error: None,
-                        steps: profile_steps,
-                    });
-                }
+                emit_managed_acquisition_events(
+                    &mut reporter,
+                    &context,
+                    vm,
+                    managed,
+                    prep.assets.boot.as_ref(),
+                );
             }
             if prep.overlay_created {
                 reporter.emit(Event::OverlayPrepared {
@@ -582,6 +488,121 @@ pub(super) fn load_project_for_operation(
     Ok((config, synthetic))
 }
 
+fn emit_managed_acquisition_events(
+    reporter: &mut ReporterProxy<'_, '_>,
+    context: &RuntimeContext,
+    vm: &VmDefinition,
+    managed: &ManagedAcquisition,
+    boot: Option<&BootOverrides>,
+) {
+    let handle = ManagedImageSpecHandle::from(managed.spec);
+    let image_id = managed.spec.id.to_string();
+    let image_version = managed.spec.version.to_string();
+    let image_path = managed.paths.root_disk.clone();
+
+    for event in &managed.events {
+        reporter.emit(Event::ManagedArtifact {
+            spec: handle.clone(),
+            artifact: event.artifact,
+            detail: event.detail.clone(),
+            text: event.message.clone(),
+        });
+    }
+
+    let verification_plan: Vec<ManagedImageArtifactPlan> = managed
+        .verification
+        .plan
+        .iter()
+        .map(|expectation| build_managed_artifact_plan(expectation, &managed.paths))
+        .collect();
+    reporter.emit(Event::ManagedImageVerificationStarted {
+        image_id: image_id.clone(),
+        image_version: image_version.clone(),
+        image_path: image_path.clone(),
+        started_at: managed.verification.started_at,
+        plan: verification_plan,
+    });
+
+    let verification_artifacts: Vec<ManagedImageArtifactReport> = managed
+        .verification
+        .artifacts
+        .iter()
+        .map(|summary| build_managed_artifact_report(summary, &managed.paths))
+        .collect();
+    let mut total_size_bytes = 0u64;
+    for artifact in &verification_artifacts {
+        if let Some(size) = artifact.size_bytes {
+            total_size_bytes = total_size_bytes.saturating_add(size);
+        }
+    }
+    let verification_error = match &managed.verification.outcome {
+        ManagedImageVerificationOutcome::Failure { reason } => Some(reason.clone()),
+        _ => None,
+    };
+    reporter.emit(Event::ManagedImageVerificationResult {
+        image_id: image_id.clone(),
+        image_version: image_version.clone(),
+        image_path: image_path.clone(),
+        completed_at: managed.verification.completed_at,
+        duration_ms: managed.verification.duration.as_millis() as u64,
+        outcome: managed.verification.outcome.clone(),
+        error: verification_error,
+        size_bytes: total_size_bytes,
+        artifacts: verification_artifacts,
+    });
+
+    if let Some(boot) = boot {
+        let profile_id = managed_profile_id(managed.spec);
+        let profile_steps = build_profile_steps(boot);
+        let profile_started_at = SystemTime::now();
+        let profile_timer = Instant::now();
+        context.image_manager.log_profile_application_started(
+            managed.spec,
+            &vm.name,
+            boot.kernel.as_path(),
+            boot.initrd.as_deref(),
+            &boot.append,
+            &boot.extra_args,
+            boot.machine.as_deref(),
+            profile_started_at,
+        );
+        reporter.emit(Event::ManagedImageProfileApplied {
+            image_id: image_id.clone(),
+            image_version: image_version.clone(),
+            vm: vm.name.clone(),
+            profile_id: profile_id.clone(),
+            started_at: profile_started_at,
+            steps: profile_steps.clone(),
+        });
+        let profile_outcome = ManagedImageProfileOutcome::Applied;
+        let profile_duration = profile_timer.elapsed();
+        context.image_manager.log_profile_application(
+            managed.spec,
+            &vm.name,
+            boot.kernel.as_path(),
+            boot.initrd.as_deref(),
+            &boot.append,
+            &boot.extra_args,
+            boot.machine.as_deref(),
+            profile_started_at,
+            profile_duration,
+            &profile_outcome,
+        );
+        let profile_completed_at = SystemTime::now();
+        reporter.emit(Event::ManagedImageProfileResult {
+            image_id: image_id.clone(),
+            image_version: image_version.clone(),
+            vm: vm.name.clone(),
+            profile_id,
+            completed_at: profile_completed_at,
+            duration_ms: profile_duration.as_millis() as u64,
+            outcome: profile_outcome,
+            error: None,
+            steps: profile_steps,
+        });
+    }
+}
+
 fn build_managed_artifact_plan(
     expectation: &ManagedImageArtifactExpectation,
     paths: &ManagedImagePaths,
@@ -736,4 +757,290 @@ pub fn bus_tail(
     reporter: Option<&mut dyn Reporter>,
 ) -> OperationResult<BusTailOutcome> {
     bus::tail(options, reporter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        BaseImageSource, BootstrapMode, ManagedDiskKind, ManagedImageReference, MemorySpec,
+        VmBootstrapConfig,
+    };
+    use crate::core::reporter::Reporter;
+    use crate::core::runtime::{ManagedAcquisition, RuntimeContext};
+    use crate::managed::{
+        ArtifactSource, ImageManager, ManagedArtifactEvent, ManagedArtifactEventDetail,
+        ManagedArtifactKind, ManagedArtifactSpec, ManagedImageArtifactExpectation,
+        ManagedImageArtifactSummary, ManagedImagePaths, ManagedImageSpec, ManagedImageVerification,
+        ManagedImageVerificationOutcome, QemuProfile,
+    };
+    use serde_json::Value;
+    use std::error::Error;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, UNIX_EPOCH};
+    use tempfile::tempdir;
+
+    #[derive(Default)]
+    struct RecordingReporter {
+        events: Vec<Event>,
+    }
+
+    impl Reporter for RecordingReporter {
+        fn report(&mut self, event: Event) {
+            self.events.push(event);
+        }
+    }
+
+    #[test]
+    fn reporter_proxy_forwards_events_to_delegate() {
+        let mut delegate = RecordingReporter::default();
+        let mut events = Vec::new();
+
+        {
+            let mut proxy = ReporterProxy::new(Some(&mut delegate), &mut events);
+            proxy.emit(Event::Message {
+                severity: Severity::Info,
+                text: "hello".to_string(),
+            });
+            proxy.with_event_buffer(|buffer| {
+                buffer.push(Event::Message {
+                    severity: Severity::Warning,
+                    text: "warn".to_string(),
+                });
+            });
+        }
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(delegate.events.len(), 2);
+
+        for (buffered, reported) in events.iter().zip(delegate.events.iter()) {
+            assert_eq!(format!("{buffered:?}"), format!("{reported:?}"));
+        }
+    }
+
+    #[test]
+    fn managed_acquisition_events_align_across_sinks() -> std::result::Result<(), Box<dyn Error>> {
+        let temp = tempdir()?;
+        let state_root = temp.path().join("state");
+        let log_root = temp.path().join("logs");
+        let storage_root = temp.path().join("images");
+        fs::create_dir_all(&state_root)?;
+        fs::create_dir_all(&log_root)?;
+        fs::create_dir_all(&storage_root)?;
+
+        let image_manager = ImageManager::new(storage_root, log_root.clone(), None);
+        let context = RuntimeContext {
+            state_root: state_root.clone(),
+            log_root: log_root.clone(),
+            qemu_system: PathBuf::from("/bin/true"),
+            qemu_img: None,
+            image_manager,
+            accelerators: Vec::new(),
+        };
+
+        let artifacts_box = Box::new([ManagedArtifactSpec {
+            kind: ManagedArtifactKind::RootDisk,
+            final_filename: "disk.qcow2",
+            source: ArtifactSource {
+                url: "https://example.invalid/disk",
+                sha256: Some("expected"),
+                size: Some(12),
+            },
+            transformations: &[],
+        }]);
+        let artifacts_static: &'static [ManagedArtifactSpec] = Box::leak(artifacts_box);
+        let spec = Box::leak(Box::new(ManagedImageSpec {
+            id: "test-image",
+            version: "v1",
+            artifacts: artifacts_static,
+            qemu: QemuProfile {
+                kernel: None,
+                initrd: None,
+                append: "",
+                machine: None,
+                extra_args: &[],
+            },
+        }));
+
+        let plan_expectations = vec![ManagedImageArtifactExpectation {
+            kind: ManagedArtifactKind::RootDisk,
+            filename: "disk.qcow2".to_string(),
+            expected_sha256: Some("expected".to_string()),
+            expected_size_bytes: Some(12),
+        }];
+        let verification_summary = ManagedImageArtifactSummary {
+            kind: ManagedArtifactKind::RootDisk,
+            filename: "disk.qcow2".to_string(),
+            size_bytes: 12,
+            final_sha256: "final".to_string(),
+            source_sha256: Some("expected".to_string()),
+        };
+        let verification = ManagedImageVerification {
+            plan: plan_expectations.clone(),
+            artifacts: vec![verification_summary.clone()],
+            started_at: UNIX_EPOCH + Duration::from_secs(5),
+            completed_at: UNIX_EPOCH + Duration::from_secs(8),
+            duration: Duration::from_secs(3),
+            outcome: ManagedImageVerificationOutcome::Success,
+        };
+
+        let root_disk_path = temp.path().join("disk.qcow2");
+        fs::write(&root_disk_path, b"disk")?;
+        let kernel_path = temp.path().join("kernel");
+        fs::write(&kernel_path, b"kernel")?;
+        let initrd_path = temp.path().join("initrd");
+        fs::write(&initrd_path, b"initrd")?;
+        let managed_paths = ManagedImagePaths {
+            root_disk: root_disk_path.clone(),
+            kernel: Some(kernel_path.clone()),
+            initrd: Some(initrd_path.clone()),
+        };
+
+        let managed_event = ManagedArtifactEvent {
+            artifact: ManagedArtifactKind::RootDisk,
+            detail: ManagedArtifactEventDetail::CacheHit,
+            message: "root disk: cache hit (verified).".to_string(),
+        };
+        let managed = ManagedAcquisition {
+            spec,
+            events: vec![managed_event],
+            verification: verification.clone(),
+            paths: managed_paths.clone(),
+        };
+
+        let boot = BootOverrides {
+            kernel: kernel_path.clone(),
+            initrd: Some(initrd_path.clone()),
+            append: "console=ttyS0".to_string(),
+            extra_args: vec!["debug".to_string()],
+            machine: Some("pc-q35".to_string()),
+        };
+
+        let vm = VmDefinition {
+            name: "vm-test".to_string(),
+            role_name: "app".to_string(),
+            replica_index: 0,
+            description: None,
+            base_image: BaseImageSource::Managed(ManagedImageReference {
+                name: spec.id.to_string(),
+                version: spec.version.to_string(),
+                disk: ManagedDiskKind::RootDisk,
+                checksum: None,
+                size_bytes: None,
+            }),
+            overlay: temp.path().join("vm-test.qcow2"),
+            cpus: 1,
+            memory: MemorySpec::new("512M", Some(512 * 1024 * 1024)),
+            port_forwards: Vec::new(),
+            bootstrap: VmBootstrapConfig {
+                mode: BootstrapMode::Auto,
+            },
+        };
+
+        context.image_manager.log_verification_started(
+            spec,
+            &plan_expectations,
+            verification.started_at,
+        );
+        context
+            .image_manager
+            .log_verification_result(spec, &verification);
+
+        let mut delegate = RecordingReporter::default();
+        let mut events = Vec::new();
+        {
+            let mut proxy = ReporterProxy::new(Some(&mut delegate), &mut events);
+            emit_managed_acquisition_events(&mut proxy, &context, &vm, &managed, Some(&boot));
+        }
+
+        assert_eq!(events.len(), delegate.events.len());
+        for (buffered, reported) in events.iter().zip(delegate.events.iter()) {
+            assert_eq!(format!("{buffered:?}"), format!("{reported:?}"));
+        }
+
+        let log_path = context.log_root.join("image-manager.log");
+        let contents = fs::read_to_string(&log_path)?;
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 4);
+
+        let verification_started: Value = serde_json::from_str(lines[0])?;
+        assert_eq!(
+            verification_started["event"],
+            "managed-image-verification-started"
+        );
+        assert_eq!(verification_started["image"], spec.id);
+        assert_eq!(verification_started["version"], spec.version);
+        assert_eq!(verification_started["plan"][0]["filename"], "disk.qcow2");
+
+        let verification_result: Value = serde_json::from_str(lines[1])?;
+        assert_eq!(
+            verification_result["event"],
+            "managed-image-verification-result"
+        );
+        assert_eq!(verification_result["outcome"], "success");
+        assert_eq!(
+            verification_result["artifacts"][0]["filename"],
+            "disk.qcow2"
+        );
+
+        let profile_started: Value = serde_json::from_str(lines[2])?;
+        assert_eq!(profile_started["event"], "managed-image-profile-applied");
+        assert_eq!(profile_started["vm"], vm.name);
+
+        let profile_result: Value = serde_json::from_str(lines[3])?;
+        assert_eq!(profile_result["event"], "managed-image-profile-result");
+        assert_eq!(profile_result["vm"], vm.name);
+        assert_eq!(profile_result["outcome"], "applied");
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::ManagedArtifact { .. }))
+        );
+        let (image_id, plan) = events
+            .iter()
+            .find_map(|event| match event {
+                Event::ManagedImageVerificationStarted { image_id, plan, .. } => {
+                    Some((image_id, plan))
+                }
+                _ => None,
+            })
+            .expect("verification started event");
+        assert_eq!(image_id, spec.id);
+        assert_eq!(
+            plan[0].path.as_ref().map(Path::new),
+            Some(managed.paths.root_disk.as_path())
+        );
+
+        let (size_bytes, artifact_reports) = events
+            .iter()
+            .find_map(|event| match event {
+                Event::ManagedImageVerificationResult {
+                    size_bytes,
+                    artifacts,
+                    ..
+                } => Some((size_bytes, artifacts)),
+                _ => None,
+            })
+            .expect("verification result event");
+        assert_eq!(*size_bytes, 12);
+        assert_eq!(artifact_reports[0].filename, "disk.qcow2");
+
+        let profile_steps = events
+            .iter()
+            .find_map(|event| match event {
+                Event::ManagedImageProfileResult { steps, .. } => Some(steps),
+                _ => None,
+            })
+            .expect("profile result event");
+        assert!(profile_steps.iter().any(|step| step.starts_with("kernel=")));
+        assert!(
+            profile_steps
+                .iter()
+                .any(|step| step.contains("console=ttyS0"))
+        );
+
+        Ok(())
+    }
 }
