@@ -1,9 +1,9 @@
 SNAPSHOT v0.8.5 — Castra (VM orchestration harness)
 
 Edits since v0.8.5 refresh
-- Thread 2 progress: `down` performs parallel per‑VM shutdown and streams events live, improving responsiveness and isolation. Runtime now emits CooperativeAttempted with timeout_ms=0 when the cooperative channel is unavailable (fixes misleading inherited waits). Added unix‑gated tests for QMP success/timeout paths and unavailable‑channel path (asserts ChannelUnavailable reason and ordered events). Remaining: full cooperative attempt/timeout/escalation sequencing in runtime for available channels.
+- Thread 2 progress: `down` performs parallel per‑VM shutdown and streams events live, improving responsiveness and isolation. Runtime now emits CooperativeAttempted with timeout_ms=0 when the cooperative channel is unavailable (fixes misleading inherited waits). Added unix‑gated tests for QMP success/timeout paths and unavailable‑channel path (asserts ChannelUnavailable reason and ordered events). CLI now treats forced shutdowns as success (prints warning listing VMs) aligning with lifecycle acceptance. Remaining: full cooperative attempt/timeout/escalation sequencing in runtime for available channels.
 - Thread 10 steady: Managed‑image evidence linkage in CLEAN is live and rendered (root disk path, bytes, verification delta). No new behavior changes; durability/docs remain outstanding.
-- Thread 12 progress: Bootstrap pipeline now surfaces handshake timeout failures. On handshake wait failure we emit a failed WaitHandshake step and BootstrapFailed, and persist a failed run log with the timeout detail. Polling now honours configured timeouts with 500 ms slices to keep waits bounded, and the unix-gated timeout test asserts the failure log JSON (PATH_LOCK still serializes PATH mutations).
+- Thread 12 progress: Bootstrap pipeline now surfaces handshake timeout failures and runs per‑VM concurrently with live event streaming via a central channel while preserving per‑VM ordering. On handshake wait failure we emit a failed WaitHandshake step and BootstrapFailed, and persist a failed run log with the timeout detail. Polling now honours configured timeouts with 500 ms slices to keep waits bounded, and the unix-gated timeout test asserts the failure log JSON (PATH_LOCK still serializes PATH mutations). Outcomes are returned in original VM order; first error captured without blocking others.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (partially implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -11,6 +11,7 @@ Active threads (intent + acceptance)
   - `down` runs VM shutdowns concurrently and streams events live.
   - total_ms added to ShutdownComplete and rendered in `down`.
   - Runtime fix: CooperativeAttempted reports timeout_ms=0 when cooperative method/channel is unavailable; CooperativeTimedOut includes reason=ChannelUnavailable in that path.
+  - CLI treats forced shutdowns as overall success; forced set listed as warning.
   - Test coverage exists for QMP‑based cooperative sequences (success and timeout) and for unavailable channel semantics (ordered events, 0ms wait, escalation path).
   Next slice:
   - Emit CooperativeAttempted and CooperativeSucceeded/CooperativeTimedOut prior to TERM/KILL for available channels in the runtime, honoring configurable timeouts and preserving per‑VM isolation.
@@ -37,7 +38,8 @@ Active threads (intent + acceptance)
   Progress:
   - Unix‑gated integration test exercises the pipeline end‑to‑end with stubbed ssh/scp/qemu, covering step events, stamps, durable logs, and NoOp replay.
   - Handshake timeout failures are now observable and durable: WaitHandshake step marked Failed, BootstrapFailed emitted, and a single failed run log persisted with error detail.
-  - Handshake polling now uses sub-second slices to respect configured deadlines, and failure run logs are validated for content.
+  - Handshake polling now uses sub-second slices to respect configured deadlines; failure run logs are validated for content.
+  - Runs now execute per‑VM concurrently with live event streaming while preserving per‑VM ordering; outcomes returned in input order; first error captured without blocking others.
   Next slice:
   - Add per-invocation bootstrap overrides (for example `castra up --bootstrap <mode>`) and document emitted event/log payloads so automation can rely on them.
   Acceptance:
@@ -52,8 +54,8 @@ Current code state (observable surfaces)
 - Status exposes broker reachability (reachable, last_handshake_age_ms) and bus health; designed to remain non‑blocking.
 - Ports view with stable columns; Clean command with byte accounting/safeguards; now links managed‑image evidence (root disk, bytes, verification delta) where available.
 - Managed images emit structured verification/profile events with plans, reports, checksums, steps; app/up renders size/duration and steps; automation can consume JSON streams.
-- Down command renders per‑VM shutdown durations and performs parallel shutdown with live event streaming.
-- Bootstrap pipeline surfaces handshake timeout failures with explicit events and durable run logs (test‑gated for now).
+- Down command renders per‑VM shutdown durations and performs parallel shutdown with live event streaming; forced shutdown returns success with warning.
+- Bootstrap pipeline surfaces handshake timeout failures with explicit events and durable run logs; executes per‑VM concurrently with live event streaming; outcomes returned in original order.
 
 Narrative themes
 1) Robust VM lifecycle — predictable, observable cooperative shutdown with bounded waits and clear outcomes.
@@ -61,14 +63,14 @@ Narrative themes
 12) Day‑1 productivity — idempotent, host‑driven post‑boot configuration triggered by real connectivity signals.
 
 Direction of travel
-- Implement cooperative shutdown events/behavior (Thread 2) honoring lifecycle waits and emitting ordered events; expand fields where already shipping (timeout_ms=0 on unavailable path, reason when timed out).
+- Implement cooperative shutdown events/behavior (Thread 2) honoring lifecycle waits and emitting ordered events; expand fields where already shipping (timeout_ms=0 on unavailable path, reason when timed out). Maintain exit-success semantics on forced shutdowns.
 - For Thread 10, add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
 - Build the post-boot bootstrap pipeline keyed to handshake and guarded by idempotence stamps (Thread 12); follow up with CLI overrides and documentation for bootstrap events/log payloads.
 
 Cross‑links
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; CLEAN.md documents the narrative.
-- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md (notes concurrency/live streaming progress, event fields, and next slice).
-- Thread 12 canonical TODO notes integration test coverage and handshake‑failure behavior plus first implementation slice.
+- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md (notes concurrency/live streaming progress, event fields, forced-success exit, and next slice).
+- Thread 12 canonical TODO notes integration test coverage, handshake‑failure behavior, concurrency/live events, and next implementation slice.
 
 Editorial housekeeping
 - Canonical TODO files:

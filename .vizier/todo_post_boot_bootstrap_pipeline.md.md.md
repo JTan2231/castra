@@ -1,26 +1,44 @@
+---
+Thread 12 — Post-boot bootstrap pipeline (canonical)
+
+Tension
+- Users want day-1 configuration automatically after a VM is reachable; doing this manually is slow and error-prone.
+
+Change (product-level)
+- After the first successful broker handshake per VM for a given (base image hash, bootstrap artifact hash), apply a host-provided bootstrap (e.g., Nix flake) idempotently over SSH.
+
+Trigger and idempotence
+- Triggered exactly once per VM when the idempotence stamp changes: (base_image_hash, bootstrap_artifact_hash).
+- Safe re-runs emit NoOp when inputs unchanged; no side effects.
+
+Events (stable)
+- BootstrapStarted { vm_id, base_image_hash, bootstrap_hash }
+- BootstrapCompleted { vm_id, status: Success | NoOp, duration_ms }
+- BootstrapFailed { vm_id, error }
+- Durable step logs for: connect, transfer, apply, verify (with durations)
+
+Acceptance criteria
+- Config knobs to disable or force ("always") globally and per-VM with safe defaults.
+- Status/UI remain responsive during long runs; progress can be observed via events/logs.
+- Portability target: macOS/Linux hosts with POSIX + Nix + SSH; failure modes are reported cleanly via events and exit codes.
+
+Pointers (non-prescriptive anchors)
+- docs/BOOTSTRAP.md (contract)
+- src/core/status.rs (handshake signals)
+- state-root conventions for idempotence stamps
+- src/core/reporter.rs (events)
+
+Cross-links
+- Consumes ManagedImageVerificationResult (Thread 10) when present to validate inputs.
 
 ---
-Progress update (v0.8.5+)
-- Handshake timeout failures are observable and durable: WaitHandshake step marked Failed, BootstrapFailed emitted, and a single failed run log persisted with timeout detail.
-- Handshake polling now honours configured timeouts with 500 ms slices; the timeout test asserts the failure log JSON payload.
-- Unix-gated integration test exercises pipeline with stubbed ssh/scp/qemu covering step events, stamps, durable logs, and NoOp replay.
+Progress (v0.8.5+)
+- Bootstrap runs concurrently per VM with live event streaming via a central channel; per-VM ordering and isolation are preserved.
+- Handshake timeout failures are observable and durable: Failed WaitHandshake step → BootstrapFailed with a single durable run log; polling uses sub-second slices respecting configured deadlines.
 
 Next slice
-- Add per-invocation bootstrap overrides (e.g. CLI flag) so operators can force/skip runs without editing config; document the behaviour.
-- Publish sample bootstrap event/log payloads (docs + CLEAN.md) and ensure JSON/TTY surfaces stay aligned for automation.
+- Add per-invocation bootstrap overrides (e.g., `castra up --bootstrap <mode>`), and document emitted event/log payloads for automation.
 
-Acceptance refinements
-- Triggered exactly once per stamp change; safe re-runs emit NoOp without side effects.
-- Events: BootstrapStarted / BootstrapCompleted(status: Success|NoOp, duration_ms) / BootstrapFailed; step logs are durable with durations.
-- Config knobs to disable or force ("always") globally and per-VM; defaults favor "once per stamp".
-- Status remains responsive during long runs; failures surface cleanly via events and exit codes.
-
-Cross-link
-- May consume ManagedImageVerificationResult (Thread 10) to validate inputs but must not block when absent.
-
-Anchors
-- docs/BOOTSTRAP.md; src/core/status.rs; state-root conventions; src/core/reporter.rs.
----
-
-
+Acceptance clarifications
+- Outcomes are returned in the original VM order; first error across workers is captured while allowing others to proceed.
 ---
