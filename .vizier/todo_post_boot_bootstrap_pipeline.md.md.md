@@ -8,3 +8,18 @@ Next slice
 
 ---
 
+
+---
+Progress update (v0.8.5+)
+- Handshake wait failures are now observable and durable: emit BootstrapStep(WaitHandshake, Failed) followed by BootstrapFailed, and persist a single failed run log containing the timeout/error detail. Unix-gated test forces 0s handshake timeout and asserts the sequence and durability.
+
+Next slice (unchanged)
+- Behind an opt-in flag, implement the single-VM happy path emitting BootstrapStarted → durable step logs (connect, transfer, apply, verify) → BootstrapCompleted(Success|NoOp), respecting idempotence stamps and keeping status responsive.
+
+Acceptance clarifications
+- Failure visibility is part of acceptance: handshake failure must surface as a Failed step + BootstrapFailed with durable run log; re-runs with unchanged inputs stay NoOp.
+---
+
+
+---
+

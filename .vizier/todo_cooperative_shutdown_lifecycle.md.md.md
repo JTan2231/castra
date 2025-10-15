@@ -13,3 +13,18 @@ Next slice refinement
 
 
 ---
+
+---
+Progress update (v0.8.5+)
+- Runtime now emits CooperativeAttempted with timeout_ms=0 when the cooperative channel is unavailable and CooperativeTimedOut with reason=ChannelUnavailable in that path. Added unix-gated tests asserting ordered events including escalation and ShutdownComplete.
+
+Next slice (unchanged)
+- Implement CooperativeAttempted → CooperativeSucceeded/CooperativeTimedOut sequencing for available channels before TERM/KILL with configurable waits.
+
+Acceptance clarifications
+- Ensure timeout_ms and reason fields are present and stable in CooperativeTimedOut; preserve per-VM isolation and live streaming during waits.
+---
+
+
+---
+

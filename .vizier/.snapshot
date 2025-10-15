@@ -3,7 +3,7 @@ SNAPSHOT v0.8.5 — Castra (VM orchestration harness)
 Edits since v0.8.5 refresh
 - Thread 2 progress: `down` performs parallel per‑VM shutdown and streams events live, improving responsiveness and isolation. Runtime now emits CooperativeAttempted with timeout_ms=0 when the cooperative channel is unavailable (fixes misleading inherited waits). Added unix‑gated tests for QMP success/timeout paths and unavailable‑channel path (asserts ChannelUnavailable reason and ordered events). Remaining: full cooperative attempt/timeout/escalation sequencing in runtime for available channels.
 - Thread 10 steady: Managed‑image evidence linkage in CLEAN is live and rendered (root disk path, bytes, verification delta). No new behavior changes; durability/docs remain outstanding.
-- Thread 12 scaffolding: Added unix‑gated integration test covering bootstrap gating, steps, idempotence stamps, durable logs, and NoOp replay using stubbed tools. Feature remains behind the narrative (“not yet implemented” for users).
+- Thread 12 progress: Bootstrap pipeline now surfaces handshake timeout failures. On handshake wait failure, we emit a failed WaitHandshake step and BootstrapFailed, and persist a failed run log with the timeout detail. Added a unix‑gated test forcing a 0s handshake timeout to assert: BootstrapStarted → BootstrapStep(WaitHandshake, Failed) → BootstrapFailed, and a single failed run log. PATH_LOCK introduced to serialize PATH mutations in tests.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (partially implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -29,18 +29,19 @@ Active threads (intent + acceptance)
   - Ensure reporter durability across sinks (unified stream + per‑image logs) with smoke tests; document field stability with example payloads (docs + CLEAN.md).
   Anchors: src/managed/mod.rs; src/core/events.rs; src/core/logs.rs; src/core/reporter.rs; src/core/operations/clean.rs; src/app/clean.rs; CLEAN.md.
 
-- Thread 12 — Post‑boot bootstrap pipeline (not yet implemented): After first successful broker handshake for a VM, apply a host‑provided bootstrap (e.g., Nix flake) over SSH idempotently.
+- Thread 12 — Post‑boot bootstrap pipeline (partially implemented, behind flag): After first successful broker handshake for a VM, apply a host‑provided bootstrap (e.g., Nix flake) over SSH idempotently.
   Clarifications:
   - Triggered exactly once per VM per (base_image_hash, bootstrap_artifact_hash) change; handshake signal from status (reachable, last_handshake_age_ms) is the gate.
   - May consume ManagedImageVerificationResult (Thread 10) to validate inputs but must not block when absent.
   - Config knobs to disable or force ("always") bootstrap per‑VM or globally; safe defaults favor "once per stamp" with clear eventing.
   Progress:
   - Unix‑gated integration test exercises the pipeline end‑to‑end with stubbed ssh/scp/qemu, covering step events, stamps, durable logs, and NoOp replay.
+  - Handshake timeout failures are now observable and durable: WaitHandshake step marked Failed, BootstrapFailed emitted, and a single failed run log persisted with error detail.
   Next slice:
   - Emit BootstrapStarted/Completed(NoOp|Success) with durable step logs (connect, transfer, apply, verify) for a single‑VM path behind an opt‑in flag.
   Acceptance:
   - Triggered exactly once per VM per image/content hash change (idempotence stamps include base image hash + bootstrap artifact hash under state root).
-  - Events: BootstrapStarted / BootstrapCompleted(status: Success|NoOp) / BootstrapFailed emitted via reporter; durable step logs with durations.
+  - Events: BootstrapStarted / BootstrapCompleted(status: Success|NoOp) / BootstrapFailed emitted via reporter; durable step logs with durations; handshake failures surface as Failed step + BootstrapFailed with durable error log.
   - Config knobs to disable or force ("always") bootstrap per‑VM or globally; safe defaults; responsive status during long runs.
   - Safe re‑runs: when inputs unchanged, emits NoOp without side effects.
   Anchors: docs/BOOTSTRAP.md; src/core/status.rs (handshake fields); state‑root conventions.
@@ -51,6 +52,7 @@ Current code state (observable surfaces)
 - Ports view with stable columns; Clean command with byte accounting/safeguards; now links managed‑image evidence (root disk, bytes, verification delta) where available.
 - Managed images emit structured verification/profile events with plans, reports, checksums, steps; app/up renders size/duration and steps; automation can consume JSON streams.
 - Down command renders per‑VM shutdown durations and performs parallel shutdown with live event streaming.
+- Bootstrap pipeline surfaces handshake timeout failures with explicit events and durable run logs (test‑gated for now).
 
 Narrative themes
 1) Robust VM lifecycle — predictable, observable cooperative shutdown with bounded waits and clear outcomes.
@@ -60,12 +62,12 @@ Narrative themes
 Direction of travel
 - Implement cooperative shutdown events/behavior (Thread 2) honoring lifecycle waits and emitting ordered events; expand fields where already shipping (timeout_ms=0 on unavailable path, reason when timed out).
 - For Thread 10, add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
-- Build the post‑boot bootstrap pipeline keyed to handshake and guarded by idempotence stamps (Thread 12).
+- Build the post‑boot bootstrap pipeline keyed to handshake and guarded by idempotence stamps (Thread 12); continue hardening failure visibility/durability (step‑level statuses, run logs).
 
 Cross‑links
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; CLEAN.md documents the narrative.
 - Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md (notes concurrency/live streaming progress, event fields, and next slice).
-- Thread 12 canonical TODO notes integration test coverage and first implementation slice.
+- Thread 12 canonical TODO notes integration test coverage and handshake‑failure behavior plus first implementation slice.
 
 Editorial housekeeping
 - Canonical TODO files:
