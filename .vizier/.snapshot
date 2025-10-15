@@ -1,15 +1,18 @@
 SNAPSHOT v0.8.5 — Castra (VM orchestration harness)
 
-Edits since v0.8.4
-- Thread 10 landed: Introduced explicit managed-image structured events and wiring in operations::up with corresponding CLI rendering updates. Added plan/report/checksum structs; result events now include duration_ms and size_bytes. Profile events capture steps[]. CLEAN now links reclaimed-bytes evidence to ManagedImageVerificationResult.
-- Thread 2 progress: ShutdownComplete now includes total_ms and `castra down` renders per-VM shutdown durations. Cooperative attempt sequence remains pending.
+Edits since v0.8.5 refresh
+- Thread 2 progress: `down` now performs parallel per‑VM shutdown and streams events live, improving responsiveness and isolation. Added test coverage for cooperative shutdown sequencing via QMP (success and timeout/escalation paths). Behavior for cooperative attempts is still pending in runtime.
+- Thread 10 steady: Managed‑image evidence linkage in CLEAN is live and rendered (root disk path, bytes, verification delta). No new behavior changes; durability/docs remain outstanding.
+- Thread 12 scaffolding: Added unix‑gated integration test covering bootstrap gating, steps, idempotence stamps, durable logs, and NoOp replay using stubbed tools. Feature remains behind the narrative (“not yet implemented” for users).
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (partially implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
   Progress:
-  - total_ms added to ShutdownComplete and rendered in `down`; groundwork for ordered timing.
+  - `down` runs VM shutdowns concurrently and streams events live.
+  - total_ms added to ShutdownComplete and rendered in `down`.
+  - Test coverage exists for QMP‑based cooperative sequences (success and timeout) asserting event order and fields.
   Next slice:
-  - Emit CooperativeAttempted and CooperativeSucceeded/CooperativeTimedOut prior to TERM/KILL, honoring configurable timeouts and preserving per‑VM isolation.
+  - Emit CooperativeAttempted and CooperativeSucceeded/CooperativeTimedOut prior to TERM/KILL in the actual runtime, honoring configurable timeouts and preserving per‑VM isolation.
   Acceptance (per VM):
   - Event order: ShutdownRequested → CooperativeAttempted(method: ACPI|QMP|Agent) → CooperativeSucceeded | CooperativeTimedOut → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete(outcome: Graceful|Forced, total_ms).
   - Timeouts configurable via CLI/opts; status/UI remain responsive; per‑VM isolation maintained; idempotent behavior; stable JSON fields in logs/output.
@@ -20,7 +23,7 @@ Active threads (intent + acceptance)
   - New Event variants in src/core/events.rs: ManagedImageVerificationStarted/Result and ManagedImageProfileApplied/Result.
   - Support types: ManagedImageArtifactPlan, ManagedImageArtifactReport, ManagedImageChecksum; Profile components extended with steps[] in events.
   - Emission path in src/core/operations/mod.rs::up; app/up.rs renders durations, sizes, and steps.
-  - CLEAN integrates reclaimed‑bytes evidence with latest ManagedImageVerificationResult per image and surfaces linkage in CLI output.
+  - CLEAN integrates reclaimed‑bytes evidence with latest ManagedImageVerificationResult per image and surfaces linkage (root disk path, bytes, verification delta) in CLI output.
   Outstanding:
   - Ensure reporter durability across sinks (unified stream + per‑image logs) with smoke tests; document field stability with example payloads (docs + CLEAN.md).
   Anchors: src/managed/mod.rs; src/core/events.rs; src/core/logs.rs; src/core/reporter.rs; src/core/operations/clean.rs; src/app/clean.rs; CLEAN.md.
@@ -30,6 +33,8 @@ Active threads (intent + acceptance)
   - Triggered exactly once per VM per (base_image_hash, bootstrap_artifact_hash) change; handshake signal from status (reachable, last_handshake_age_ms) is the gate.
   - May consume ManagedImageVerificationResult (Thread 10) to validate inputs but must not block when absent.
   - Config knobs to disable or force ("always") bootstrap per‑VM or globally; safe defaults favor "once per stamp" with clear eventing.
+  Progress:
+  - Unix‑gated integration test exercises the pipeline end‑to‑end with stubbed ssh/scp/qemu, covering step events, stamps, durable logs, and NoOp replay.
   Next slice:
   - Emit BootstrapStarted/Completed(NoOp|Success) with durable step logs (connect, transfer, apply, verify) for a single‑VM path behind an opt‑in flag.
   Acceptance:
@@ -42,9 +47,9 @@ Active threads (intent + acceptance)
 Current code state (observable surfaces)
 - CLI/library split via feature gating; default includes CLI; library builds with no‑default‑features.
 - Status exposes broker reachability (reachable, last_handshake_age_ms) and bus health; designed to remain non‑blocking.
-- Ports view with stable columns; Clean command with byte accounting/safeguards; now links managed‑image evidence where available.
+- Ports view with stable columns; Clean command with byte accounting/safeguards; now links managed‑image evidence (root disk, bytes, verification delta) where available.
 - Managed images emit structured verification/profile events with plans, reports, checksums, steps; app/up renders size/duration and steps; automation can consume JSON streams.
-- Down command renders per‑VM shutdown durations from ShutdownComplete.total_ms.
+- Down command renders per‑VM shutdown durations and performs parallel shutdown with live event streaming.
 
 Narrative themes
 1) Robust VM lifecycle — predictable, observable cooperative shutdown with bounded waits and clear outcomes.
@@ -58,13 +63,12 @@ Direction of travel
 
 Cross‑links
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; CLEAN.md documents the narrative.
-- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md (notes total_ms progress and next slice).
+- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md (notes concurrency/live streaming progress, total_ms, and next slice).
 - Thread 10 canonical TODO updated with shipped state and remaining durability/docs gaps.
-- Thread 12 canonical TODO clarified with trigger/idempotence details and first implementation slice.
+- Thread 12 canonical TODO notes integration test coverage and first implementation slice.
 
-Editorial housekeeping (v0.8.5)
-- Removed duplicate TODO variants with extra .md extensions; retained canonical files:
+Editorial housekeeping
+- Canonical TODO files:
   - todo_cooperative_shutdown_lifecycle.md.md
   - todo_managed_image_structured_events.md.md
   - todo_post_boot_bootstrap_pipeline.md.md
-- Updated Threads 2 and 10 TODOs with v0.8.5 shipped progress and next slices; left Thread 12 TODO intact with clarified acceptance.
