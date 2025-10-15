@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::cli::DownArgs;
 use crate::core::diagnostics::Severity;
@@ -11,8 +12,20 @@ use crate::{Error, Result};
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
 
 pub fn handle_down(args: DownArgs, config_override: Option<&PathBuf>) -> Result<()> {
+    if let Some(value) = args.sigkill_wait_secs {
+        if value == 0 {
+            return Err(Error::PreflightFailed {
+                message: "Override --sigkill-wait-secs must be at least 1 to confirm guest exit."
+                    .into(),
+            });
+        }
+    }
+
     let options = DownOptions {
         config: config_load_options(config_override, args.skip_discovery, "down")?,
+        graceful_wait: args.graceful_wait_secs.map(Duration::from_secs),
+        sigterm_wait: args.sigterm_wait_secs.map(Duration::from_secs),
+        sigkill_wait: args.sigkill_wait_secs.map(Duration::from_secs),
     };
 
     let output = operations::down(options, None)?;

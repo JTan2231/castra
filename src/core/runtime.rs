@@ -16,8 +16,7 @@ use libc::{self, pid_t};
 use sysinfo::{Disks, System};
 
 use crate::config::{
-    BaseImageSource, LifecycleConfig, ManagedDiskKind, PortForward, PortProtocol, ProjectConfig,
-    VmDefinition,
+    BaseImageSource, ManagedDiskKind, PortForward, PortProtocol, ProjectConfig, VmDefinition,
 };
 use crate::error::{Error, Result};
 use crate::managed::{
@@ -613,10 +612,32 @@ pub fn launch_vm(
     Ok(pid)
 }
 
+/// Shutdown timing configuration derived from lifecycle settings and CLI overrides.
+#[derive(Debug, Clone, Copy)]
+pub struct ShutdownTimeouts {
+    /// Duration to wait for cooperative shutdown before escalating.
+    pub cooperative: Duration,
+    /// Duration to wait after sending SIGTERM.
+    pub sigterm: Duration,
+    /// Duration to wait after sending SIGKILL.
+    pub sigkill: Duration,
+}
+
+impl ShutdownTimeouts {
+    /// Construct a new set of shutdown timeouts.
+    pub fn new(cooperative: Duration, sigterm: Duration, sigkill: Duration) -> Self {
+        Self {
+            cooperative,
+            sigterm,
+            sigkill,
+        }
+    }
+}
+
 pub fn shutdown_vm(
     vm: &VmDefinition,
     state_root: &Path,
-    lifecycle: &LifecycleConfig,
+    timeouts: ShutdownTimeouts,
     events: &mut Vec<Event>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<(bool, ShutdownOutcome)> {
@@ -673,9 +694,9 @@ pub fn shutdown_vm(
         ),
     })?;
 
-    let graceful_wait = lifecycle.graceful_wait();
-    let sigterm_wait = lifecycle.sigterm_wait();
-    let sigkill_wait = lifecycle.sigkill_wait();
+    let graceful_wait = timeouts.cooperative;
+    let sigterm_wait = timeouts.sigterm;
+    let sigkill_wait = timeouts.sigkill;
     let graceful_wait_ms = duration_to_millis(graceful_wait);
     let sigterm_wait_ms = duration_to_millis(sigterm_wait);
     let sigkill_wait_ms = duration_to_millis(sigkill_wait);

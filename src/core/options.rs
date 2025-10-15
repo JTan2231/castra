@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -89,12 +90,21 @@ impl Default for UpOptions {
 pub struct DownOptions {
     /// Configuration lookup parameters.
     pub config: ConfigLoadOptions,
+    /// Optional override for the cooperative shutdown wait.
+    pub graceful_wait: Option<Duration>,
+    /// Optional override for the SIGTERM escalation wait.
+    pub sigterm_wait: Option<Duration>,
+    /// Optional override for the SIGKILL escalation wait.
+    pub sigkill_wait: Option<Duration>,
 }
 
 impl Default for DownOptions {
     fn default() -> Self {
         Self {
             config: ConfigLoadOptions::discover(true),
+            graceful_wait: None,
+            sigterm_wait: None,
+            sigkill_wait: None,
         }
     }
 }

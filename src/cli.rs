@@ -35,7 +35,7 @@ pub enum Commands {
     Init(InitArgs),
     /// Boot the configured virtual machines.
     Up(UpArgs),
-    /// Shut down running virtual machines. Emits lifecycle events (ShutdownRequested → CooperativeAttempted → CooperativeSucceeded|CooperativeTimedOut → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete) while attempting a QMP powerdown before signals (timeouts configurable via [lifecycle]).
+    /// Shut down running virtual machines. Emits lifecycle events (ShutdownRequested → CooperativeAttempted → CooperativeSucceeded|CooperativeTimedOut → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete) while attempting a QMP powerdown before signals (timeouts configurable via CLI flags or [lifecycle]).
     Down(DownArgs),
     /// Inspect the state of managed virtual machines.
     Status(StatusArgs),
@@ -103,6 +103,30 @@ pub struct DownArgs {
         help = "Skip config discovery; requires --config <PATH> (e.g. --config ./castra.toml)."
     )]
     pub skip_discovery: bool,
+
+    /// Override the cooperative shutdown wait (seconds) before escalation, otherwise use [lifecycle].graceful_shutdown_wait_secs.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        help = "Override the cooperative shutdown wait in seconds before escalation (defaults to [lifecycle].graceful_shutdown_wait_secs)."
+    )]
+    pub graceful_wait_secs: Option<u64>,
+
+    /// Override the wait after SIGTERM before escalating to SIGKILL, otherwise use [lifecycle].sigterm_wait_secs.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        help = "Override the SIGTERM wait in seconds before escalating to SIGKILL (defaults to [lifecycle].sigterm_wait_secs)."
+    )]
+    pub sigterm_wait_secs: Option<u64>,
+
+    /// Override the wait after SIGKILL before declaring failure, otherwise use [lifecycle].sigkill_wait_secs.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        help = "Override the SIGKILL wait in seconds before declaring failure (defaults to [lifecycle].sigkill_wait_secs). Must be ≥ 1."
+    )]
+    pub sigkill_wait_secs: Option<u64>,
 }
 
 #[derive(Debug, Args, Default)]

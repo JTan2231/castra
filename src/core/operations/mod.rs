@@ -30,7 +30,7 @@ use super::project::{
 };
 use super::reporter::Reporter;
 use super::runtime::{
-    BrokerProcessState, CheckOutcome, check_disk_space, check_host_capacity,
+    BrokerProcessState, CheckOutcome, ShutdownTimeouts, check_disk_space, check_host_capacity,
     ensure_ports_available, ensure_vm_assets, launch_vm, prepare_runtime_context, shutdown_broker,
     shutdown_vm, start_broker,
 };
@@ -316,17 +316,22 @@ pub fn down(
 
     let (project, _) = load_project_for_operation(&options.config, &mut diagnostics)?;
     let state_root = config_state_root(&project);
+    let shutdown_timeouts = ShutdownTimeouts::new(
+        options
+            .graceful_wait
+            .unwrap_or_else(|| project.lifecycle.graceful_wait()),
+        options
+            .sigterm_wait
+            .unwrap_or_else(|| project.lifecycle.sigterm_wait()),
+        options
+            .sigkill_wait
+            .unwrap_or_else(|| project.lifecycle.sigkill_wait()),
+    );
 
     let mut vm_results = Vec::new();
     for vm in &project.vms {
         let (changed, outcome) = reporter.with_event_buffer(|events| {
-            shutdown_vm(
-                vm,
-                &state_root,
-                &project.lifecycle,
-                events,
-                &mut diagnostics,
-            )
+            shutdown_vm(vm, &state_root, shutdown_timeouts, events, &mut diagnostics)
         })?;
         vm_results.push(VmShutdownOutcome {
             name: vm.name.clone(),
