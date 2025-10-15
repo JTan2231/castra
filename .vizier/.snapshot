@@ -1,9 +1,8 @@
-SNAPSHOT v0.8.3 — Castra (VM orchestration harness)
+SNAPSHOT v0.8.4 — Castra (VM orchestration harness)
 
-Edits since v0.8.2
-- Thread 10 tightened: structured managed-image events must be represented as variants in src/core/events.rs; `castra clean` surfaces linkage evidence; durations required for ordering.
-- Anchors expanded for Thread 10: added src/app/clean.rs and CLEAN.md to reflect user-facing reclaimed-bytes evidence.
-- Canonicalization: Consolidated duplicate TODO for Thread 10; clarified acceptance to explicitly require events.rs variants, duration_ms in Result events, and concise linkage surfaced by `castra clean` when evidence exists.
+Edits since v0.8.3
+- Thread 10 consolidation: removed duplicate TODO; kept a single canonical item and clarified acceptance on variant-backed events and durability.
+- Acceptance tightened: managed-image events must be explicit variants in src/core/events.rs and flow through the unified reporter channel; result events require duration_ms for stable ordering; CLEAN must indicate absence of evidence explicitly.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (not yet implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -15,7 +14,7 @@ Active threads (intent + acceptance)
 - Thread 10 — Managed images: structured verification/profile events (partially shipped; events missing): Emit machine‑parseable events during verification/profile so downstream tools can rely on them.
   Acceptance:
   - Emit: ManagedImageVerificationStarted/ManagedImageVerificationResult and ManagedImageProfileApplied/ManagedImageProfileResult with stable fields (checksums, sizes, durations, outcomes, error?).
-  - Events are expressed as variants in src/core/events.rs to guarantee type‑stable emission across reporters.
+  - Events are expressed as explicit variants in src/core/events.rs to guarantee type‑stable emission across reporters.
   - Reporter emits via the same unified channel used by lifecycle events; events are durable and appear in per‑VM or image‑scoped logs.
   - CLEAN links reclaimed‑bytes evidence to specific ManagedImageVerificationResult entries (by image id/path + timestamp proximity) when available; `castra clean` surfaces this linkage succinctly per image; absence of evidence is explicitly indicated.
   - Result events include duration_ms (or sufficient monotonic timing) to enable ordering without wall‑clock dependency.
