@@ -173,20 +173,68 @@ fn run_for_vm(
     }
 
     let handshake_start = Instant::now();
-    let handshake_ts = wait_for_handshake(&context.state_root, &vm.name, plan.handshake_timeout)?;
+    let handshake_result =
+        wait_for_handshake(&context.state_root, &vm.name, plan.handshake_timeout);
     let handshake_duration = handshake_start.elapsed();
-    steps.push(StepLog::success(
-        BootstrapStepKind::WaitHandshake,
-        handshake_duration,
-        Some(format!("Fresh handshake observed at {:?}.", handshake_ts)),
-    ));
-    reporter.report(Event::BootstrapStep {
-        vm: vm.name.clone(),
-        step: BootstrapStepKind::WaitHandshake,
-        status: BootstrapStepStatus::Success,
-        duration_ms: elapsed_ms(handshake_duration),
-        detail: Some("Handshake fresh".to_string()),
-    });
+
+    match handshake_result {
+        Ok(handshake_ts) => {
+            steps.push(StepLog::success(
+                BootstrapStepKind::WaitHandshake,
+                handshake_duration,
+                Some(format!("Fresh handshake observed at {:?}.", handshake_ts)),
+            ));
+            reporter.report(Event::BootstrapStep {
+                vm: vm.name.clone(),
+                step: BootstrapStepKind::WaitHandshake,
+                status: BootstrapStepStatus::Success,
+                duration_ms: elapsed_ms(handshake_duration),
+                detail: Some("Handshake fresh".to_string()),
+            });
+        }
+        Err(err) => {
+            let failure_detail = match &err {
+                Error::BootstrapFailed { message, .. } => message.clone(),
+                other => other.to_string(),
+            };
+            steps.push(StepLog::from_result(
+                BootstrapStepKind::WaitHandshake,
+                BootstrapStepStatus::Failed,
+                handshake_duration,
+                Some(failure_detail.clone()),
+            ));
+            reporter.report(Event::BootstrapStep {
+                vm: vm.name.clone(),
+                step: BootstrapStepKind::WaitHandshake,
+                status: BootstrapStepStatus::Failed,
+                duration_ms: elapsed_ms(handshake_duration),
+                detail: Some(failure_detail.clone()),
+            });
+            let duration_ms = elapsed_ms(start.elapsed());
+            reporter.report(Event::BootstrapFailed {
+                vm: vm.name.clone(),
+                duration_ms,
+                error: failure_detail.clone(),
+            });
+            write_run_log(
+                &log_dir,
+                &BootstrapRunLog::failure(
+                    &vm.name,
+                    &plan,
+                    &base_hash,
+                    None,
+                    steps,
+                    duration_ms,
+                    failure_detail.clone(),
+                ),
+            )
+            .map_err(|err| Error::BootstrapFailed {
+                vm: vm.name.clone(),
+                message: format!("Failed to persist bootstrap log: {err}"),
+            })?;
+            return Err(err);
+        }
+    }
 
     let connect_res = check_connectivity(&plan);
     let connect_duration = connect_res.duration;
@@ -1133,6 +1181,7 @@ mod tests {
     use crate::core::outcome::BootstrapRunStatus;
     use crate::core::reporter::Reporter;
     use crate::core::runtime::{AssetPreparation, ResolvedVmAssets, RuntimeContext};
+    use crate::error::Error;
     use crate::{ImageManager, LifecycleConfig};
     use serde_json::json;
     use std::env;
@@ -1141,6 +1190,7 @@ mod tests {
     use std::io::{self, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempfile::TempDir;
 
@@ -1160,6 +1210,8 @@ mod tests {
             self.events
         }
     }
+
+    static PATH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     struct PathGuard {
         original: Option<OsString>,
@@ -1207,6 +1259,7 @@ mod tests {
     #[test]
     fn bootstrap_pipeline_runs_and_is_idempotent()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let _env_guard = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let temp_dir = TempDir::new()?;
         let workspace = temp_dir.path();
 
@@ -1493,6 +1546,183 @@ mod tests {
             iter.next().is_none(),
             "no additional events expected during noop run"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_pipeline_reports_handshake_failure()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let _env_guard = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let temp_dir = TempDir::new()?;
+        let workspace = temp_dir.path();
+
+        let state_root = workspace.join("state");
+        fs::create_dir_all(state_root.join("handshakes"))?;
+        fs::create_dir_all(state_root.join("bootstrap").join("devbox"))?;
+        fs::create_dir_all(state_root.join("logs"))?;
+        fs::create_dir_all(state_root.join("images"))?;
+        fs::create_dir_all(state_root.join("overlays"))?;
+
+        let plan_dir = state_root.join("bootstrap").join("devbox");
+        let plan_path = plan_dir.join("plan.json");
+        let plan_payload = json!({
+            "artifact_hash": "artifact-hash-v1",
+            "handshake_timeout_secs": 0,
+            "ssh": {
+                "user": "root",
+                "host": "127.0.0.1",
+                "port": 22,
+                "options": []
+            },
+            "remote": {
+                "bootstrap_script": "/bin/true",
+                "args": []
+            }
+        });
+        fs::write(&plan_path, serde_json::to_vec_pretty(&plan_payload)?)?;
+
+        let base_image_path = workspace.join("base.img");
+        fs::write(&base_image_path, b"test-image-contents")?;
+
+        let bin_dir = workspace.join("bin");
+        fs::create_dir_all(&bin_dir)?;
+        write_executable(&bin_dir, "ssh", "#!/bin/sh\nexit 0\n")?;
+        write_executable(&bin_dir, "scp", "#!/bin/sh\nexit 0\n")?;
+        write_executable(&bin_dir, "qemu-system-x86_64", "#!/bin/sh\nexit 0\n")?;
+        let _path_guard = PathGuard::prepend(&bin_dir);
+
+        let image_manager =
+            ImageManager::new(state_root.join("images"), state_root.join("logs"), None);
+        let context = RuntimeContext {
+            state_root: state_root.clone(),
+            log_root: state_root.join("logs"),
+            qemu_system: bin_dir.join("qemu-system-x86_64"),
+            qemu_img: None,
+            image_manager,
+            accelerators: Vec::new(),
+        };
+
+        let vm = VmDefinition {
+            name: "devbox".to_string(),
+            role_name: "devbox".to_string(),
+            replica_index: 0,
+            description: None,
+            base_image: BaseImageSource::Path(base_image_path.clone()),
+            overlay: state_root.join("overlays").join("devbox.qcow2"),
+            cpus: 2,
+            memory: MemorySpec::new("2048 MiB", Some(2 * 1024 * 1024 * 1024)),
+            port_forwards: Vec::new(),
+            bootstrap: VmBootstrapConfig {
+                mode: BootstrapMode::Auto,
+            },
+        };
+
+        let project = ProjectConfig {
+            file_path: workspace.join("castra.toml"),
+            version: "0.2.0".to_string(),
+            project_name: "demo".to_string(),
+            vms: vec![vm],
+            state_root: state_root.clone(),
+            workflows: Workflows { init: Vec::new() },
+            broker: BrokerConfig {
+                port: DEFAULT_BROKER_PORT,
+            },
+            lifecycle: LifecycleConfig::default(),
+            bootstrap: BootstrapConfig {
+                mode: BootstrapMode::Auto,
+            },
+            warnings: Vec::new(),
+        };
+
+        let preparations = vec![AssetPreparation {
+            assets: ResolvedVmAssets { boot: None },
+            managed: None,
+            overlay_created: false,
+        }];
+
+        let mut reporter = RecordingReporter::default();
+        let mut diagnostics = Vec::new();
+        let err = run_all(
+            &project,
+            &context,
+            &preparations,
+            &mut reporter,
+            &mut diagnostics,
+        )
+        .expect_err("handshake timeout should abort bootstrap");
+
+        assert!(
+            diagnostics.is_empty(),
+            "diagnostics should remain empty when handshake fails"
+        );
+
+        match err {
+            Error::BootstrapFailed { vm, message } => {
+                assert_eq!(vm, "devbox");
+                assert_eq!(
+                    message,
+                    "Timed out waiting for fresh broker handshake after 0 seconds."
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let events = reporter.take();
+        assert_eq!(
+            events.len(),
+            3,
+            "expected started, wait-handshake failure, and failure events"
+        );
+        match &events[0] {
+            Event::BootstrapStarted { vm, .. } => assert_eq!(vm, "devbox"),
+            other => panic!("unexpected first event: {other:?}"),
+        }
+        match &events[1] {
+            Event::BootstrapStep {
+                vm,
+                step,
+                status,
+                detail,
+                ..
+            } => {
+                assert_eq!(vm, "devbox");
+                assert_eq!(*step, BootstrapStepKind::WaitHandshake);
+                assert_eq!(*status, BootstrapStepStatus::Failed);
+                assert_eq!(
+                    detail.as_deref(),
+                    Some("Timed out waiting for fresh broker handshake after 0 seconds.")
+                );
+            }
+            other => panic!("unexpected second event: {other:?}"),
+        }
+        match &events[2] {
+            Event::BootstrapFailed { vm, error, .. } => {
+                assert_eq!(vm, "devbox");
+                assert_eq!(
+                    error,
+                    "Timed out waiting for fresh broker handshake after 0 seconds."
+                );
+            }
+            other => panic!("unexpected third event: {other:?}"),
+        }
+
+        let log_dir = context.log_root.join("bootstrap");
+        let mut log_paths = Vec::new();
+        for entry in fs::read_dir(&log_dir)? {
+            log_paths.push(entry?.path());
+        }
+        assert_eq!(log_paths.len(), 1, "expected single bootstrap log file");
+        let log_json: serde_json::Value = serde_json::from_slice(&fs::read(&log_paths[0])?)?;
+        assert_eq!(log_json["status"], "failed");
+        assert_eq!(log_json["vm"], "devbox");
+        assert_eq!(log_json["steps"][0]["step"], "wait-handshake");
+        assert_eq!(log_json["steps"][0]["status"], "failed");
+        assert_eq!(
+            log_json["steps"][0]["detail"],
+            "Timed out waiting for fresh broker handshake after 0 seconds."
+        );
+        assert_eq!(log_json["steps"][1]["step"], "error");
 
         Ok(())
     }
