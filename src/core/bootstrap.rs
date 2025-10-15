@@ -537,7 +537,8 @@ fn wait_for_handshake(state_root: &Path, vm: &str, timeout: Duration) -> Result<
             }
         }
 
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        if now >= deadline {
             return Err(Error::BootstrapFailed {
                 vm: vm.to_string(),
                 message: format!(
@@ -547,7 +548,13 @@ fn wait_for_handshake(state_root: &Path, vm: &str, timeout: Duration) -> Result<
             });
         }
 
-        std::thread::sleep(Duration::from_secs(2));
+        let remaining = deadline.saturating_duration_since(now);
+        let sleep_for = remaining.min(Duration::from_millis(500));
+        if sleep_for.is_zero() {
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(sleep_for);
+        }
     }
 }
 
@@ -1249,7 +1256,7 @@ mod tests {
     use crate::core::runtime::{AssetPreparation, ResolvedVmAssets, RuntimeContext};
     use crate::error::Error;
     use crate::{ImageManager, LifecycleConfig};
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::env;
     use std::ffi::OsString;
     use std::fs::{self, File};
@@ -1733,6 +1740,41 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+
+        let log_dir = state_root.join("logs").join(LOG_SUBDIR);
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&log_dir).map_err(|err| {
+            io::Error::new(err.kind(), format!("failed to read {log_dir:?}: {err}"))
+        })? {
+            entries.push(entry?);
+        }
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected a single bootstrap failure log in {}",
+            log_dir.display()
+        );
+        let log_path = entries.remove(0).path();
+        let log_contents = fs::read(&log_path)?;
+        let log_json: Value = serde_json::from_slice(&log_contents)?;
+        assert_eq!(log_json["status"], "failed");
+        let steps = log_json["steps"]
+            .as_array()
+            .expect("steps should be array in failure log");
+        assert!(
+            steps
+                .iter()
+                .any(|step| step["step"] == "wait-handshake" && step["status"] == "failed"),
+            "wait-handshake step should be marked failed: {steps:#?}"
+        );
+        let error_step = steps
+            .last()
+            .expect("failure log should include terminal error step");
+        assert_eq!(error_step["step"], "error");
+        assert_eq!(
+            error_step["detail"],
+            "Timed out waiting for fresh broker handshake after 0 seconds."
+        );
 
         let events = reporter.take();
         assert_eq!(
