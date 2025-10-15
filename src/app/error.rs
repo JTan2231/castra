@@ -18,7 +18,6 @@ pub fn exit_code(err: &Error) -> ExitCode {
         Error::LaunchFailed { .. } => ExitCode::from(70),
         Error::ShutdownFailed { .. } => ExitCode::from(70),
         Error::BootstrapFailed { .. } => ExitCode::from(70),
-        Error::ShutdownForced { .. } => ExitCode::from(75),
         Error::BusPublishFailed { .. } => ExitCode::from(70),
         Error::LogReadFailed { .. } => ExitCode::from(74),
     }
@@ -92,12 +91,6 @@ mod tests {
                 message: "err".into()
             }),
             ExitCode::from(70)
-        );
-        assert_eq!(
-            exit_code(&Error::ShutdownForced {
-                vms: vec!["vm".into()]
-            }),
-            ExitCode::from(75)
         );
         assert_eq!(
             exit_code(&Error::BusPublishFailed {

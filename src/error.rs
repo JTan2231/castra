@@ -64,8 +64,6 @@ pub enum Error {
     ShutdownFailed { vm: String, message: String },
     #[error("Failed to bootstrap VM `{vm}`: {message}")]
     BootstrapFailed { vm: String, message: String },
-    #[error("Forced shutdown was required for VM(s): {vms:?}")]
-    ShutdownForced { vms: Vec<String> },
     #[error("Failed to publish bus frame: {message}")]
     BusPublishFailed { message: String },
     #[error("Failed to read logs at {path}: {source}")]

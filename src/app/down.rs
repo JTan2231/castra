@@ -47,7 +47,10 @@ pub fn handle_down(args: DownArgs, config_override: Option<&PathBuf>) -> Result<
         .collect();
 
     if !forced.is_empty() {
-        return Err(Error::ShutdownForced { vms: forced });
+        eprintln!(
+            "Warning: forced shutdown required for {}.",
+            forced.join(", ")
+        );
     }
 
     Ok(())
