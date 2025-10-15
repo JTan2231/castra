@@ -28,4 +28,29 @@ Pointers
 - src/app/bus.rs; src/cli.rs (host UX)
 
 Safety note
-- Only acknowledge host CLI publish after durable append to the bus logs; enforce bounded per-session queues to prevent starvation.
+- Only acknowledge host CLI publish after durable append to the bus logs; enforce bounded per-session queues to prevent starvation.Expose back-pressure signals and add reconnection/timeout edge-case tests for Castra Bus.
+Make back-pressure explicitly observable via logs/events without changing the non-blocking status contract; add tests covering heartbeat timeouts, cleanup, and reconnection so subscription state is deterministic and recoverable. Keep host CLI behavior and durable publish acks unchanged. (thread: Castra Bus — snapshot v0.7.9/Thread 13)
+
+Acceptance Criteria
+- Back-pressure observability:
+  - When a session hits bounded queues or slow-consumer thresholds, broker emits deterministic log lines and structured Events with reason (e.g., queue_full, slow_consumer) and action (retry|disconnect).
+  - If a disconnect is triggered by back-pressure, subscription state is cleared and the reason is visible in logs/events.
+- Status non-blocking and stable:
+  - `castra status --json` remains non-blocking; `bus_subscribed`, `last_publish_age_ms`, and `last_heartbeat_age_ms` semantics unchanged and documented.
+  - BUS and BUS AGE columns continue to render without blocking, including during back-pressure and timeouts.
+- Edge-case tests:
+  - Heartbeat timeout triggers session cleanup; subsequent status shows unsubscribed and ages reset/diagnosed; no leaked state.
+  - Reconnection after timeout re-establishes subscription; ages reset appropriately; previous session state is not reused.
+  - Under sustained slow consumer, publishes remain durably appended; per-session queue limits enforced without starving other sessions.
+  - Concurrent sessions under load do not block status or host CLI operations; publish acks remain timely post-durability.
+- Host UX and compatibility:
+  - `castra bus publish` behavior unchanged (success only after durable append; actionable failures).
+  - Guests without bus capability continue handshake-only with no regressions to `reachable`/`last_handshake_age_ms`.
+- Documentation:
+  - BUS.md updated with copy-pastable examples of back-pressure logs/events, timeout cleanup, and reconnection; legend/help notes how to observe these conditions.
+
+Pointers
+- src/core/broker.rs (session/back-pressure paths, cleanup)
+- src/core/status.rs; src/app/status.rs (status fields and legend)
+- src/core/events.rs; src/core/logs.rs (back-pressure and timeout signals)
+- src/app/bus.rs; src/cli.rs (CLI behavior)

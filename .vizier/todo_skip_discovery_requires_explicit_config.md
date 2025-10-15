@@ -113,4 +113,23 @@ Acceptance Criteria:
 Pointers:
 - src/app/common.rs; src/core/options.rs (discovery enforcement)
 - src/cli.rs; src/app/* (help/copy per command)
-- tests/integration/ (skip-discovery pairing and no-walk)
+- tests/integration/ (skip-discovery pairing and no-walk)Finalize strict skip-discovery contract with help copy and tests (no filesystem walking).
+When `--skip-discovery` is provided, commands that require a project config must either be paired with `--config <path>` (or `--state-root` for clean-only) or fail fast with a clear usage/config diagnostic. Confirm zero directory walking on correctly paired invocations. (thread: discovery-semantics — snapshot v0.7.9/Thread 1)
+
+Acceptance Criteria
+- Fast-fail behavior (verified):
+  - `castra status --skip-discovery` without `--config` exits with the documented usage/config code and prints guidance including an example (`--config <path>`).
+  - Same fast-fail for `up`, `down`, `ports`, `logs`, and `bus` when `--skip-discovery` lacks `--config`.
+  - `castra clean --skip-discovery` fast-fails unless paired with `--config` or `--state-root`, with diagnostics explaining the required pairing.
+- No-walk guarantee (verified):
+  - With `--skip-discovery --config <path>`, and for `clean` with `--state-root`, no upward filesystem walking occurs; tests exercise the library path used by the CLI.
+- Help and docs:
+  - Help text for `--skip-discovery`, `--config`, and `--state-root` updated to describe required pairing and stricter semantics; include one example per relevant command.
+- Tests:
+  - Integration/unit tests cover fast-fail for each command (`status`, `up`, `down`, `ports`, `logs`, `bus`, `clean`) when `--skip-discovery` lacks a required path.
+  - Positive-path tests confirm zero discovery when correctly paired and validate exit codes/messages.
+
+Pointers
+- src/app/common.rs; src/core/options.rs (discovery enforcement path)
+- src/cli.rs; src/app/* (help/copy)
+- tests/integration/* (skip-discovery pairing and no-walk)

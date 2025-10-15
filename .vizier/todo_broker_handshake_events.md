@@ -50,3 +50,28 @@ Thread link: Thread 3 — Broker reachability.
 
 ---
 
+Add denial/timeout handshake evidence and non-blocking status guarantee.
+Describe and enforce behavior when a handshake is denied or times out: emit deterministic broker log lines and structured Events (including reason when applicable); keep status fields non-blocking with unchanged semantics; add docs examples for success vs denial/timeout. (thread: broker-reachability)
+
+Acceptance Criteria
+- Status non-blocking:
+  - `castra status --json` never blocks regardless of broker state (reachable, denial, timeout, unreachable) and returns within a bounded time.
+  - `reachable` and `last_handshake_age_ms` semantics remain unchanged and documented; no new fields required to observe failures/timeouts.
+- Denied handshake evidence:
+  - Broker emits exactly one deterministic log line per denied handshake with: timestamp, VM identity, normalized capabilities (sorted/deduped), session_outcome=denied, reason.
+  - A structured Handshake Event is emitted with fields: vm, capabilities (normalized), session_outcome=denied, reason (non-empty).
+  - Tests cover log line stability and Event fields.
+- Timeout handshake evidence:
+  - Broker emits exactly one deterministic log line per timeout with: timestamp, VM identity, normalized capabilities, session_outcome=timeout (no reason required).
+  - A structured Handshake Event is emitted with fields: vm, capabilities (normalized), session_outcome=timeout.
+  - Tests cover log line stability and Event fields.
+- Documentation:
+  - Add copy-pastable examples of success, denial (with reason), and timeout handshake logs and Events.
+  - Update status help/legend confirming freshness semantics and non-blocking guarantee; keep field names stable.
+
+Pointers
+- src/core/broker.rs (handshake denial/timeout paths)
+- src/core/events.rs (Handshake Event variants/fields)
+- src/core/logs.rs (deterministic broker log lines)
+- src/app/status.rs (legend/help copy)
+- docs/BUS.md and docs/status JSON fields/examples

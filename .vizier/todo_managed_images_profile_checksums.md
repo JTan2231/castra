@@ -72,4 +72,27 @@ Pointers:
 - src/managed/mod.rs (catalog/events hooks)
 - src/core/logs.rs; src/core/reporter.rs (deterministic lines and Event wiring)
 - src/app/up.rs (rendering)
-- docs/ (cache layout, status/BOOTSTRAP cross‑links; CLEAN.md integration)
+- docs/ (cache layout, status/BOOTSTRAP cross‑links; CLEAN.md integration)Emit structured managed‑image verification/profile events and finalize diagnostics/docs.
+When using managed images, surface machine‑parseable Events for checksum verification and applied boot profiles, with deterministic log lines and stable fields; sharpen offline/mismatch/transform diagnostics; document cache layout and remediation. (thread: managed-images)
+
+Acceptance Criteria
+- Verification events and logs:
+  - On successful source verification, emit a structured Event containing image id/version and an artifact list (name, size, checksum); a single deterministic log line mirrors these fields.
+  - Covered by tests validating field presence, ordering stability for parsers, and visibility via OperationOutput and `castra logs`.
+- Boot profile events and logs:
+  - When a boot profile is applied (kernel/initrd/cmdline/machine present in catalog), emit a structured Event enumerating which components were used; a deterministic log line is written.
+  - Covered by tests; `castra up` progress reflects “verified source checksums” and “applied boot profile.”
+- Diagnostics and safety:
+  - Offline/no-network: clear message indicating cache hit/miss with a hint to prefetch; no partial files remain; exit codes align with existing preflight/IO buckets.
+  - Checksum mismatch: error includes expected vs observed checksum and a hint to remove the cached file and retry; partial files are removed; exit code aligns with IO/launch.
+  - Transform failure: message is distinct from network/mismatch and routes through diagnostics with the appropriate existing code.
+- Documentation:
+  - Docs describe cache layout, verification behavior, and include copy‑pastable examples of the new Events and log lines with field names.
+  - BOOTSTRAP.md references these Events as preconditions for host‑side bootstrap.
+  - CLEAN.md/README cross‑link as the remediation path (e.g., `castra clean --managed-only`), noting reclaimed‑bytes accounting alignment.
+
+Pointers
+- src/managed/mod.rs (catalog hooks)
+- src/core/reporter.rs; src/core/logs.rs (Event wiring and deterministic lines)
+- src/app/up.rs (progress rendering)
+- docs/ (cache layout, BOOTSTRAP and CLEAN cross‑links)
