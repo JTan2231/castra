@@ -53,4 +53,24 @@ Pointers
 - src/core/broker.rs (session/back-pressure paths, cleanup)
 - src/core/status.rs; src/app/status.rs (status fields and legend)
 - src/core/events.rs; src/core/logs.rs (back-pressure and timeout signals)
-- src/app/bus.rs; src/cli.rs (CLI behavior)
+- src/app/bus.rs; src/cli.rs (CLI behavior)Update (Snapshot v0.7.10): Back-pressure observability delivered.
+
+- Delivered now:
+  - Deterministic WARN log lines and structured JSONL event records (bus-events.jsonl) for back-pressure and error conditions: slow_consumer, queue_full, heartbeat_timeout, io_error, protocol_error with action (reject|disconnect) and optional detail.
+  - Broker records these on publish ack failures, heartbeat ack failures, subscription overflow, heartbeat timeout, and IO/protocol errors; includes unit test persisting both log and event.
+- Remaining scope tightened:
+  - Edge-case tests around reconnection/timeout ensuring status remains non-blocking and subscription state resets cleanly; verify ages reset appropriately.
+  - Documentation updates to BUS.md with copy-paste examples of logs/events and guidance on observing/triaging back-pressure.
+  - Confirm host CLI UX surfaces actionable diagnostics when back-pressure leads to disconnect while preserving durable publish semantics.
+
+Acceptance delta
+- Existing acceptance for back-pressure observability is considered met via logs + events + test.
+- Acceptance now focuses on reconnection/timeout behavior, non-blocking status guarantees, and documentation completeness.
+
+Pointers
+- src/core/broker.rs (session/back-pressure paths, timeout cleanup, reconnect handling)
+- src/core/status.rs; src/app/status.rs (fields and legend/help)
+- src/core/events.rs; src/core/logs.rs (structured Events and deterministic lines)
+- src/app/bus.rs; src/cli.rs (host UX and diagnostics)
+
+Thread link: Thread 13 — Castra Bus.
