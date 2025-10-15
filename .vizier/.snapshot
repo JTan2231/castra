@@ -1,7 +1,7 @@
 SNAPSHOT v0.8.5 — Castra (VM orchestration harness)
 
 Edits since v0.8.5 refresh
-- Thread 2 progress: `down` now performs parallel per‑VM shutdown and streams events live, improving responsiveness and isolation. Added test coverage for cooperative shutdown sequencing via QMP (success and timeout/escalation paths). Behavior for cooperative attempts is still pending in runtime.
+- Thread 2 progress: `down` performs parallel per‑VM shutdown and streams events live, improving responsiveness and isolation. Runtime now emits CooperativeAttempted with timeout_ms=0 when the cooperative channel is unavailable (fixes misleading inherited waits). Added unix‑gated tests for QMP success/timeout paths and unavailable‑channel path (asserts ChannelUnavailable reason and ordered events). Remaining: full cooperative attempt/timeout/escalation sequencing in runtime for available channels.
 - Thread 10 steady: Managed‑image evidence linkage in CLEAN is live and rendered (root disk path, bytes, verification delta). No new behavior changes; durability/docs remain outstanding.
 - Thread 12 scaffolding: Added unix‑gated integration test covering bootstrap gating, steps, idempotence stamps, durable logs, and NoOp replay using stubbed tools. Feature remains behind the narrative (“not yet implemented” for users).
 
@@ -10,11 +10,12 @@ Active threads (intent + acceptance)
   Progress:
   - `down` runs VM shutdowns concurrently and streams events live.
   - total_ms added to ShutdownComplete and rendered in `down`.
-  - Test coverage exists for QMP‑based cooperative sequences (success and timeout) asserting event order and fields.
+  - Runtime fix: CooperativeAttempted reports timeout_ms=0 when cooperative method/channel is unavailable; CooperativeTimedOut includes reason=ChannelUnavailable in that path.
+  - Test coverage exists for QMP‑based cooperative sequences (success and timeout) and for unavailable channel semantics (ordered events, 0ms wait, escalation path).
   Next slice:
-  - Emit CooperativeAttempted and CooperativeSucceeded/CooperativeTimedOut prior to TERM/KILL in the actual runtime, honoring configurable timeouts and preserving per‑VM isolation.
+  - Emit CooperativeAttempted and CooperativeSucceeded/CooperativeTimedOut prior to TERM/KILL for available channels in the runtime, honoring configurable timeouts and preserving per‑VM isolation.
   Acceptance (per VM):
-  - Event order: ShutdownRequested → CooperativeAttempted(method: ACPI|QMP|Agent) → CooperativeSucceeded | CooperativeTimedOut → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete(outcome: Graceful|Forced, total_ms).
+  - Event order: ShutdownRequested → CooperativeAttempted(method: ACPI|QMP|Agent, timeout_ms?) → CooperativeSucceeded | CooperativeTimedOut(timeout_ms, reason?) → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete(outcome: Graceful|Forced, total_ms).
   - Timeouts configurable via CLI/opts; status/UI remain responsive; per‑VM isolation maintained; idempotent behavior; stable JSON fields in logs/output.
   Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/core/reporter.rs; src/app/down.rs.
 
@@ -57,19 +58,16 @@ Narrative themes
 12) Day‑1 productivity — idempotent, host‑driven post‑boot configuration triggered by real connectivity signals.
 
 Direction of travel
-- Implement cooperative shutdown events/behavior (Thread 2) honoring lifecycle waits and emitting ordered events.
+- Implement cooperative shutdown events/behavior (Thread 2) honoring lifecycle waits and emitting ordered events; expand fields where already shipping (timeout_ms=0 on unavailable path, reason when timed out).
 - For Thread 10, add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
 - Build the post‑boot bootstrap pipeline keyed to handshake and guarded by idempotence stamps (Thread 12).
 
 Cross‑links
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; CLEAN.md documents the narrative.
-- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md (notes concurrency/live streaming progress, total_ms, and next slice).
-- Thread 10 canonical TODO updated with shipped state and remaining durability/docs gaps.
+- Lifecycle canonical TODO: cooperative_shutdown_lifecycle.md.md (notes concurrency/live streaming progress, event fields, and next slice).
 - Thread 12 canonical TODO notes integration test coverage and first implementation slice.
 
 Editorial housekeeping
 - Canonical TODO files:
   - todo_cooperative_shutdown_lifecycle.md.md
-  - todo_managed_image_structured_events.md.md
   - todo_post_boot_bootstrap_pipeline.md.md
-- Duplicate TODO stubs detected with suffix .md.md.md in index; treat as non-canonical. Keep edits to the above canonical files only.
