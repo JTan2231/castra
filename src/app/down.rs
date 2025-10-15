@@ -136,16 +136,26 @@ fn render_down(events: &[Event]) {
                 vm,
                 outcome,
                 changed,
+                total_ms,
             } => {
                 if !changed {
-                    println!("→ {vm}: already stopped.");
+                    println!(
+                        "→ {vm}: already stopped (checked in {}).",
+                        format_duration_ms(*total_ms)
+                    );
                 } else {
                     match outcome {
                         ShutdownOutcome::Graceful => {
-                            println!("→ {vm}: stopped (graceful).");
+                            println!(
+                                "→ {vm}: stopped (graceful) in {}.",
+                                format_duration_ms(*total_ms)
+                            );
                         }
                         ShutdownOutcome::Forced => {
-                            println!("→ {vm}: stopped (forced).");
+                            println!(
+                                "→ {vm}: stopped (forced) in {}.",
+                                format_duration_ms(*total_ms)
+                            );
                         }
                     }
                 }

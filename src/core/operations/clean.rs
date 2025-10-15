@@ -585,16 +585,10 @@ fn collect_managed_image_evidence(path: &Path) -> Vec<CleanupManagedImageEvidenc
         let mut total_bytes: Option<u64> = Some(0);
         if let Some(entries) = value.get("artifacts").and_then(|entry| entry.as_array()) {
             for artifact in entries {
-                if let Some(name) = artifact
-                    .get("filename")
-                    .and_then(|field| field.as_str())
-                {
+                if let Some(name) = artifact.get("filename").and_then(|field| field.as_str()) {
                     artifacts.push(name.to_string());
                 }
-                match artifact
-                    .get("size_bytes")
-                    .and_then(|field| field.as_u64())
-                {
+                match artifact.get("size_bytes").and_then(|field| field.as_u64()) {
                     Some(size) => {
                         if let Some(acc) = total_bytes.as_mut() {
                             *acc += size;

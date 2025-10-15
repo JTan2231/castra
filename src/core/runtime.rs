@@ -641,6 +641,7 @@ pub fn shutdown_vm(
     events: &mut Vec<Event>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<(bool, ShutdownOutcome)> {
+    let shutdown_started = Instant::now();
     events.push(Event::ShutdownRequested {
         vm: vm.name.clone(),
     });
@@ -648,9 +649,11 @@ pub fn shutdown_vm(
     let pidfile = state_root.join(format!("{}.pid", vm.name));
     if !pidfile.is_file() {
         cleanup_qmp_socket(state_root, &vm.name);
+        let total_ms = duration_to_millis(shutdown_started.elapsed());
         events.push(Event::ShutdownComplete {
             vm: vm.name.clone(),
             outcome: ShutdownOutcome::Graceful,
+            total_ms,
             changed: false,
         });
         return Ok((false, ShutdownOutcome::Graceful));
@@ -677,9 +680,11 @@ pub fn shutdown_vm(
         ));
         let _ = fs::remove_file(&pidfile);
         cleanup_qmp_socket(state_root, &vm.name);
+        let total_ms = duration_to_millis(shutdown_started.elapsed());
         events.push(Event::ShutdownComplete {
             vm: vm.name.clone(),
             outcome: ShutdownOutcome::Graceful,
+            total_ms,
             changed: false,
         });
         return Ok((false, ShutdownOutcome::Graceful));
@@ -739,9 +744,11 @@ pub fn shutdown_vm(
                     vm: vm.name.clone(),
                     elapsed_ms,
                 });
+                let total_ms = duration_to_millis(shutdown_started.elapsed());
                 events.push(Event::ShutdownComplete {
                     vm: vm.name.clone(),
                     outcome: ShutdownOutcome::Graceful,
+                    total_ms,
                     changed: true,
                 });
                 return Ok((true, ShutdownOutcome::Graceful));
@@ -796,9 +803,11 @@ pub fn shutdown_vm(
             ));
             let _ = fs::remove_file(&pidfile);
             cleanup_qmp_socket(state_root, &vm.name);
+            let total_ms = duration_to_millis(shutdown_started.elapsed());
             events.push(Event::ShutdownComplete {
                 vm: vm.name.clone(),
                 outcome: ShutdownOutcome::Graceful,
+                total_ms,
                 changed: false,
             });
             return Ok((false, ShutdownOutcome::Graceful));
@@ -861,9 +870,11 @@ pub fn shutdown_vm(
         }
     }
     cleanup_qmp_socket(state_root, &vm.name);
+    let total_ms = duration_to_millis(shutdown_started.elapsed());
     events.push(Event::ShutdownComplete {
         vm: vm.name.clone(),
         outcome,
+        total_ms,
         changed: true,
     });
     Ok((true, outcome))

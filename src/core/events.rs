@@ -139,6 +139,8 @@ pub enum Event {
         vm: String,
         /// Outcome of the shutdown path (graceful vs forced).
         outcome: ShutdownOutcome,
+        /// Milliseconds elapsed from shutdown request until completion.
+        total_ms: u64,
         /// Whether the VM transitioned state (`true` if it was running, `false` if already stopped).
         changed: bool,
     },

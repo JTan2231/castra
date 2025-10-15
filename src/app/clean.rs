@@ -3,14 +3,14 @@ use std::time::SystemTime;
 
 use crate::Result;
 use crate::cli::CleanArgs;
+use crate::core::events::{CleanupKind, CleanupManagedImageEvidence};
 use crate::core::operations;
 use crate::core::options::{CleanOptions, CleanScope, ProjectSelector};
 use crate::core::outcome::{CleanOutcome, CleanupAction, SkipReason};
-use crate::core::events::{CleanupKind, CleanupManagedImageEvidence};
 use crate::core::project::{default_projects_root, format_config_warnings};
 
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub fn handle_clean(args: CleanArgs, config_override: Option<&PathBuf>) -> Result<()> {
     let scope = if args.global {
@@ -124,9 +124,7 @@ fn render_managed_evidence(kind: CleanupKind, evidence: &[CleanupManagedImageEvi
     }
 
     if evidence.is_empty() {
-        println!(
-            "      evidence: none (no managed-image verification records found)"
-        );
+        println!("      evidence: none (no managed-image verification records found)");
         return;
     }
 
