@@ -16,3 +16,19 @@ Acceptance refinements
 
 ---
 
+
+
+Progress update (v0.8.6)
+- Per-invocation bootstrap overrides shipped: global (`castra up --bootstrap <mode>`) and per-VM (`--bootstrap <vm>=<mode>` / `vm:mode`), with conflict detection and per-VM precedence. docs/BOOTSTRAP.md updated; unit tests cover parsing and precedence.
+- Handshake timeout failure path implemented with durable step logs and BootstrapFailed; sub-second polling respects configured deadlines.
+- Per-VM concurrent execution with live event streaming; outcomes returned in input order; first error captured without blocking others.
+
+Next slice
+- Finalize idempotence stamps under state root keyed by (base_image_hash, bootstrap_artifact_hash). On unchanged inputs, emit BootstrapCompleted(status: NoOp) without side effects. Add smoke tests for reruns and override interactions with disable/force.
+
+Acceptance clarifications
+- Safe re-runs must emit NoOp with zero side effects when stamps unchanged. Overrides must maintain precedence (per-VM over global) and reject conflicts with clear preflight errors.
+
+
+---
+

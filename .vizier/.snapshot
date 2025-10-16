@@ -4,7 +4,7 @@ Edits since v0.8.5 refresh
 - Thread 2 progress: `down` performs parallel per‑VM shutdown and streams events live, improving responsiveness and isolation. Runtime now emits CooperativeAttempted with timeout_ms=0 when the cooperative channel is unavailable (fixes misleading inherited waits). Added unix‑gated tests for QMP success/timeout paths and unavailable‑channel path (asserts ChannelUnavailable reason and ordered events). CLI now treats forced shutdowns as success (prints warning listing VMs) aligning with lifecycle acceptance. Remaining: full cooperative attempt/timeout/escalation sequencing in runtime for available channels.
 - Thread 10 steady: Managed‑image evidence linkage in CLEAN is live and rendered (root disk path, bytes, verification delta). No new behavior changes; durability/docs remain outstanding.
 - Thread 12 progress: Bootstrap pipeline runs per‑VM concurrently with live event streaming via a central channel while preserving per‑VM ordering. Handshake wait uses sub‑second slices honoring configured deadlines; on timeout we emit a failed WaitHandshake step and BootstrapFailed, and persist a failed run log with the timeout detail. Outcomes are returned in original VM order; first error captured without blocking others. New: per‑invocation CLI overrides for bootstrap mode (global and per‑VM) are implemented with conflict detection and precedence (per‑VM over global), and docs/BOOTSTRAP.md now documents invocation, event contract, and durable logs. Unit tests cover parsing and override application.
-- Editorial housekeeping: Canonical TODOs (Thread 2 and Thread 12) refreshed to reflect shipped pieces and the next slice. Duplicate TODO artifacts remain listed but are non‑canonical.
+- Editorial housekeeping: Canonical TODOs (Thread 2 and Thread 12) refreshed to reflect shipped pieces and the next slice; acceptance clarifications added. Duplicate TODO artifacts remain listed but are non‑canonical.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (partially implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -79,3 +79,4 @@ Editorial housekeeping
   - todo_cooperative_shutdown_lifecycle.md.md
   - todo_post_boot_bootstrap_pipeline.md.md
 - Duplicate TODO artifacts with trailing .md.md.md remain listed but are superseded by the canonical files.
+- This snapshot and both canonical TODOs were refreshed to align with v0.8.6 progress and next slices.

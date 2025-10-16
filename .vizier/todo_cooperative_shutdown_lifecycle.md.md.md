@@ -19,3 +19,19 @@ Acceptance refinements
 
 ---
 
+
+
+Progress update (v0.8.6)
+- Parallel per-VM shutdown with live event streaming shipped in `down`.
+- Runtime emits CooperativeAttempted with timeout_ms=0 when the cooperative channel is unavailable; ordered events preserved; CLI treats forced shutdowns as overall success with warning.
+- Tests cover QMP success/timeout and unavailable-channel semantics.
+
+Next slice
+- Emit CooperativeAttempted and CooperativeSucceeded/CooperativeTimedOut for available channels before TERM/KILL, honoring configured timeouts and preserving per-VM isolation. Maintain stable JSON fields in logs/output.
+
+Acceptance clarifications
+- Event order must include CooperativeAttempted → CooperativeSucceeded/CooperativeTimedOut prior to any Escalation when a channel is available; unavailable channel path should still surface CooperativeAttempted with timeout_ms=0 and reason ChannelUnavailable on timeout.
+
+
+---
+
