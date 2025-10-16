@@ -3,7 +3,7 @@ SNAPSHOT v0.8.6 — Castra (VM orchestration harness)
 Edits since last snapshot refresh
 - Thread 2 progressed from "planned" to "sequencing shipped": runtime now emits CooperativeAttempted(method, timeout_ms) followed by CooperativeSucceeded/CooperativeTimedOut before TERM/KILL; unavailable channels report timeout_ms=0 with reason=ChannelUnavailable and detail; channel errors surface as ChannelError.
 - Thread 12 strengthened: override precedence (per‑VM over global) enforced with tests; idempotence NoOp path validated; Disabled mode yields Skipped outcome; Always runs despite stamps and logs durably.
-- Canonical TODOs updated to reflect the above; next slices narrowed to configurability/docs (Thread 2) and stamp persistence/docs/smoke reruns (Thread 12).
+- New scope added under Thread 12: UX polish for bootstrap (simplified flags, plan mode, compact TTY progress, actionable hints, and docs). Canonical TODO updated accordingly.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (sequencing shipped): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -41,34 +41,35 @@ Active threads (intent + acceptance)
   - Handshake timeout failures are observable/durable: WaitHandshake step marked Failed, BootstrapFailed emitted, a single failed run log persisted with error detail. Polling uses sub‑second slices respecting deadlines. Runs execute per‑VM concurrently with live event streaming; outcomes returned in input order; first error captured without blocking others.
   Next slice:
   - Finalize stamp persistence under state root keyed by (base_image_hash, bootstrap_artifact_hash); smoke reruns on unchanged inputs; verify Disabled vs Always precedence across multiple VMs; confirm outcomes/order; enrich docs with payload/log examples.
+  - UX polish: simplify CLI flags to `--bootstrap=auto|always|skip` with optional per‑VM CSV overrides; add `--plan` dry‑run; render compact TTY progress lines and one‑line outcomes; surface actionable hints on failure with pointers to durable logs; update help text and add Quick Start + Troubleshooting to BOOTSTRAP.md. JSON schema remains unchanged.
   Acceptance:
   - Triggered exactly once per VM per image/content hash change; NoOp has no side effects; Disabled yields Skipped; Always forces Success execution despite stamps.
-  - Events: BootstrapStarted / BootstrapCompleted(status: Success|NoOp|Skipped) / BootstrapFailed; durable step logs with durations; handshake failures surface as Failed step + BootstrapFailed with durable error log.
   - Overrides honored with precedence (per‑VM over global); conflicts rejected preflight; responsive status during long runs.
-  Anchors: docs/BOOTSTRAP.md; src/core/status.rs (handshake fields); state‑root conventions.
+  - UX: `--plan` produces deterministic summary without side effects; TTY progress and final summaries appear only in non‑JSON mode; failures show concise hint + log path; help/docs include examples and troubleshooting.
+  Anchors: docs/BOOTSTRAP.md; src/core/status.rs (handshake fields); state‑root conventions; src/core/reporter.rs; src/app/up.rs; src/cli.rs; src/app/error.rs.
 
 Current code state (observable surfaces)
 - CLI/library split via feature gating; default includes CLI; library builds with no‑default‑features.
 - Status exposes broker reachability (reachable, last_handshake_age_ms) and bus health; designed to remain non‑blocking.
 - Ports view with stable columns; Clean command with byte accounting/safeguards; links managed‑image evidence (root disk, bytes, verification delta) where available.
-- Managed images emit structured verification/profile events with plans, reports, checksums, steps; app/up renders size/duration and steps; automation can consume JSON streams.
+- Managed images emit structured verification/profile events with plans, reports, checksums, steps; app/up.rs renders size/duration and steps; automation can consume JSON streams.
 - Down command now emits cooperative shutdown events before escalation and renders per‑VM shutdown durations; performs parallel shutdown with live event streaming; forced shutdown returns success with warning.
 - Bootstrap pipeline supports overrides (global and per‑VM) with precedence and conflict detection; surfaces handshake timeout failures with explicit events and durable run logs; executes per‑VM concurrently with live event streaming; outcomes returned in original order.
 
 Narrative themes
 1) Robust VM lifecycle — predictable, observable cooperative shutdown with bounded waits and clear outcomes.
 10) Trustworthy bootstrap — verified managed images with structured events powering automation and cleanup.
-12) Day‑1 productivity — idempotent, host‑driven post‑boot configuration triggered by real connectivity signals.
+12) Day‑1 productivity — idempotent, host‑driven post‑boot configuration triggered by real connectivity signals, with improved usability and discoverability.
 
 Direction of travel
 - Thread 2: expose timeouts in CLI/options, render fields consistently, and document payloads; keep exit‑success semantics on forced shutdowns.
 - Thread 10: add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
-- Thread 12: complete idempotence stamp persistence and NoOp flow; add smoke tests including override precedence with disable/force; keep docs current with payload/log examples.
+- Thread 12: complete idempotence stamp persistence and NoOp flow; add smoke tests including override precedence with disable/force; deliver UX polish (simplified flags, plan mode, TTY progress, actionable hints, docs) without altering JSON schema.
 
 Cross‑links
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; CLEAN.md documents the narrative.
 - Lifecycle canonical TODO: todo_cooperative_shutdown_lifecycle.md.md (sequencing shipped; configurability/rendering/docs next).
-- Thread 12 canonical TODO: todo_post_boot_bootstrap_pipeline.md.md (overrides/idempotence strengthened; stamp persistence/docs next).
+- Thread 12 canonical TODO: todo_post_boot_bootstrap_pipeline.md.md (overrides/idempotence strengthened; stamp persistence/docs + UX polish next).
 
 Editorial housekeeping
 - Canonical TODO files:
