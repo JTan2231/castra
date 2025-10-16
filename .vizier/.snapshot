@@ -1,8 +1,7 @@
-SNAPSHOT v0.8.7 — Castra (VM orchestration harness)
+SNAPSHOT v0.8.8 — Castra (VM orchestration harness)
 
 Edits since last snapshot refresh
-- New Thread 13 opened: Stateless runs via ephemeral write layers. Default VM launches use a non-persistent write layer so guest disk mutations vanish at shutdown; deterministic teardown and orphan cleanup planned; CLEAN to report reclaimed bytes. Configurable opt-in persistence for debugging with prominent warnings. Stamps/logs remain host-durable and independent of guest disk state.
-- Cross-linked Thread 13 with Thread 12: bootstrap stamp semantics explicitly defined as host-side durability keyed by (base_image_hash, bootstrap_artifact_hash), unaffected by ephemeral guest disks.
+- Housekeeping: Consolidated canonical TODOs and removed duplicate/garbled files. Canonical threads now map 1:1 to TODOs: cooperative shutdown lifecycle, post‑boot bootstrap pipeline, and stateless runs/ephemeral storage. No behavioral changes to code surfaces.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (sequencing shipped): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -49,11 +48,11 @@ Active threads (intent + acceptance)
 
 - Thread 13 — Stateless runs (ephemeral VM write layer + cleanup): Ensure all disk changes inside a VM vanish once it stops, aligning with bootstrap stamping semantics.
   Intent:
-  - Default VM launches use a non-persistent write layer over managed base images; guest mutations are discarded on shutdown (graceful or forced).
-  - Deterministic teardown removes ephemeral layers and per-VM temp dirs immediately post-exit; bounded orphan cleanup on next command after crashes/reboots.
-  - CLEAN reports reclaimed bytes from ephemeral layers; output provides brief TTY notice after cleanup. Provide opt-in persistent mode with prominent warnings.
+  - Default VM launches use a non‑persistent write layer over managed base images; guest mutations are discarded on shutdown (graceful or forced).
+  - Deterministic teardown removes ephemeral layers and per‑VM temp dirs immediately post‑exit; bounded orphan cleanup on next command after crashes/reboots.
+  - CLEAN reports reclaimed bytes from ephemeral layers; output provides brief TTY notice after cleanup. Provide opt‑in persistent mode with prominent warnings.
   Acceptance:
-  - Restarting a VM from the same base/stamp yields a pristine filesystem matching the base; host-side stamps/logs remain durable.
+  - Restarting a VM from the same base/stamp yields a pristine filesystem matching the base; host‑side stamps/logs remain durable.
   - No residual ephemeral artifacts remain after normal shutdown; orphaned layers are detected and reclaimed opportunistically without blocking healthy ops.
   - CLI/opts expose ephemeral (default) vs persistent; persistent mode is clearly indicated in output and logs.
   Anchors: src/core/operations/up.rs; src/app/up.rs; src/core/operations/clean.rs; src/app/clean.rs; src/core/runtime.rs; src/app/down.rs; docs/BOOTSTRAP.md; CLEAN.md; CLI help.
@@ -65,7 +64,7 @@ Current code state (observable surfaces)
 - Managed images emit structured verification/profile events with plans, reports, checksums, steps; app/up.rs renders size/duration and steps; automation can consume JSON streams.
 - Down command now emits cooperative shutdown events before escalation and renders per‑VM shutdown durations; performs parallel shutdown with live event streaming; forced shutdown returns success with warning.
 - Bootstrap pipeline supports overrides (global and per‑VM) with precedence and conflict detection; surfaces handshake timeout failures with explicit events and durable run logs; executes per‑VM concurrently with live event streaming; outcomes returned in original order.
-- Stateless runs (Thread 13) not yet implemented; design and acceptance captured; defaults will favor ephemeral layers with host-durable stamps.
+- Stateless runs (Thread 13) not yet implemented; design and acceptance captured; defaults will favor ephemeral layers with host‑durable stamps.
 
 Narrative themes
 1) Robust VM lifecycle — predictable, observable cooperative shutdown with bounded waits and clear outcomes.
@@ -77,17 +76,17 @@ Direction of travel
 - Thread 2: expose timeouts in CLI/options, render fields consistently, and document payloads; keep exit‑success semantics on forced shutdowns.
 - Thread 10: add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
 - Thread 12: complete idempotence stamp persistence and NoOp flow; add smoke tests including override precedence with disable/force; deliver UX polish (simplified flags, plan mode, TTY progress, actionable hints, docs) without altering JSON schema.
-- Thread 13: implement ephemeral write layer default with deterministic cleanup; add CLI/opts for persistence; integrate reclaimed-bytes reporting into CLEAN; show TTY notices; ensure crash/reboot orphan reclamation.
+- Thread 13: implement ephemeral write layer default with deterministic cleanup; add CLI/opts for persistence; integrate reclaimed‑bytes reporting into CLEAN; show TTY notices; ensure crash/reboot orphan reclamation.
 
 Cross‑links
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; extend to ephemeral layer reclamation (Thread 13).
-- Lifecycle canonical TODO: todo_cooperative_shutdown_lifecycle.md.md (sequencing shipped; configurability/rendering/docs next).
-- Thread 12 canonical TODO: todo_post_boot_bootstrap_pipeline.md.md (overrides/idempotence strengthened; stamp persistence/docs + UX polish next).
+- Lifecycle canonical TODO: todo_cooperative_shutdown_lifecycle.md (sequencing shipped; configurability/rendering/docs next).
+- Thread 12 canonical TODO: todo_post_boot_bootstrap_pipeline.md (overrides/idempotence + UX polish unified).
 - Thread 13 canonical TODO: todo_ephemeral_vm_storage_and_cleanup.md (stateless runs + cleanup + CLEAN integration).
 
 Editorial housekeeping
-- Canonical TODO files:
-  - todo_cooperative_shutdown_lifecycle.md.md
-  - todo_post_boot_bootstrap_pipeline.md.md
+- Canonical TODO files now:
+  - todo_cooperative_shutdown_lifecycle.md
+  - todo_post_boot_bootstrap_pipeline.md
   - todo_ephemeral_vm_storage_and_cleanup.md
-- Snapshot updated to v0.8.7 reflecting new stateless runs thread and its linkage to bootstrap stamping.
+- Removed malformed duplicates (extra .md suffixes). Snapshot bumped to v0.8.8 for housekeeping only.
