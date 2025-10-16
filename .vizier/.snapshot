@@ -1,22 +1,22 @@
 SNAPSHOT v0.8.6 — Castra (VM orchestration harness)
 
 Edits since last snapshot refresh
-- Canonical TODOs for Thread 2 (Cooperative shutdown) and Thread 12 (Post‑boot bootstrap) updated with v0.8.6 progress and next slice clarifications. Duplicate TODO artifacts removed to eliminate confusion.
-- No behavioral/code surface changes recorded since prior v0.8.6 snapshot; this is an editorial consolidation pass.
+- Thread 2 progressed from "planned" to "sequencing shipped": runtime now emits CooperativeAttempted(method, timeout_ms) followed by CooperativeSucceeded/CooperativeTimedOut before TERM/KILL; unavailable channels report timeout_ms=0 with reason=ChannelUnavailable and detail; channel errors surface as ChannelError.
+- Thread 12 strengthened: override precedence (per‑VM over global) enforced with tests; idempotence NoOp path validated; Disabled mode yields Skipped outcome; Always runs despite stamps and logs durably.
+- Canonical TODOs updated to reflect the above; next slices narrowed to configurability/docs (Thread 2) and stamp persistence/docs/smoke reruns (Thread 12).
 
 Active threads (intent + acceptance)
-- Thread 2 — Cooperative shutdown lifecycle (partially implemented): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
+- Thread 2 — Cooperative shutdown lifecycle (sequencing shipped): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
   Progress:
-  - `down` runs VM shutdowns concurrently and streams events live.
-  - total_ms added to ShutdownComplete and rendered in `down`.
-  - Runtime fix: CooperativeAttempted reports timeout_ms=0 when cooperative method/channel is unavailable; CooperativeTimedOut includes reason=ChannelUnavailable in that path.
-  - CLI treats forced shutdowns as overall success; forced set listed as warning.
-  - Test coverage exists for QMP‑based cooperative sequences (success and timeout) and for unavailable channel semantics (ordered events, 0ms wait, escalation path).
+  - Runtime emits CooperativeAttempted(method, timeout_ms) and CooperativeSucceeded/CooperativeTimedOut prior to TERM/KILL.
+  - Unavailable channel path: CooperativeAttempted(method: Unavailable, timeout_ms=0) → CooperativeTimedOut(reason: ChannelUnavailable, detail) → escalate.
+  - Available channel path (e.g., ACPI): success emits CooperativeSucceeded; timeout emits CooperativeTimedOut(reason: TimeoutExpired). Channel errors emit CooperativeTimedOut(reason: ChannelError) with diagnostics.
+  - `down` continues concurrent per‑VM shutdown with live streaming; ShutdownComplete includes total_ms; tests cover stale/invalid QMP sockets, zero‑wait semantics, ordering, and propagated detail.
   Next slice:
-  - Emit CooperativeAttempted(method, timeout_ms) and CooperativeSucceeded/CooperativeTimedOut prior to TERM/KILL for available channels in the runtime, honoring configurable timeouts and preserving per‑VM isolation.
+  - Expose/propagate cooperative/TERM/KILL timeouts via CLI/options with clear defaults/help; render method + timeout/reason fields consistently in CLI/JSON and add brief remediation hints for ChannelUnavailable/ChannelError. Document example payloads and note 0ms unavailable path.
   Acceptance (per VM):
-  - Event order: ShutdownRequested → CooperativeAttempted(method: ACPI|QMP|Agent, timeout_ms?) → CooperativeSucceeded | CooperativeTimedOut(timeout_ms, reason?) → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete(outcome: Graceful|Forced, total_ms).
-  - Timeouts configurable via CLI/opts; status/UI remain responsive; per‑VM isolation maintained; idempotent behavior; stable JSON fields in logs/output.
+  - Event order: ShutdownRequested → CooperativeAttempted(method, timeout_ms) → CooperativeSucceeded | CooperativeTimedOut(timeout_ms, reason, detail?) → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete(outcome: Graceful|Forced, total_ms).
+  - Timeouts configurable via CLI/opts; status/UI remain responsive; per‑VM isolation; idempotent; stable JSON fields.
   Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/core/reporter.rs; src/app/down.rs.
 
 - Thread 10 — Managed images: structured verification/profile events (shipped; docs/durability pending): Emit machine‑parseable events during verification/profile so downstream tools can rely on them.
@@ -33,29 +33,27 @@ Active threads (intent + acceptance)
   Clarifications:
   - Triggered exactly once per VM per (base_image_hash, bootstrap_artifact_hash) change; handshake signal from status (reachable, last_handshake_age_ms) is the gate.
   - May consume ManagedImageVerificationResult (Thread 10) to validate inputs but must not block when absent.
-  - Config knobs to disable or force ("always") bootstrap per‑VM or globally; safe defaults favor "once per stamp" with clear eventing.
+  - Config knobs to disable or force ("always") bootstrap per‑VM or globally; defaults favor "once per stamp" with clear eventing.
   Progress:
-  - Unix‑gated integration test exercises the pipeline end‑to‑end with stubbed ssh/scp/qemu, covering step events, stamps, durable logs, and NoOp replay.
-  - Handshake timeout failures are observable and durable: WaitHandshake step marked Failed, BootstrapFailed emitted, and a single failed run log persisted with error detail.
-  - Handshake polling uses sub‑second slices to respect configured deadlines; failure run logs are validated for content.
-  - Runs execute per‑VM concurrently with live event streaming while preserving per‑VM ordering; outcomes returned in input order; first error captured without blocking others.
-  - Per‑invocation overrides shipped — `castra up --bootstrap <mode>` (global) and per‑VM forms (`--bootstrap <vm>=<mode>` / `vm:mode`), with conflict detection; per‑VM takes precedence over global. docs/BOOTSTRAP.md documents invocation, event contract, and durable logs. Unit tests cover parsing and precedence.
+  - Overrides shipped with precedence and conflict detection; docs/BOOTSTRAP.md documents invocation and precedence; unit tests cover parsing and precedence.
+  - Idempotence validated: unchanged stamps emit BootstrapCompleted(status: NoOp) with no side effects; durable logs maintained.
+  - Disabled mode yields Skipped outcome and an info diagnostic; Always mode runs despite stamps and emits Success with durable logs.
+  - Handshake timeout failures are observable/durable: WaitHandshake step marked Failed, BootstrapFailed emitted, a single failed run log persisted with error detail. Polling uses sub‑second slices respecting deadlines. Runs execute per‑VM concurrently with live event streaming; outcomes returned in input order; first error captured without blocking others.
   Next slice:
-  - Finalize idempotence stamps and NoOp path: persist stamps under state root keyed by (base_image_hash, bootstrap_artifact_hash); on unchanged inputs, emit BootstrapCompleted(status: NoOp) without side effects. Add smoke tests for reruns and for override interactions with disable/force knobs.
+  - Finalize stamp persistence under state root keyed by (base_image_hash, bootstrap_artifact_hash); smoke reruns on unchanged inputs; verify Disabled vs Always precedence across multiple VMs; confirm outcomes/order; enrich docs with payload/log examples.
   Acceptance:
-  - Triggered exactly once per VM per image/content hash change (idempotence stamps include base image hash + bootstrap artifact hash under state root).
-  - Events: BootstrapStarted / BootstrapCompleted(status: Success|NoOp) / BootstrapFailed emitted via reporter; durable step logs with durations; handshake failures surface as Failed step + BootstrapFailed with durable error log.
-  - Config knobs to disable or force ("always") bootstrap per‑VM or globally; safe defaults; responsive status during long runs; overrides honored with clear precedence (per‑VM over global; conflicts rejected with preflight error).
-  - Safe re‑runs: when inputs unchanged, emits NoOp without side effects.
+  - Triggered exactly once per VM per image/content hash change; NoOp has no side effects; Disabled yields Skipped; Always forces Success execution despite stamps.
+  - Events: BootstrapStarted / BootstrapCompleted(status: Success|NoOp|Skipped) / BootstrapFailed; durable step logs with durations; handshake failures surface as Failed step + BootstrapFailed with durable error log.
+  - Overrides honored with precedence (per‑VM over global); conflicts rejected preflight; responsive status during long runs.
   Anchors: docs/BOOTSTRAP.md; src/core/status.rs (handshake fields); state‑root conventions.
 
 Current code state (observable surfaces)
 - CLI/library split via feature gating; default includes CLI; library builds with no‑default‑features.
 - Status exposes broker reachability (reachable, last_handshake_age_ms) and bus health; designed to remain non‑blocking.
-- Ports view with stable columns; Clean command with byte accounting/safeguards; now links managed‑image evidence (root disk, bytes, verification delta) where available.
+- Ports view with stable columns; Clean command with byte accounting/safeguards; links managed‑image evidence (root disk, bytes, verification delta) where available.
 - Managed images emit structured verification/profile events with plans, reports, checksums, steps; app/up renders size/duration and steps; automation can consume JSON streams.
-- Down command renders per‑VM shutdown durations and performs parallel shutdown with live event streaming; forced shutdown returns success with warning.
-- Bootstrap pipeline surfaces handshake timeout failures with explicit events and durable run logs; executes per‑VM concurrently with live event streaming; outcomes returned in original order. CLI supports per‑invocation bootstrap overrides (global and per‑VM) with precedence and conflict detection; docs cover invocation and event/log contract.
+- Down command now emits cooperative shutdown events before escalation and renders per‑VM shutdown durations; performs parallel shutdown with live event streaming; forced shutdown returns success with warning.
+- Bootstrap pipeline supports overrides (global and per‑VM) with precedence and conflict detection; surfaces handshake timeout failures with explicit events and durable run logs; executes per‑VM concurrently with live event streaming; outcomes returned in original order.
 
 Narrative themes
 1) Robust VM lifecycle — predictable, observable cooperative shutdown with bounded waits and clear outcomes.
@@ -63,17 +61,17 @@ Narrative themes
 12) Day‑1 productivity — idempotent, host‑driven post‑boot configuration triggered by real connectivity signals.
 
 Direction of travel
-- Implement cooperative shutdown events/behavior (Thread 2) honoring lifecycle waits and emitting ordered events; expand fields where already shipping (timeout_ms=0 on unavailable path, reason when timed out). Maintain exit‑success semantics on forced shutdowns.
-- For Thread 10, add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
-- For Thread 12, complete idempotence stamps and NoOp flow; add smoke tests including override precedence with disable/force; keep docs current.
+- Thread 2: expose timeouts in CLI/options, render fields consistently, and document payloads; keep exit‑success semantics on forced shutdowns.
+- Thread 10: add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
+- Thread 12: complete idempotence stamp persistence and NoOp flow; add smoke tests including override precedence with disable/force; keep docs current with payload/log examples.
 
 Cross‑links
 - CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; CLEAN.md documents the narrative.
-- Lifecycle canonical TODO: todo_cooperative_shutdown_lifecycle.md.md (notes concurrency/live streaming progress, event fields, forced‑success exit, and next slice).
-- Thread 12 canonical TODO: todo_post_boot_bootstrap_pipeline.md.md captures CLI overrides, concurrency/live events, handshake‑failure behavior, and next implementation slice (idempotence stamps + NoOp).
+- Lifecycle canonical TODO: todo_cooperative_shutdown_lifecycle.md.md (sequencing shipped; configurability/rendering/docs next).
+- Thread 12 canonical TODO: todo_post_boot_bootstrap_pipeline.md.md (overrides/idempotence strengthened; stamp persistence/docs next).
 
 Editorial housekeeping
 - Canonical TODO files:
   - todo_cooperative_shutdown_lifecycle.md.md
   - todo_post_boot_bootstrap_pipeline.md.md
-- Duplicate TODO artifacts were removed; only the canonical files remain alongside this snapshot.
+- Snapshot and TODOs reflect v0.8.6 progress; duplicates previously removed remain absent.
