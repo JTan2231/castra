@@ -771,7 +771,8 @@ pub fn shutdown_vm(
     }
     #[cfg(not(unix))]
     {
-        unavailable_detail = Some("cooperative shutdown not supported on this platform".to_string());
+        unavailable_detail =
+            Some("cooperative shutdown not supported on this platform".to_string());
     }
 
     let cooperative_method = if cooperative_available {
@@ -804,11 +805,13 @@ pub fn shutdown_vm(
         match graceful_attempt {
             GracefulTrigger::Initiated => {
                 let wait_started = Instant::now();
-                if wait_for_process_exit(pid, graceful_wait).map_err(|err| Error::ShutdownFailed {
-                    vm: vm.name.clone(),
-                    message: format!(
-                        "Error while waiting for pid {pid} during graceful shutdown: {err}"
-                    ),
+                if wait_for_process_exit(pid, graceful_wait).map_err(|err| {
+                    Error::ShutdownFailed {
+                        vm: vm.name.clone(),
+                        message: format!(
+                            "Error while waiting for pid {pid} during graceful shutdown: {err}"
+                        ),
+                    }
                 })? {
                     if let Err(err) = fs::remove_file(&pidfile) {
                         if err.kind() != ErrorKind::NotFound {
@@ -1278,13 +1281,18 @@ fn attempt_graceful_shutdown(state_root: &Path, vm_name: &str) -> GracefulTrigge
         let socket = qmp_socket_path(state_root, vm_name);
         match send_qmp_powerdown(&socket) {
             Ok(()) => GracefulTrigger::Initiated,
-            Err(GracefulShutdownError::Unavailable) => GracefulTrigger::Unavailable {
-                detail: format!(
+            Err(GracefulShutdownError::Unavailable { detail }) => {
+                let base = format!(
                     "QMP socket {} not available for `{vm_name}`",
                     socket.display(),
                     vm_name = vm_name
-                ),
-            },
+                );
+                let detail = match detail {
+                    Some(extra) if !extra.is_empty() => format!("{base} ({extra})"),
+                    _ => base,
+                };
+                GracefulTrigger::Unavailable { detail }
+            }
             Err(GracefulShutdownError::Io(err)) => GracefulTrigger::Failed {
                 detail: format!(
                     "QMP connection error via {} while powering down `{vm_name}`: {err}",
@@ -1327,14 +1335,14 @@ fn qmp_socket_path(state_root: &Path, vm_name: &str) -> PathBuf {
 
 #[cfg(unix)]
 enum GracefulShutdownError {
-    Unavailable,
+    Unavailable { detail: Option<String> },
     Io(io::Error),
     Protocol(String),
 }
 
 fn send_qmp_powerdown(socket: &Path) -> std::result::Result<(), GracefulShutdownError> {
     if !socket.exists() {
-        return Err(GracefulShutdownError::Unavailable);
+        return Err(GracefulShutdownError::Unavailable { detail: None });
     }
 
     let mut stream = UnixStream::connect(&socket).map_err(map_qmp_connect_error)?;
@@ -1367,7 +1375,9 @@ fn map_qmp_connect_error(err: io::Error) -> GracefulShutdownError {
         io::ErrorKind::NotFound
         | io::ErrorKind::ConnectionRefused
         | io::ErrorKind::AddrNotAvailable
-        | io::ErrorKind::PermissionDenied => GracefulShutdownError::Unavailable,
+        | io::ErrorKind::PermissionDenied => GracefulShutdownError::Unavailable {
+            detail: Some(err.to_string()),
+        },
         _ => GracefulShutdownError::Io(err),
     }
 }
@@ -2176,6 +2186,152 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn cooperative_shutdown_handles_stale_qmp_socket()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::net::UnixListener;
+        use std::thread;
+        use std::time::Duration;
+
+        let temp = tempdir()?;
+        let state_root = temp.path().to_path_buf();
+        let vm = sample_vm(&state_root);
+
+        let child = ForkGuard::spawn();
+        let pid_value = child.pid();
+        let pidfile = state_root.join(format!("{}.pid", vm.name));
+        fs::write(&pidfile, format!("{pid_value}"))?;
+
+        let socket_path = state_root.join(format!("{}.qmp", vm.name));
+        {
+            let listener = UnixListener::bind(&socket_path)?;
+            drop(listener);
+        }
+        assert!(
+            socket_path.exists(),
+            "stale qmp socket should remain on disk"
+        );
+
+        let reaper = thread::spawn(move || {
+            loop {
+                let mut status = 0;
+                let res = unsafe { libc::waitpid(pid_value, &mut status, libc::WNOHANG) };
+                if res == 0 {
+                    thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+                break;
+            }
+        });
+
+        let timeouts = ShutdownTimeouts::new(
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+        );
+        let report = shutdown_vm(&vm, &state_root, timeouts, None)?;
+        reaper.join().unwrap();
+
+        assert!(report.changed);
+        assert_eq!(report.outcome, ShutdownOutcome::Forced);
+        assert!(
+            !socket_path.exists(),
+            "cleanup should remove stale qmp socket"
+        );
+
+        let mut iter = report.events.iter();
+
+        match iter.next() {
+            Some(Event::ShutdownRequested { vm: event_vm }) => assert_eq!(event_vm, &vm.name),
+            other => panic!("expected ShutdownRequested first, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::CooperativeAttempted {
+                vm: event_vm,
+                method,
+                timeout_ms,
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*method, CooperativeMethod::Acpi);
+                assert_eq!(*timeout_ms, 200);
+            }
+            other => panic!("expected CooperativeAttempted second, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::CooperativeTimedOut {
+                vm: event_vm,
+                waited_ms,
+                reason,
+                detail,
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*waited_ms, 0);
+                assert_eq!(*reason, CooperativeTimeoutReason::ChannelUnavailable);
+                let detail = detail.as_deref().unwrap_or_default();
+                assert!(
+                    detail.contains("Connection refused"),
+                    "expected detail to explain connection failure, got {detail}"
+                );
+            }
+            other => panic!("expected CooperativeTimedOut third, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::ShutdownEscalated {
+                vm: event_vm,
+                signal,
+                timeout_ms,
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*signal, ShutdownSignal::Sigterm);
+                assert_eq!(*timeout_ms, Some(200));
+            }
+            other => panic!("expected SIGTERM escalation fourth, got {other:?}"),
+        }
+
+        let completion_event = match iter.next() {
+            Some(Event::ShutdownEscalated {
+                vm: event_vm,
+                signal,
+                timeout_ms,
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*signal, ShutdownSignal::Sigkill);
+                assert_eq!(*timeout_ms, Some(200));
+                iter.next()
+                    .expect("expected ShutdownComplete event after SIGKILL escalation")
+            }
+            Some(event @ Event::ShutdownComplete { .. }) => event,
+            other => {
+                panic!("expected optional SIGKILL escalation or ShutdownComplete, got {other:?}")
+            }
+        };
+
+        match completion_event {
+            Event::ShutdownComplete {
+                vm: event_vm,
+                outcome,
+                changed,
+                ..
+            } => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*outcome, ShutdownOutcome::Forced);
+                assert!(*changed);
+            }
+            other => panic!("unexpected event while finalizing shutdown: {other:?}"),
+        }
+
+        assert!(
+            iter.next().is_none(),
+            "no extra events expected after completion"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cooperative_shutdown_times_out_and_escalates()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         use serde_json::Value;
@@ -2387,7 +2543,9 @@ mod tests {
         );
         assert_eq!(
             diag.help.as_deref(),
-            Some("Ensure QEMU launched with QMP support or allow Castra to manage the VM lifecycle.")
+            Some(
+                "Ensure QEMU launched with QMP support or allow Castra to manage the VM lifecycle."
+            )
         );
 
         let mut iter = report.events.iter();
