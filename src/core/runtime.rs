@@ -1405,9 +1405,9 @@ fn read_qmp_message(
         .read_line(&mut line)
         .map_err(GracefulShutdownError::Io)?;
     if bytes == 0 {
-        return Err(GracefulShutdownError::Protocol(
-            "QMP connection closed unexpectedly.".to_string(),
-        ));
+        return Err(GracefulShutdownError::Unavailable {
+            detail: Some("QMP connection closed unexpectedly.".to_string()),
+        });
     }
     serde_json::from_str(&line).map_err(|err| GracefulShutdownError::Protocol(err.to_string()))
 }
@@ -2270,7 +2270,8 @@ mod tests {
                 assert_eq!(*reason, CooperativeTimeoutReason::ChannelUnavailable);
                 let detail = detail.as_deref().unwrap_or_default();
                 assert!(
-                    detail.contains("Connection refused"),
+                    detail.contains("Connection refused")
+                        || detail.contains("connection closed unexpectedly"),
                     "expected detail to explain connection failure, got {detail}"
                 );
             }
