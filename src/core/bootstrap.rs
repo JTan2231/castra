@@ -1248,6 +1248,7 @@ mod tests {
         BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig, DEFAULT_BROKER_PORT,
         MemorySpec, ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
     };
+    use crate::core::diagnostics::{Diagnostic, Severity};
     use crate::core::events::{
         BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger, Event,
     };
@@ -1327,6 +1328,104 @@ mod tests {
 
     fn normalize_sha_result(result: std::result::Result<String, String>) -> io::Result<String> {
         result.map_err(|err| io::Error::new(io::ErrorKind::Other, err))
+    }
+
+    #[test]
+    fn bootstrap_pipeline_skips_when_disabled()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = TempDir::new()?;
+        let workspace = temp_dir.path();
+
+        let state_root = workspace.join("state");
+        fs::create_dir_all(state_root.join("logs"))?;
+        fs::create_dir_all(state_root.join("images"))?;
+
+        let base_image_path = workspace.join("base.img");
+        fs::write(&base_image_path, b"base-image")?;
+
+        let image_manager =
+            ImageManager::new(state_root.join("images"), state_root.join("logs"), None);
+        let context = RuntimeContext {
+            state_root: state_root.clone(),
+            log_root: state_root.join("logs"),
+            qemu_system: PathBuf::from("/usr/bin/false"),
+            qemu_img: None,
+            image_manager,
+            accelerators: Vec::new(),
+        };
+
+        let vm = VmDefinition {
+            name: "devbox".to_string(),
+            role_name: "devbox".to_string(),
+            replica_index: 0,
+            description: None,
+            base_image: BaseImageSource::Path(base_image_path),
+            overlay: state_root.join("overlays").join("devbox.qcow2"),
+            cpus: 2,
+            memory: MemorySpec::new("2048 MiB", Some(2 * 1024 * 1024 * 1024)),
+            port_forwards: Vec::new(),
+            bootstrap: VmBootstrapConfig {
+                mode: BootstrapMode::Disabled,
+            },
+        };
+
+        let project = ProjectConfig {
+            file_path: workspace.join("castra.toml"),
+            version: "0.2.0".to_string(),
+            project_name: "demo".to_string(),
+            vms: vec![vm],
+            state_root: state_root.clone(),
+            workflows: Workflows { init: Vec::new() },
+            broker: BrokerConfig {
+                port: DEFAULT_BROKER_PORT,
+            },
+            lifecycle: LifecycleConfig::default(),
+            bootstrap: BootstrapConfig {
+                mode: BootstrapMode::Auto,
+            },
+            warnings: Vec::new(),
+        };
+
+        let preparations = vec![AssetPreparation {
+            assets: ResolvedVmAssets { boot: None },
+            managed: None,
+            overlay_created: false,
+        }];
+
+        let mut reporter = RecordingReporter::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let outcomes = run_all(
+            &project,
+            &context,
+            &preparations,
+            &mut reporter,
+            &mut diagnostics,
+        )?;
+
+        assert_eq!(outcomes.len(), 1);
+        let outcome = &outcomes[0];
+        assert_eq!(outcome.vm, "devbox");
+        assert_eq!(outcome.status, BootstrapRunStatus::Skipped);
+        assert!(outcome.stamp.is_none());
+        assert!(outcome.log_path.is_none());
+
+        let events = reporter.take();
+        assert!(
+            events.is_empty(),
+            "bootstrap should emit no events when disabled: {events:?}"
+        );
+
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diag| diag.severity == Severity::Info
+                    && diag
+                        .message
+                        .contains("Bootstrap disabled for VM `devbox`; skipping.")),
+            "expected informational diagnostic about disabled bootstrap: {diagnostics:?}"
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -1618,6 +1717,209 @@ mod tests {
         assert!(
             iter.next().is_none(),
             "no additional events expected during noop run"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_pipeline_forced_mode_runs_even_with_existing_stamp()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let _env_guard = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let temp_dir = TempDir::new()?;
+        let workspace = temp_dir.path();
+
+        let state_root = workspace.join("state");
+        fs::create_dir_all(state_root.join("handshakes"))?;
+        let bootstrap_dir = state_root.join("bootstrap").join("devbox");
+        fs::create_dir_all(&bootstrap_dir)?;
+        fs::create_dir_all(state_root.join("logs"))?;
+        fs::create_dir_all(state_root.join("images"))?;
+        fs::create_dir_all(state_root.join("overlays"))?;
+
+        let handshake_path = state_root.join("handshakes").join("devbox.json");
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let handshake_payload = json!({ "timestamp": now });
+        fs::write(&handshake_path, serde_json::to_vec(&handshake_payload)?)?;
+
+        let plan_path = bootstrap_dir.join("plan.json");
+        let upload_payload_path = bootstrap_dir.join("payload.txt");
+        fs::write(&upload_payload_path, b"payload")?;
+        let plan_payload = json!({
+            "artifact_hash": "artifact-hash-v1",
+            "handshake_timeout_secs": 15,
+            "ssh": {
+                "user": "root",
+                "host": "127.0.0.1",
+                "port": 22,
+                "options": ["StrictHostKeyChecking=no"]
+            },
+            "remote": {
+                "bootstrap_script": "/bin/true",
+                "args": []
+            },
+            "uploads": [
+                {
+                    "source": upload_payload_path,
+                    "destination": "/opt/castra/payload.txt"
+                }
+            ]
+        });
+        fs::write(&plan_path, serde_json::to_vec_pretty(&plan_payload)?)?;
+
+        let base_image_path = workspace.join("base.img");
+        fs::write(&base_image_path, b"test-image-contents")?;
+
+        let bin_dir = workspace.join("bin");
+        fs::create_dir_all(&bin_dir)?;
+        write_executable(&bin_dir, "ssh", "#!/bin/sh\nexit 0\n")?;
+        write_executable(&bin_dir, "scp", "#!/bin/sh\nexit 0\n")?;
+        write_executable(&bin_dir, "qemu-system-x86_64", "#!/bin/sh\nexit 0\n")?;
+        let _path_guard = PathGuard::prepend(&bin_dir);
+
+        let image_manager =
+            ImageManager::new(state_root.join("images"), state_root.join("logs"), None);
+        let context = RuntimeContext {
+            state_root: state_root.clone(),
+            log_root: state_root.join("logs"),
+            qemu_system: bin_dir.join("qemu-system-x86_64"),
+            qemu_img: None,
+            image_manager,
+            accelerators: Vec::new(),
+        };
+
+        let vm = VmDefinition {
+            name: "devbox".to_string(),
+            role_name: "devbox".to_string(),
+            replica_index: 0,
+            description: None,
+            base_image: BaseImageSource::Path(base_image_path.clone()),
+            overlay: state_root.join("overlays").join("devbox.qcow2"),
+            cpus: 2,
+            memory: MemorySpec::new("2048 MiB", Some(2 * 1024 * 1024 * 1024)),
+            port_forwards: Vec::new(),
+            bootstrap: VmBootstrapConfig {
+                mode: BootstrapMode::Always,
+            },
+        };
+
+        let project = ProjectConfig {
+            file_path: workspace.join("castra.toml"),
+            version: "0.2.0".to_string(),
+            project_name: "demo".to_string(),
+            vms: vec![vm],
+            state_root: state_root.clone(),
+            workflows: Workflows { init: Vec::new() },
+            broker: BrokerConfig {
+                port: DEFAULT_BROKER_PORT,
+            },
+            lifecycle: LifecycleConfig::default(),
+            bootstrap: BootstrapConfig {
+                mode: BootstrapMode::Auto,
+            },
+            warnings: Vec::new(),
+        };
+
+        let preparations = vec![AssetPreparation {
+            assets: ResolvedVmAssets { boot: None },
+            managed: None,
+            overlay_created: false,
+        }];
+
+        let base_hash = normalize_sha_result(compute_file_sha256(&base_image_path))?;
+        let expected_stamp = build_stamp_id(&base_hash, "artifact-hash-v1");
+        let stamps_dir = bootstrap_dir.join(STAMP_DIR_NAME);
+        fs::create_dir_all(&stamps_dir)?;
+        let stamp_path = stamps_dir.join(format!("{expected_stamp}.json"));
+        write_stamp(
+            &stamp_path,
+            &expected_stamp,
+            &base_hash,
+            "artifact-hash-v1",
+            &plan_path,
+        )
+        .expect("failed to seed existing stamp");
+
+        let mut reporter = RecordingReporter::default();
+        let mut diagnostics = Vec::new();
+        let outcomes = run_all(
+            &project,
+            &context,
+            &preparations,
+            &mut reporter,
+            &mut diagnostics,
+        )?;
+
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics when forced bootstrap runs: {diagnostics:?}"
+        );
+
+        assert_eq!(outcomes.len(), 1);
+        let outcome = &outcomes[0];
+        assert_eq!(outcome.vm, "devbox");
+        assert_eq!(outcome.status, BootstrapRunStatus::Success);
+        assert_eq!(outcome.stamp.as_deref(), Some(expected_stamp.as_str()));
+        let log_path = outcome
+            .log_path
+            .as_ref()
+            .expect("forced run should emit a log path");
+        assert!(log_path.is_file(), "bootstrap log missing at {}", log_path.display());
+
+        let events = reporter.take();
+        let mut iter = events.iter();
+
+        match iter.next().expect("bootstrap started event") {
+            Event::BootstrapStarted {
+                vm,
+                trigger,
+                base_hash: event_base,
+                artifact_hash,
+                ..
+            } => {
+                assert_eq!(vm, "devbox");
+                assert_eq!(event_base, &base_hash);
+                assert_eq!(artifact_hash, "artifact-hash-v1");
+                assert_eq!(*trigger, BootstrapTrigger::Always);
+            }
+            other => panic!("unexpected first event: {other:?}"),
+        }
+
+        let expected_steps = [
+            (BootstrapStepKind::WaitHandshake, BootstrapStepStatus::Success),
+            (BootstrapStepKind::Connect, BootstrapStepStatus::Success),
+            (BootstrapStepKind::Transfer, BootstrapStepStatus::Success),
+            (BootstrapStepKind::Apply, BootstrapStepStatus::Success),
+            (BootstrapStepKind::Verify, BootstrapStepStatus::Success),
+        ];
+
+        for (expected_kind, expected_status) in expected_steps {
+            match iter.next().expect("bootstrap step event") {
+                Event::BootstrapStep {
+                    vm, step, status, ..
+                } => {
+                    assert_eq!(vm, "devbox");
+                    assert_eq!(*step, expected_kind);
+                    assert_eq!(*status, expected_status);
+                }
+                other => panic!("unexpected event in step sequence: {other:?}"),
+            }
+        }
+
+        match iter.next().expect("bootstrap completion event") {
+            Event::BootstrapCompleted {
+                vm, status, stamp, ..
+            } => {
+                assert_eq!(vm, "devbox");
+                assert_eq!(*status, BootstrapStatus::Success);
+                assert_eq!(stamp.as_deref(), Some(expected_stamp.as_str()));
+            }
+            other => panic!("unexpected completion event: {other:?}"),
+        }
+
+        assert!(
+            iter.next().is_none(),
+            "no additional events expected after completion"
         );
 
         Ok(())
