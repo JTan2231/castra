@@ -754,93 +754,125 @@ pub fn shutdown_vm(
     let sigterm_wait_ms = duration_to_millis(sigterm_wait);
     let sigkill_wait_ms = duration_to_millis(sigkill_wait);
 
-    let graceful_attempt = attempt_graceful_shutdown(state_root, &vm.name);
-    let cooperative_method = match graceful_attempt {
-        GracefulTrigger::Initiated | GracefulTrigger::Failed { .. } => CooperativeMethod::Acpi,
-        GracefulTrigger::Unavailable { .. } => CooperativeMethod::Unavailable,
+    let mut cooperative_available = false;
+    let mut unavailable_detail: Option<String> = None;
+    #[cfg(unix)]
+    {
+        let socket = qmp_socket_path(state_root, &vm.name);
+        if socket.exists() {
+            cooperative_available = true;
+        } else {
+            unavailable_detail = Some(format!(
+                "QMP socket {} not available for `{}`",
+                socket.display(),
+                vm.name
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        unavailable_detail = Some("cooperative shutdown not supported on this platform".to_string());
+    }
+
+    let cooperative_method = if cooperative_available {
+        CooperativeMethod::Acpi
+    } else {
+        CooperativeMethod::Unavailable
+    };
+    let cooperative_timeout_ms = if cooperative_available {
+        graceful_wait_ms
+    } else {
+        0
     };
 
-    let cooperative_timeout_ms = match cooperative_method {
-        CooperativeMethod::Unavailable => 0,
-        _ => graceful_wait_ms,
-    };
     emit_event(Event::CooperativeAttempted {
         vm: vm.name.clone(),
         method: cooperative_method,
         timeout_ms: cooperative_timeout_ms,
     });
 
-    match graceful_attempt {
-        GracefulTrigger::Initiated => {
-            let wait_started = Instant::now();
-            if wait_for_process_exit(pid, graceful_wait).map_err(|err| Error::ShutdownFailed {
-                vm: vm.name.clone(),
-                message: format!(
-                    "Error while waiting for pid {pid} during graceful shutdown: {err}"
-                ),
-            })? {
-                if let Err(err) = fs::remove_file(&pidfile) {
-                    if err.kind() != ErrorKind::NotFound {
-                        return Err(Error::ShutdownFailed {
-                            vm: vm.name.clone(),
-                            message: format!(
-                                "VM stopped but failed to remove pidfile {}: {err}",
-                                pidfile.display()
-                            ),
-                        });
+    if !cooperative_available {
+        emit_event(Event::CooperativeTimedOut {
+            vm: vm.name.clone(),
+            waited_ms: 0,
+            reason: CooperativeTimeoutReason::ChannelUnavailable,
+            detail: unavailable_detail.clone(),
+        });
+    } else {
+        let _ = unavailable_detail;
+        let graceful_attempt = attempt_graceful_shutdown(state_root, &vm.name);
+        match graceful_attempt {
+            GracefulTrigger::Initiated => {
+                let wait_started = Instant::now();
+                if wait_for_process_exit(pid, graceful_wait).map_err(|err| Error::ShutdownFailed {
+                    vm: vm.name.clone(),
+                    message: format!(
+                        "Error while waiting for pid {pid} during graceful shutdown: {err}"
+                    ),
+                })? {
+                    if let Err(err) = fs::remove_file(&pidfile) {
+                        if err.kind() != ErrorKind::NotFound {
+                            return Err(Error::ShutdownFailed {
+                                vm: vm.name.clone(),
+                                message: format!(
+                                    "VM stopped but failed to remove pidfile {}: {err}",
+                                    pidfile.display()
+                                ),
+                            });
+                        }
                     }
+                    cleanup_qmp_socket(state_root, &vm.name);
+                    let elapsed_ms = duration_to_millis(wait_started.elapsed());
+                    emit_event(Event::CooperativeSucceeded {
+                        vm: vm.name.clone(),
+                        elapsed_ms,
+                    });
+                    let total_ms = duration_to_millis(shutdown_started.elapsed());
+                    emit_event(Event::ShutdownComplete {
+                        vm: vm.name.clone(),
+                        outcome: ShutdownOutcome::Graceful,
+                        total_ms,
+                        changed: true,
+                    });
+                    return Ok(VmShutdownReport::new(
+                        events,
+                        diagnostics,
+                        true,
+                        ShutdownOutcome::Graceful,
+                    ));
                 }
-                cleanup_qmp_socket(state_root, &vm.name);
-                let elapsed_ms = duration_to_millis(wait_started.elapsed());
-                emit_event(Event::CooperativeSucceeded {
+                emit_event(Event::CooperativeTimedOut {
                     vm: vm.name.clone(),
-                    elapsed_ms,
+                    waited_ms: graceful_wait_ms,
+                    reason: CooperativeTimeoutReason::TimeoutExpired,
+                    detail: None,
                 });
-                let total_ms = duration_to_millis(shutdown_started.elapsed());
-                emit_event(Event::ShutdownComplete {
-                    vm: vm.name.clone(),
-                    outcome: ShutdownOutcome::Graceful,
-                    total_ms,
-                    changed: true,
-                });
-                return Ok(VmShutdownReport::new(
-                    events,
-                    diagnostics,
-                    true,
-                    ShutdownOutcome::Graceful,
-                ));
             }
-            emit_event(Event::CooperativeTimedOut {
-                vm: vm.name.clone(),
-                waited_ms: graceful_wait_ms,
-                reason: CooperativeTimeoutReason::TimeoutExpired,
-                detail: None,
-            });
-        }
-        GracefulTrigger::Unavailable { detail } => {
-            emit_event(Event::CooperativeTimedOut {
-                vm: vm.name.clone(),
-                waited_ms: 0,
-                reason: CooperativeTimeoutReason::ChannelUnavailable,
-                detail: Some(detail),
-            });
-        }
-        GracefulTrigger::Failed { detail } => {
-            diagnostics.push(
-                Diagnostic::new(
-                    Severity::Warning,
-                    format!("Failed graceful shutdown for VM `{}`: {detail}", vm.name),
-                )
-                .with_help(
-                    "Ensure QEMU launched with QMP support or allow Castra to manage the VM lifecycle.",
-                ),
-            );
-            emit_event(Event::CooperativeTimedOut {
-                vm: vm.name.clone(),
-                waited_ms: 0,
-                reason: CooperativeTimeoutReason::ChannelError,
-                detail: Some(detail),
-            });
+            GracefulTrigger::Unavailable { detail } => {
+                emit_event(Event::CooperativeTimedOut {
+                    vm: vm.name.clone(),
+                    waited_ms: 0,
+                    reason: CooperativeTimeoutReason::ChannelUnavailable,
+                    detail: Some(detail),
+                });
+            }
+            GracefulTrigger::Failed { detail } => {
+                diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Warning,
+                        format!("Failed graceful shutdown for VM `{}`: {detail}", vm.name),
+                    )
+                    .with_help(
+                        "Ensure QEMU launched with QMP support or allow Castra to manage the VM lifecycle.",
+                    ),
+                );
+                emit_event(Event::CooperativeTimedOut {
+                    vm: vm.name.clone(),
+                    waited_ms: 0,
+                    reason: CooperativeTimeoutReason::ChannelError,
+                    detail: Some(detail),
+                });
+            }
         }
     }
 
