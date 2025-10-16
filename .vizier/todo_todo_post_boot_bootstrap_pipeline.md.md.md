@@ -23,3 +23,23 @@ Anchors
 
 ---
 
+Complete bootstrap stamp persistence, rerun semantics, and docs.
+Persist idempotence stamps under the state root keyed by (base_image_hash, bootstrap_artifact_hash); ensure NoOp integrates with durable step logs; add smoke tests for reruns and override interactions across multiple VMs; document event payloads and durable log layout, including override precedence and NoOp semantics. (thread: post-boot-bootstrap-pipeline)
+
+Acceptance Criteria:
+- Stamps are written under the state root keyed by (base_image_hash, bootstrap_artifact_hash) and are discoverable for each VM; reading a stamp on unchanged inputs yields BootstrapCompleted(status: NoOp) with no side effects.
+- Disabled and Always overrides behave as documented across multiple VMs: Disabled yields Skipped; Always forces execution despite stamps; per-VM overrides take precedence over global; conflicts are rejected preflight with a clear error.
+- Rerunning with unchanged inputs produces NoOp with existing durable step logs intact; successful forced runs update logs and stamps appropriately.
+- Outcomes are returned in input order without blocking other VMs; status remains responsive during waits and execution.
+- Events include BootstrapStarted / BootstrapCompleted(status: Success|NoOp|Skipped) / BootstrapFailed with stable fields; step logs are durable and include durations.
+- docs/BOOTSTRAP.md includes example event payloads, durable log layout, and a clear explanation of override precedence and NoOp semantics.
+
+Pointers:
+- docs/BOOTSTRAP.md
+- src/core/status.rs (handshake fields)
+- state-root conventions
+- src/core/reporter.rs; src/app/up.rs
+
+Implementation Notes (safety/correctness):
+- Stamp writes must be atomic and only reflect Success completion; NoOp must not mutate logs or state.
+- Concurrent per-VM runs must not race stamp writes; ensure a single durable failed-run log when BootstrapFailed occurs.
