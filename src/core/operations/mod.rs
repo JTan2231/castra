@@ -117,8 +117,30 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
     let (mut project, _) = load_project_for_operation(&options.config, &mut diagnostics)?;
     apply_bootstrap_overrides(&mut project, &options.bootstrap)?;
 
+    let mut reporter_proxy = ReporterProxy::new(reporter, &mut events);
+
+    if options.plan {
+        let state_root = config_state_root(&project);
+        let log_root = state_root.join("logs");
+        let plans = bootstrap::plan_all(&project, &mut reporter_proxy, &mut diagnostics)?;
+        reporter_proxy.emit(Event::Message {
+            severity: Severity::Info,
+            text: "Plan mode only – no VMs were launched.".to_string(),
+        });
+        return Ok(OperationOutput::new(UpOutcome {
+            state_root,
+            log_root,
+            launched_vms: Vec::new(),
+            broker: None,
+            bootstraps: Vec::new(),
+            plans,
+        })
+        .with_diagnostics(diagnostics)
+        .with_events(events));
+    }
+
     let outcome = {
-        let mut reporter = ReporterProxy::new(reporter, &mut events);
+        let mut reporter = reporter_proxy;
 
         let status_core::StatusSnapshot {
             diagnostics: mut status_diags,
@@ -270,6 +292,7 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
             launched_vms,
             broker: broker_outcome,
             bootstraps: bootstrap_runs,
+            plans: Vec::new(),
         }
     };
 

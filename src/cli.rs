@@ -97,6 +97,13 @@ pub struct UpArgs {
     )]
     pub force: bool,
 
+    /// Preview bootstrap inputs without launching VMs.
+    #[arg(
+        long,
+        help = "Plan mode: report bootstrap intent without launching VMs or running scripts"
+    )]
+    pub plan: bool,
+
     /// Override bootstrap behavior without editing castra.toml.
     #[arg(
         long,

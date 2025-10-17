@@ -13,9 +13,10 @@ use crate::config::PortProtocol;
 use crate::config::{BaseImageSource, BootstrapMode, ProjectConfig, VmDefinition};
 use crate::core::diagnostics::{Diagnostic, Severity};
 use crate::core::events::{
-    BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger, Event,
+    BootstrapPlanAction, BootstrapPlanSsh, BootstrapPlanVerify, BootstrapStatus, BootstrapStepKind,
+    BootstrapStepStatus, BootstrapTrigger, Event,
 };
-use crate::core::outcome::{BootstrapRunOutcome, BootstrapRunStatus};
+use crate::core::outcome::{BootstrapPlanOutcome, BootstrapRunOutcome, BootstrapRunStatus};
 use crate::core::reporter::Reporter;
 use crate::core::runtime::{AssetPreparation, RuntimeContext};
 use crate::core::status::HANDSHAKE_FRESHNESS;
@@ -123,6 +124,234 @@ pub fn run_all(
             })
         })
         .collect())
+}
+
+/// Produce dry-run summaries for bootstrap pipelines without side effects.
+pub fn plan_all(
+    project: &ProjectConfig,
+    reporter: &mut dyn Reporter,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<BootstrapPlanOutcome>> {
+    let mut plans = Vec::new();
+
+    for vm in &project.vms {
+        let plan = plan_for_vm(vm);
+        if plan.action.is_error() {
+            diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "Bootstrap plan for `{}` would error: {}",
+                        plan.vm, plan.reason
+                    ),
+                )
+                .with_help(
+                    "Update bootstrap configuration before running `castra up` without --plan.",
+                ),
+            );
+        }
+
+        reporter.report(Event::BootstrapPlanned {
+            vm: plan.vm.clone(),
+            mode: plan.mode,
+            action: plan.action,
+            reason: plan.reason.clone(),
+            trigger: plan.trigger,
+            script_path: plan.script_path.clone(),
+            payload_path: plan.payload_path.clone(),
+            payload_bytes: plan.payload_bytes,
+            handshake_timeout_secs: plan.handshake_timeout_secs,
+            remote_dir: plan.remote_dir.clone(),
+            ssh: plan.ssh.clone(),
+            env_keys: plan.env_keys.clone(),
+            verify: plan.verify.clone(),
+            artifact_hash: plan.artifact_hash.clone(),
+            metadata_path: plan.metadata_path.clone(),
+            warnings: plan.warnings.clone(),
+        });
+
+        plans.push(plan);
+    }
+
+    Ok(plans)
+}
+
+fn plan_for_vm(vm: &VmDefinition) -> BootstrapPlanOutcome {
+    let mode = vm.bootstrap.mode;
+    match mode {
+        BootstrapMode::Disabled => {
+            return BootstrapPlanOutcome {
+                vm: vm.name.clone(),
+                mode,
+                action: BootstrapPlanAction::WouldSkip,
+                trigger: None,
+                reason: "Bootstrap disabled via configuration.".to_string(),
+                script_path: vm.bootstrap.script.clone(),
+                payload_path: None,
+                payload_bytes: None,
+                handshake_timeout_secs: None,
+                remote_dir: None,
+                ssh: None,
+                env_keys: Vec::new(),
+                verify: None,
+                artifact_hash: None,
+                metadata_path: None,
+                warnings: Vec::new(),
+            };
+        }
+        _ => {}
+    }
+
+    let configured_payload = vm.bootstrap.payload.clone();
+    let trigger = trigger_for_mode(mode);
+
+    let script_path = match vm.bootstrap.script.as_ref() {
+        Some(path) => path.clone(),
+        None => {
+            let reason = "Bootstrap script not configured.".to_string();
+            let action = if matches!(mode, BootstrapMode::Always) {
+                BootstrapPlanAction::Error
+            } else {
+                BootstrapPlanAction::WouldSkip
+            };
+            return BootstrapPlanOutcome {
+                vm: vm.name.clone(),
+                mode,
+                action,
+                trigger,
+                reason,
+                script_path: None,
+                payload_path: None,
+                payload_bytes: None,
+                handshake_timeout_secs: None,
+                remote_dir: None,
+                ssh: None,
+                env_keys: Vec::new(),
+                verify: None,
+                artifact_hash: None,
+                metadata_path: None,
+                warnings: Vec::new(),
+            };
+        }
+    };
+
+    if !script_path.is_file() {
+        let reason = format!("Bootstrap script not found at {}.", script_path.display());
+        let action = if matches!(mode, BootstrapMode::Always) {
+            BootstrapPlanAction::Error
+        } else {
+            BootstrapPlanAction::WouldSkip
+        };
+        return BootstrapPlanOutcome {
+            vm: vm.name.clone(),
+            mode,
+            action,
+            trigger,
+            reason,
+            script_path: Some(script_path),
+            payload_path: configured_payload
+                .as_ref()
+                .filter(|p| p.exists() && p.is_dir())
+                .cloned(),
+            payload_bytes: None,
+            handshake_timeout_secs: None,
+            remote_dir: None,
+            ssh: None,
+            env_keys: Vec::new(),
+            verify: None,
+            artifact_hash: None,
+            metadata_path: None,
+            warnings: Vec::new(),
+        };
+    }
+
+    let inputs = match resolve_blueprint_inputs(vm, &script_path, configured_payload.as_ref()) {
+        Ok(inputs) => inputs,
+        Err(err) => {
+            return BootstrapPlanOutcome {
+                vm: vm.name.clone(),
+                mode,
+                action: BootstrapPlanAction::Error,
+                trigger,
+                reason: err,
+                script_path: Some(script_path),
+                payload_path: configured_payload
+                    .as_ref()
+                    .filter(|p| p.exists() && p.is_dir())
+                    .cloned(),
+                payload_bytes: None,
+                handshake_timeout_secs: None,
+                remote_dir: None,
+                ssh: None,
+                env_keys: Vec::new(),
+                verify: None,
+                artifact_hash: None,
+                metadata_path: None,
+                warnings: Vec::new(),
+            };
+        }
+    };
+
+    let mut env_keys: Vec<String> = inputs.env.keys().cloned().collect();
+    env_keys.sort();
+
+    let ssh_plan = Some(BootstrapPlanSsh {
+        user: inputs.ssh.user.clone(),
+        host: inputs.ssh.host.clone(),
+        port: inputs.ssh.port,
+        identity: inputs.ssh.identity.clone(),
+        options: inputs.ssh.options.clone(),
+    });
+
+    let verify_plan = if inputs.verify.command.is_some() || inputs.verify.path.is_some() {
+        Some(BootstrapPlanVerify {
+            command: inputs.verify.command.clone(),
+            path: inputs.verify.path.clone(),
+            path_is_relative: inputs.verify.path_is_relative,
+        })
+    } else {
+        None
+    };
+
+    let reason = match mode {
+        BootstrapMode::Auto => {
+            "Policy `auto`; pipeline runs after handshake unless the runner reports Castra:noop."
+                .to_string()
+        }
+        BootstrapMode::Always => "Policy `always`; pipeline runs on every invocation.".to_string(),
+        BootstrapMode::Disabled => unreachable!(),
+    };
+
+    BootstrapPlanOutcome {
+        vm: vm.name.clone(),
+        mode,
+        action: BootstrapPlanAction::WouldRun,
+        trigger,
+        reason,
+        script_path: Some(script_path),
+        payload_path: inputs.payload_source.clone(),
+        payload_bytes: if inputs.payload_source.is_some() {
+            Some(inputs.payload_bytes)
+        } else {
+            None
+        },
+        handshake_timeout_secs: Some(inputs.handshake_timeout.as_secs()),
+        remote_dir: Some(inputs.remote_dir.clone()),
+        ssh: ssh_plan,
+        env_keys,
+        verify: verify_plan,
+        artifact_hash: Some(inputs.artifact_hash.clone()),
+        metadata_path: inputs.metadata_path.clone(),
+        warnings: inputs.warnings.clone(),
+    }
+}
+
+fn trigger_for_mode(mode: BootstrapMode) -> Option<BootstrapTrigger> {
+    match mode {
+        BootstrapMode::Auto => Some(BootstrapTrigger::Auto),
+        BootstrapMode::Always => Some(BootstrapTrigger::Always),
+        BootstrapMode::Disabled => None,
+    }
 }
 
 fn run_for_vm(
@@ -640,6 +869,24 @@ fn compute_file_sha256(path: &Path) -> std::result::Result<String, String> {
 }
 
 #[derive(Debug)]
+struct BootstrapBlueprintInputs {
+    vm: String,
+    script_source: PathBuf,
+    payload_source: Option<PathBuf>,
+    payload_bytes: u64,
+    handshake_timeout: Duration,
+    remote_dir: String,
+    remote_script: String,
+    remote_payload_dir: Option<String>,
+    ssh: SshConfig,
+    env: HashMap<String, String>,
+    verify: BootstrapVerifyPlan,
+    artifact_hash: String,
+    metadata_path: Option<PathBuf>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug)]
 struct BootstrapBlueprint {
     vm: String,
     script_source: PathBuf,
@@ -717,7 +964,56 @@ fn assemble_blueprint(
     script_source: &Path,
     payload_source: Option<&PathBuf>,
 ) -> std::result::Result<BootstrapBlueprint, String> {
+    let inputs = resolve_blueprint_inputs(vm, script_source, payload_source)?;
     let staging_root = state_root.join(STAGING_SUBDIR).join(&vm.name);
+    let (staged_script, staged_payload, payload_bytes) = stage_local_assets(
+        &inputs.script_source,
+        inputs.payload_source.as_deref(),
+        &staging_root,
+    )?;
+
+    let BootstrapBlueprintInputs {
+        vm,
+        script_source: resolved_script,
+        payload_source,
+        payload_bytes: _,
+        handshake_timeout,
+        remote_dir,
+        remote_script,
+        remote_payload_dir,
+        ssh,
+        env,
+        verify,
+        artifact_hash,
+        metadata_path,
+        warnings,
+    } = inputs;
+
+    Ok(BootstrapBlueprint {
+        vm,
+        script_source: resolved_script,
+        staged_script,
+        payload_source,
+        staged_payload,
+        payload_bytes,
+        handshake_timeout,
+        remote_dir,
+        remote_script,
+        remote_payload_dir,
+        ssh,
+        env,
+        verify,
+        artifact_hash,
+        metadata_path,
+        warnings,
+    })
+}
+
+fn resolve_blueprint_inputs(
+    vm: &VmDefinition,
+    script_source: &Path,
+    payload_source: Option<&PathBuf>,
+) -> std::result::Result<BootstrapBlueprintInputs, String> {
     let mut warnings = Vec::new();
 
     let metadata_path = script_source
@@ -769,6 +1065,7 @@ fn assemble_blueprint(
     }
 
     remote_dir = normalize_remote_dir(&remote_dir);
+    let remote_script = format!("{remote_dir}/{}", STAGED_SCRIPT_NAME);
 
     let payload_source_resolved = match payload_source {
         Some(path) if path.exists() => {
@@ -792,16 +1089,14 @@ fn assemble_blueprint(
         None => None,
     };
 
-    let (staged_script, staged_payload, payload_bytes) = stage_local_assets(
-        script_source,
-        payload_source_resolved.as_deref(),
-        &staging_root,
-    )?;
-
-    let remote_script = format!("{}/{}", remote_dir, STAGED_SCRIPT_NAME);
-    let remote_payload_dir = staged_payload
+    let remote_payload_dir = payload_source_resolved
         .as_ref()
-        .map(|_| format!("{}/{}", remote_dir, STAGED_PAYLOAD_DIR));
+        .map(|_| format!("{remote_dir}/{}", STAGED_PAYLOAD_DIR));
+
+    let payload_bytes = match payload_source_resolved.as_ref() {
+        Some(path) => calculate_payload_bytes(path)?,
+        None => 0,
+    };
 
     let mut env = metadata
         .as_ref()
@@ -901,19 +1196,17 @@ fn assemble_blueprint(
     }
 
     let artifact_hash = compute_artifact_hash(
-        &staged_script,
-        staged_payload.as_deref(),
+        script_source,
+        payload_source_resolved.as_deref(),
         &env,
         &remote_dir,
         &verify,
     )?;
 
-    Ok(BootstrapBlueprint {
+    Ok(BootstrapBlueprintInputs {
         vm: vm.name.clone(),
         script_source: script_source.to_path_buf(),
-        staged_script,
         payload_source: payload_source_resolved,
-        staged_payload,
         payload_bytes,
         handshake_timeout,
         remote_dir,
@@ -1088,11 +1381,26 @@ fn copy_payload_dir(source: &Path, dest: &Path) -> std::result::Result<u64, Stri
     Ok(total)
 }
 
+fn calculate_payload_bytes(root: &Path) -> std::result::Result<u64, String> {
+    let entries = collect_payload_entries(root)?;
+    Ok(entries
+        .iter()
+        .filter_map(|entry| {
+            if matches!(entry.kind, PayloadEntryKind::File) {
+                Some(entry.size)
+            } else {
+                None
+            }
+        })
+        .sum())
+}
+
 #[derive(Debug)]
 struct PayloadEntry {
     rel_path: String,
     source_path: PathBuf,
     kind: PayloadEntryKind,
+    size: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1123,12 +1431,14 @@ fn collect_payload_entries(root: &Path) -> std::result::Result<Vec<PayloadEntry>
                     rel_path,
                     source_path: current.clone(),
                     kind: PayloadEntryKind::Directory,
+                    size: 0,
                 });
             } else if metadata.is_file() {
                 entries.push(PayloadEntry {
                     rel_path,
                     source_path: current.clone(),
                     kind: PayloadEntryKind::File,
+                    size: metadata.len(),
                 });
             } else {
                 return Err(format!(
@@ -1890,7 +2200,7 @@ mod tests {
         VmDefinition, Workflows,
     };
     use crate::core::diagnostics::{Diagnostic, Severity};
-    use crate::core::events::{BootstrapStatus, Event};
+    use crate::core::events::{BootstrapPlanAction, BootstrapStatus, BootstrapTrigger, Event};
     use crate::core::outcome::BootstrapRunStatus;
     use crate::core::runtime::{AssetPreparation, ResolvedVmAssets, RuntimeContext};
     use crate::managed::ImageManager;
@@ -2061,6 +2371,163 @@ mod tests {
                 .iter()
                 .any(|diag| diag.severity == Severity::Info)
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_plan_reports_run_details() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let _env_guard = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let temp_dir = TempDir::new()?;
+        let workspace = temp_dir.path();
+
+        let project_root = workspace.join("project");
+        let script_source = project_root.join("bootstrap").join("devbox").join("run.sh");
+        fs::create_dir_all(script_source.parent().unwrap())?;
+        fs::write(&script_source, b"#!/bin/sh\nexit 0\n")?;
+        let payload_source = script_source.parent().unwrap().join("payload");
+        fs::create_dir_all(&payload_source)?;
+        fs::write(payload_source.join("data.txt"), b"payload")?;
+
+        let base_image_path = workspace.join("base.img");
+        fs::write(&base_image_path, b"base-image")?;
+
+        let vm = VmDefinition {
+            name: "devbox".to_string(),
+            role_name: "devbox".to_string(),
+            replica_index: 0,
+            description: None,
+            base_image: BaseImageSource::Path(base_image_path),
+            overlay: workspace.join("state/overlays/devbox.qcow2"),
+            cpus: 2,
+            memory: MemorySpec::new("2048 MiB", Some(2 * 1024 * 1024 * 1024)),
+            port_forwards: vec![PortForward {
+                host: 2222,
+                guest: 22,
+                protocol: PortProtocol::Tcp,
+            }],
+            bootstrap: VmBootstrapConfig {
+                mode: BootstrapMode::Auto,
+                script: Some(script_source.clone()),
+                payload: Some(payload_source.clone()),
+                handshake_timeout_secs: 45,
+                remote_dir: PathBuf::from(DEFAULT_REMOTE_BASE),
+                env: HashMap::new(),
+                verify: None,
+            },
+        };
+
+        let project = ProjectConfig {
+            file_path: project_root.join("castra.toml"),
+            project_root: project_root.clone(),
+            version: "0.2.0".to_string(),
+            project_name: "demo".to_string(),
+            vms: vec![vm],
+            state_root: workspace.join("state"),
+            workflows: Workflows { init: Vec::new() },
+            broker: BrokerConfig {
+                port: DEFAULT_BROKER_PORT,
+            },
+            lifecycle: LifecycleConfig::default(),
+            bootstrap: BootstrapConfig::default(),
+            warnings: Vec::new(),
+        };
+
+        let mut diagnostics = Vec::new();
+        let mut reporter = RecordingReporter::default();
+        let plans = plan_all(&project, &mut reporter, &mut diagnostics)?;
+
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+        assert_eq!(plans.len(), 1);
+        let plan = &plans[0];
+        assert_eq!(plan.action, BootstrapPlanAction::WouldRun);
+        assert_eq!(plan.trigger, Some(BootstrapTrigger::Auto));
+        assert_eq!(plan.handshake_timeout_secs, Some(45));
+        assert_eq!(plan.payload_bytes, Some("payload".len() as u64));
+        assert_eq!(
+            plan.remote_dir.as_deref(),
+            Some("/tmp/castra-bootstrap/devbox")
+        );
+        assert!(plan.env_keys.is_empty());
+        assert!(plan.warnings.is_empty());
+
+        let events = reporter.take();
+        assert!(matches!(
+            events.as_slice(),
+            [Event::BootstrapPlanned { .. }]
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_plan_marks_missing_script() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let _env_guard = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let temp_dir = TempDir::new()?;
+        let workspace = temp_dir.path();
+
+        let project_root = workspace.join("project");
+        fs::create_dir_all(project_root.join("bootstrap"))?;
+
+        let base_image_path = workspace.join("base.img");
+        fs::write(&base_image_path, b"base-image")?;
+
+        let vm = VmDefinition {
+            name: "devbox".to_string(),
+            role_name: "devbox".to_string(),
+            replica_index: 0,
+            description: None,
+            base_image: BaseImageSource::Path(base_image_path),
+            overlay: workspace.join("state/overlays/devbox.qcow2"),
+            cpus: 2,
+            memory: MemorySpec::new("2048 MiB", Some(2 * 1024 * 1024 * 1024)),
+            port_forwards: Vec::new(),
+            bootstrap: VmBootstrapConfig {
+                mode: BootstrapMode::Auto,
+                script: None,
+                payload: None,
+                handshake_timeout_secs: 30,
+                remote_dir: PathBuf::from(DEFAULT_REMOTE_BASE),
+                env: HashMap::new(),
+                verify: None,
+            },
+        };
+
+        let project = ProjectConfig {
+            file_path: project_root.join("castra.toml"),
+            project_root: project_root.clone(),
+            version: "0.2.0".to_string(),
+            project_name: "demo".to_string(),
+            vms: vec![vm],
+            state_root: workspace.join("state"),
+            workflows: Workflows { init: Vec::new() },
+            broker: BrokerConfig {
+                port: DEFAULT_BROKER_PORT,
+            },
+            lifecycle: LifecycleConfig::default(),
+            bootstrap: BootstrapConfig::default(),
+            warnings: Vec::new(),
+        };
+
+        let mut diagnostics = Vec::new();
+        let mut reporter = RecordingReporter::default();
+        let plans = plan_all(&project, &mut reporter, &mut diagnostics)?;
+
+        assert!(diagnostics.is_empty());
+        assert_eq!(plans.len(), 1);
+        let plan = &plans[0];
+        assert_eq!(plan.action, BootstrapPlanAction::WouldSkip);
+        assert!(plan.reason.contains("not configured"));
+
+        let events = reporter.take();
+        assert!(matches!(
+            events.as_slice(),
+            [Event::BootstrapPlanned { .. }]
+        ));
 
         Ok(())
     }

@@ -1,12 +1,13 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::config::{BrokerConfig, PortForward};
+use crate::config::{BootstrapMode, BrokerConfig, PortForward};
 use crate::managed::ManagedImagePaths;
 
 use super::diagnostics::Diagnostic;
 use super::events::{
-    CleanupKind, CleanupManagedImageEvidence, Event, ManagedImageSpecHandle, ShutdownOutcome,
+    BootstrapPlanAction, BootstrapPlanSsh, BootstrapPlanVerify, BootstrapTrigger, CleanupKind,
+    CleanupManagedImageEvidence, Event, ManagedImageSpecHandle, ShutdownOutcome,
 };
 use super::options::{BusLogTarget, PortsView};
 
@@ -65,6 +66,7 @@ pub struct UpOutcome {
     pub launched_vms: Vec<VmLaunchOutcome>,
     pub broker: Option<BrokerLaunchOutcome>,
     pub bootstraps: Vec<BootstrapRunOutcome>,
+    pub plans: Vec<BootstrapPlanOutcome>,
 }
 
 #[derive(Debug)]
@@ -93,6 +95,26 @@ pub struct BootstrapRunOutcome {
     pub status: BootstrapRunStatus,
     pub stamp: Option<String>,
     pub log_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BootstrapPlanOutcome {
+    pub vm: String,
+    pub mode: BootstrapMode,
+    pub action: BootstrapPlanAction,
+    pub trigger: Option<BootstrapTrigger>,
+    pub reason: String,
+    pub script_path: Option<PathBuf>,
+    pub payload_path: Option<PathBuf>,
+    pub payload_bytes: Option<u64>,
+    pub handshake_timeout_secs: Option<u64>,
+    pub remote_dir: Option<String>,
+    pub ssh: Option<BootstrapPlanSsh>,
+    pub env_keys: Vec<String>,
+    pub verify: Option<BootstrapPlanVerify>,
+    pub artifact_hash: Option<String>,
+    pub metadata_path: Option<PathBuf>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -79,6 +79,8 @@ pub struct UpOptions {
     pub force: bool,
     /// Per-invocation overrides for bootstrap behavior.
     pub bootstrap: BootstrapOverrides,
+    /// Plan mode renders bootstrap intent without side effects.
+    pub plan: bool,
 }
 
 impl Default for UpOptions {
@@ -87,6 +89,7 @@ impl Default for UpOptions {
             config: ConfigLoadOptions::discover(true),
             force: false,
             bootstrap: BootstrapOverrides::default(),
+            plan: false,
         }
     }
 }

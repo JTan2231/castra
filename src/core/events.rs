@@ -6,6 +6,8 @@ use crate::managed::{
     ManagedImageVerificationOutcome,
 };
 
+use crate::config::BootstrapMode;
+
 use super::diagnostics::Severity;
 
 /// Structured event emitted during long-running operations.
@@ -175,6 +177,41 @@ pub enum Event {
         total_ms: u64,
         /// Whether the VM transitioned state (`true` if it was running, `false` if already stopped).
         changed: bool,
+    },
+    /// Host-side bootstrap pipeline started for a VM.
+    BootstrapPlanned {
+        /// Name of the VM.
+        vm: String,
+        /// Effective bootstrap mode.
+        mode: BootstrapMode,
+        /// Whether the pipeline would run, skip, or error.
+        action: BootstrapPlanAction,
+        /// Short explanation describing the decision.
+        reason: String,
+        /// Trigger the run would use when applicable.
+        trigger: Option<BootstrapTrigger>,
+        /// Resolved bootstrap script path if available on disk.
+        script_path: Option<PathBuf>,
+        /// Resolved payload directory when present.
+        payload_path: Option<PathBuf>,
+        /// Total payload bytes if the directory exists.
+        payload_bytes: Option<u64>,
+        /// Handshake wait in seconds when the plan would run.
+        handshake_timeout_secs: Option<u64>,
+        /// Remote directory that would receive staged assets.
+        remote_dir: Option<String>,
+        /// SSH connection summary for the plan.
+        ssh: Option<BootstrapPlanSsh>,
+        /// Environment variable keys that would be exported.
+        env_keys: Vec<String>,
+        /// Optional verification configuration summary.
+        verify: Option<BootstrapPlanVerify>,
+        /// Artifact hash spanning script, payload, env, and verify inputs.
+        artifact_hash: Option<String>,
+        /// Path to bootstrap metadata when discovered.
+        metadata_path: Option<PathBuf>,
+        /// Non-fatal warnings associated with the plan.
+        warnings: Vec<String>,
     },
     /// Host-side bootstrap pipeline started for a VM.
     BootstrapStarted {
@@ -349,6 +386,58 @@ pub enum BootstrapStatus {
     Success,
     /// Bootstrap runner reported no additional work was required.
     NoOp,
+}
+
+/// Dry-run action that a bootstrap plan would take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapPlanAction {
+    /// Pipeline would attempt to run (auto or always).
+    WouldRun,
+    /// Pipeline would be skipped (disabled or auto without a script).
+    WouldSkip,
+    /// Pipeline would fail due to configuration errors.
+    Error,
+}
+
+impl BootstrapPlanAction {
+    /// Human-friendly description.
+    pub fn describe(self) -> &'static str {
+        match self {
+            BootstrapPlanAction::WouldRun => "would run",
+            BootstrapPlanAction::WouldSkip => "would skip",
+            BootstrapPlanAction::Error => "would error",
+        }
+    }
+
+    /// Whether the plan represents an error state.
+    pub fn is_error(self) -> bool {
+        matches!(self, BootstrapPlanAction::Error)
+    }
+}
+
+/// SSH configuration surfaced as part of a bootstrap plan.
+#[derive(Debug, Clone)]
+pub struct BootstrapPlanSsh {
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+    pub identity: Option<PathBuf>,
+    pub options: Vec<String>,
+}
+
+impl BootstrapPlanSsh {
+    /// Format as `user@host:port`.
+    pub fn summary(&self) -> String {
+        format!("{}@{}:{}", self.user, self.host, self.port)
+    }
+}
+
+/// Verification configuration surfaced in a bootstrap plan.
+#[derive(Debug, Clone)]
+pub struct BootstrapPlanVerify {
+    pub command: Option<String>,
+    pub path: Option<String>,
+    pub path_is_relative: bool,
 }
 
 /// Cooperative channel used during guest shutdown attempts.

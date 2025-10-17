@@ -5,7 +5,8 @@ use crate::Result;
 use crate::cli::{BootstrapOverrideArg, UpArgs};
 use crate::core::diagnostics::Severity;
 use crate::core::events::{
-    BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger, Event,
+    BootstrapPlanAction, BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger,
+    Event,
 };
 use crate::core::operations;
 use crate::core::options::{BootstrapOverrides, UpOptions};
@@ -21,6 +22,7 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
         config: config_load_options(config_override, args.skip_discovery, "up")?,
         force: args.force,
         bootstrap: bootstrap_overrides,
+        plan: args.plan,
     };
 
     let output = operations::up(options, None)?;
@@ -82,6 +84,114 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
         match event {
             Event::ManagedArtifact { spec, text, .. } => {
                 println!("→ {} {}: {}", spec.id, spec.version, text);
+            }
+            Event::BootstrapPlanned {
+                vm,
+                mode,
+                action,
+                reason,
+                trigger,
+                script_path,
+                payload_path,
+                payload_bytes,
+                handshake_timeout_secs,
+                remote_dir,
+                ssh,
+                env_keys,
+                verify,
+                artifact_hash,
+                metadata_path,
+                warnings,
+            } => {
+                let mode_text = mode.as_str();
+                match action {
+                    BootstrapPlanAction::WouldRun => {
+                        println!("→ {}: plan would run ({}; {}).", vm, mode_text, reason);
+                    }
+                    BootstrapPlanAction::WouldSkip => {
+                        println!("→ {}: plan would skip ({}; {}).", vm, mode_text, reason);
+                    }
+                    BootstrapPlanAction::Error => {
+                        eprintln!("→ {}: plan would error ({}; {}).", vm, mode_text, reason);
+                    }
+                }
+
+                if let Some(path) = script_path {
+                    println!("   script: {}", path.display());
+                }
+
+                if let Some(seconds) = handshake_timeout_secs {
+                    println!("   handshake wait: {}s", seconds);
+                }
+
+                if let Some(dir) = remote_dir {
+                    println!("   remote dir: {}", dir);
+                }
+
+                if let Some(ssh) = ssh {
+                    let mut summary = ssh.summary();
+                    if let Some(identity) = &ssh.identity {
+                        summary = format!("{} (identity: {})", summary, identity.display());
+                    }
+                    println!("   ssh: {}", summary);
+                    if !ssh.options.is_empty() {
+                        println!("   ssh options: {}", ssh.options.join(", "));
+                    }
+                }
+
+                let payload_path_ref = payload_path.as_ref();
+                let payload_bytes_value = payload_bytes.as_ref().copied();
+
+                match (payload_path_ref, payload_bytes_value) {
+                    (Some(path), Some(bytes)) => {
+                        println!("   payload: {} ({}).", path.display(), format_bytes(bytes));
+                    }
+                    (Some(path), None) => {
+                        println!("   payload: {}.", path.display());
+                    }
+                    (None, Some(bytes)) if bytes > 0 => {
+                        println!("   payload size: {} (path missing).", format_bytes(bytes));
+                    }
+                    _ => {}
+                }
+
+                if !env_keys.is_empty() {
+                    println!("   env keys: {}", env_keys.join(", "));
+                }
+
+                if let Some(verify) = verify {
+                    let mut parts = Vec::new();
+                    if let Some(cmd) = &verify.command {
+                        parts.push(format!("command={cmd}"));
+                    }
+                    if let Some(path) = &verify.path {
+                        let scope = if verify.path_is_relative {
+                            "relative"
+                        } else {
+                            "absolute"
+                        };
+                        parts.push(format!("path={} ({scope})", path));
+                    }
+                    if !parts.is_empty() {
+                        println!("   verify: {}", parts.join(", "));
+                    }
+                }
+
+                if let Some(hash) = artifact_hash {
+                    println!("   artifact: {}", hash_snippet(hash.as_str()));
+                }
+
+                if let Some(path) = metadata_path {
+                    println!("   metadata: {}", path.display());
+                }
+
+                for warning in warnings {
+                    println!("   ! {warning}");
+                }
+
+                if let Some(trigger) = trigger {
+                    println!("   trigger: {}", format_bootstrap_trigger(trigger));
+                }
             }
             Event::EphemeralLayerDiscarded {
                 vm,
@@ -307,6 +417,27 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
             },
             _ => {}
         }
+    }
+
+    if !outcome.plans.is_empty() {
+        let run = outcome
+            .plans
+            .iter()
+            .filter(|plan| plan.action == BootstrapPlanAction::WouldRun)
+            .count();
+        let skip = outcome
+            .plans
+            .iter()
+            .filter(|plan| plan.action == BootstrapPlanAction::WouldSkip)
+            .count();
+        let errors = outcome
+            .plans
+            .iter()
+            .filter(|plan| plan.action == BootstrapPlanAction::Error)
+            .count();
+        println!(
+            "Bootstrap plan summary: {run} would run, {skip} would skip, {errors} would error."
+        );
     }
 
     if !outcome.bootstraps.is_empty() {
