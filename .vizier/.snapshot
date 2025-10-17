@@ -1,8 +1,8 @@
-SNAPSHOT v0.9.1 — Castra (VM orchestration harness)
+SNAPSHOT v0.9.2 — Castra (VM orchestration harness)
 
 Edits since last snapshot refresh
-- Thread 13 policy tightened: Ephemerality is now the only supported VM storage mode. Any persistence/export is user-managed via SSH; no built-in retention features. CLI/config must reject attempts to enable persistence and surface guidance.
-- Housekeeping: Duplicate TODO stubs removed (.md.md variants).
+- Housekeeping: Removed malformed duplicate TODO files (*.md.md variants). Canonical TODOs remain intact.
+- Thread 13 TODO clarified to reflect policy: ephemeral-only; removed residual mentions of a persistence mode and tightened acceptance around validation, cleanup, and CLEAN integration.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (sequencing shipped): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -39,7 +39,7 @@ Active threads (intent + acceptance)
   Anchors: src/config.rs; src/core/bootstrap.rs; src/core/status.rs; src/core/reporter.rs; src/app/up.rs; src/cli.rs; docs/BOOTSTRAP.md.
 
 - Thread 13 — Stateless runs (ephemeral‑only write layer + cleanup): All VM disk changes are discarded on shutdown; there is no built‑in persistence or export. Users must manually export via SSH before shutdown.
-  Policy (new):
+  Policy (locked):
   - Ephemerality is the only supported mode. Any attempt to enable persistence via CLI/config is rejected with a clear, actionable error that points to SSH export.
   Intent:
   - Default and only mode uses a non‑persistent write layer over managed base images; guest mutations are discarded on shutdown (graceful or forced).
@@ -49,7 +49,7 @@ Active threads (intent + acceptance)
   - Pristine restarts from the same base; no residual ephemeral artifacts after normal shutdown; opportunistic orphan reclamation without blocking healthy ops.
   - No CLI/opts/env allow persistence; validation errors include remediation guidance ("export via SSH before shutdown").
   - CLEAN integrates reclaimed‑bytes reporting; stable JSON schemas preserved.
-  - Up output (TTY/JSON) clearly indicates ephemeral‑only behavior.
+  - Up/Down output (TTY/JSON) clearly indicates ephemeral‑only behavior.
   Anchors: src/core/operations/up.rs; src/app/up.rs; src/core/operations/clean.rs; src/app/clean.rs; src/core/runtime.rs; src/app/down.rs; docs/BOOTSTRAP.md; CLEAN.md; CLI help.
 
 Current code state (observable surfaces)
@@ -59,7 +59,7 @@ Current code state (observable surfaces)
 - Managed images emit structured verification/profile events; app/up.rs renders size/duration and steps; automation can consume JSON streams.
 - Down command emits cooperative shutdown events before escalation and renders per‑VM shutdown durations; forced shutdown returns success with warning.
 - Bootstrap (stamp‑free) now driven by config + optional per‑VM metadata and local script/payload directories; SSH defaults hardened; port‑forward inference supported. Per‑VM durable logs written; NoOp reported via script sentinel; JSON schema unchanged.
-- Stateless runs (Thread 13) policy captured (ephemeral‑only); implementation remains pending.
+- Stateless runs policy captured (ephemeral‑only); implementation remains pending for cleanup/validation/UI polish.
 
 Narrative themes
 1) Robust VM lifecycle — predictable, observable cooperative shutdown with bounded waits and clear outcomes.
@@ -71,7 +71,7 @@ Direction of travel
 - Thread 2: expose timeouts in CLI/options, render fields consistently, and document payloads; keep exit‑success semantics on forced shutdowns.
 - Thread 10: add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
 - Thread 12: deliver --plan and TTY UX polish; update docs/help; keep JSON schema stable; continue refining hints and durable log paths.
-- Thread 13: implement ephemeral write‑layer (only mode), add validation that rejects persistence, surface TTY/JSON notices, integrate reclaimed‑bytes with CLEAN, and ensure crash/reboot orphan reclamation.
+- Thread 13: implement cleanup + validation + UX notices; integrate reclaimed‑bytes with CLEAN; ensure crash/reboot orphan reclamation.
 
 Cross‑links
 - CLEAN to integrate ephemeral layer reclamation (Thread 13) alongside managed‑image evidence.
@@ -84,4 +84,4 @@ Editorial housekeeping
   - todo_cooperative_shutdown_lifecycle.md
   - todo_post_boot_bootstrap_pipeline.md
   - todo_ephemeral_vm_storage_and_cleanup.md
-- Snapshot version bumped to v0.9.1 to record ephemeral‑only policy and housekeeping cleanup.
+- Snapshot version bumped to v0.9.2 to record TODO cleanup and tightened Thread 13 brief.
