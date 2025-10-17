@@ -19,8 +19,8 @@ use super::bootstrap;
 use super::broker as broker_core;
 use super::diagnostics::{Diagnostic, Severity};
 use super::events::{
-    Event, ManagedImageArtifactPlan, ManagedImageArtifactReport, ManagedImageChecksum,
-    ManagedImageSpecHandle, ShutdownOutcome,
+    EphemeralCleanupReason, Event, ManagedImageArtifactPlan, ManagedImageArtifactReport,
+    ManagedImageChecksum, ManagedImageSpecHandle, ShutdownOutcome,
 };
 use super::logs as logs_core;
 use super::options::{
@@ -173,6 +173,14 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
                     prep.assets.boot.as_ref(),
                 );
             }
+            if let Some(bytes) = prep.overlay_reclaimed_bytes {
+                reporter.emit(Event::EphemeralLayerDiscarded {
+                    vm: vm.name.clone(),
+                    overlay_path: vm.overlay.clone(),
+                    reclaimed_bytes: bytes,
+                    reason: EphemeralCleanupReason::Orphan,
+                });
+            }
             if prep.overlay_created {
                 reporter.emit(Event::OverlayPrepared {
                     vm: vm.name.clone(),
@@ -215,6 +223,11 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
         reporter.emit(Event::Message {
             severity: Severity::Info,
             text: format!("Launched {} VM(s).", launched_vms.len()),
+        });
+
+        reporter.emit(Event::Message {
+            severity: Severity::Info,
+            text: "Guest disk changes are ephemeral; export via SSH before running `castra down` if you need to retain data.".to_string(),
         });
 
         let bootstrap_runs = bootstrap::run_all(

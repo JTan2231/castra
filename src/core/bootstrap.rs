@@ -2030,6 +2030,7 @@ mod tests {
             assets: ResolvedVmAssets { boot: None },
             managed: None,
             overlay_created: false,
+            overlay_reclaimed_bytes: None,
         }];
 
         let mut reporter = RecordingReporter::default();
@@ -2179,6 +2180,7 @@ mod tests {
             assets: ResolvedVmAssets { boot: None },
             managed: None,
             overlay_created: false,
+            overlay_reclaimed_bytes: None,
         }];
 
         let mut reporter = RecordingReporter::default();

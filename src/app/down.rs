@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::cli::DownArgs;
 use crate::core::diagnostics::Severity;
-use crate::core::events::{CooperativeMethod, Event, ShutdownOutcome};
+use crate::core::events::{CooperativeMethod, EphemeralCleanupReason, Event, ShutdownOutcome};
 use crate::core::operations;
 use crate::core::options::DownOptions;
 use crate::core::project::format_config_warnings;
@@ -163,6 +163,23 @@ fn render_down(events: &[Event]) {
                     }
                 }
             }
+            Event::EphemeralLayerDiscarded {
+                vm,
+                overlay_path,
+                reclaimed_bytes,
+                reason,
+            } => match reason {
+                EphemeralCleanupReason::Shutdown => println!(
+                    "→ {vm}: ephemeral changes discarded (removed {} – {}). Export via SSH before `castra down` if you need to retain data.",
+                    overlay_path.display(),
+                    format_bytes(*reclaimed_bytes)
+                ),
+                EphemeralCleanupReason::Orphan => println!(
+                    "→ {vm}: removed orphaned overlay {} (reclaimed {}).",
+                    overlay_path.display(),
+                    format_bytes(*reclaimed_bytes)
+                ),
+            },
             Event::BrokerStopped { changed } => {
                 if !changed {
                     println!("→ broker: already stopped.");
@@ -190,4 +207,23 @@ fn format_duration_ms(ms: u64) -> String {
     } else {
         format!("{ms}ms")
     }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+
+    if bytes < 1024 {
+        return format!("{} B", bytes);
+    }
+
+    let value = bytes as f64;
+    if value < MIB {
+        return format!("{:.1} KiB", value / KIB);
+    }
+    if value < GIB {
+        return format!("{:.1} MiB", value / MIB);
+    }
+    format!("{:.1} GiB", value / GIB)
 }

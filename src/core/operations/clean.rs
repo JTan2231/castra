@@ -355,7 +355,16 @@ fn clean_state_root(
         )?;
     }
 
-    if options.include_overlays && !options.managed_only {
+    if options.managed_only {
+        for overlay in overlays {
+            actions.push(CleanupAction::Skipped {
+                path: overlay,
+                reason: SkipReason::ManagedOnly,
+                kind: CleanupKind::Overlay,
+                managed_evidence: Vec::new(),
+            });
+        }
+    } else {
         for overlay in overlays {
             reclaimed += process_target(
                 &overlay,
@@ -365,19 +374,6 @@ fn clean_state_root(
                 &mut actions,
                 true,
             )?;
-        }
-    } else if !overlays.is_empty() && !options.include_overlays {
-        for overlay in overlays {
-            actions.push(CleanupAction::Skipped {
-                path: overlay,
-                reason: if options.managed_only {
-                    SkipReason::ManagedOnly
-                } else {
-                    SkipReason::FlagDisabled
-                },
-                kind: CleanupKind::Overlay,
-                managed_evidence: Vec::new(),
-            });
         }
     }
 

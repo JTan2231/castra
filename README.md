@@ -4,6 +4,8 @@ Castra is a friendly orchestration layer for lightweight QEMU-based sandboxes. I
 
 The CLI is a veneer over the library. Projects that embed Castra can disable the `cli` feature flag to depend on the core APIs without pulling in presentation code (see `docs/library_usage.md`).
 
+Castra runs are stateless: each VM boots with a fresh overlay and all guest-side disk mutations are discarded when the VM stops. Export data you want to keep via SSH or other guest tooling before invoking `castra down`.
+
 ## Minimum Supported Rust Version
 
 Castra targets **Rust 1.77** or later. The crate opts into the 2024 edition and relies on the toolchain updates that shipped with that release family. Install via:

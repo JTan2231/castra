@@ -16,7 +16,7 @@
 - Safety toggles:
   - `--dry-run` lists targets, sizes, and blockers without deleting.
   - `--force` overrides running-process safeguards (never the default).
-  - `--include-overlays` opt-in to delete overlay qcow2s; by default overlays are retained even in workspace mode.
+- (deprecated) `--include-overlays` was an opt-in for deleting overlay qcow2s. Stateless runs now remove overlays automatically; the flag is retained for compatibility but has no effect.
   - `--include-logs` and `--include-handshakes` default to true (logs/handshakes are ephemeral), but flags exist in case automation wants to skip them.
   - `--managed-only` suppresses all non-managed artifacts (global mode equivalent).
 - Output:
@@ -28,7 +28,7 @@
 ## Cleanup scope
 - **Managed image cache (default):** `<state_root>/images/**`, `image-manager.log`, manifest files.
 - **Ephemeral runtime state (workspace scope):** `logs/`, `handshakes/`, `*.pid`, transient sockets.
-- **Optional overlays:** any overlay path declared in `ProjectConfig.vms[].overlay`, respecting whether it lives inside or outside the state root.
+- **Ephemeral overlays:** any overlay path declared in `ProjectConfig.vms[].overlay`, respecting whether it lives inside or outside the state root. Overlays are always removed to enforce stateless runs.
 - **Global sweep:** iterate through `~/.castra/projects/*`, applying the managed-image plan per directory. Global mode never touches overlays.
 - Non-goals: removing user auth material, downloaded ISO/seed files outside Castra, or altering project configs.
 

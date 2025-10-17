@@ -106,6 +106,17 @@ pub enum Event {
         /// Filesystem path to the overlay.
         overlay_path: PathBuf,
     },
+    /// Ephemeral overlay data was discarded for a VM.
+    EphemeralLayerDiscarded {
+        /// Name of the VM.
+        vm: String,
+        /// Filesystem path to the overlay that was removed.
+        overlay_path: PathBuf,
+        /// Number of bytes reclaimed by deleting the overlay.
+        reclaimed_bytes: u64,
+        /// Why the cleanup was performed (normal shutdown vs orphan recovery).
+        reason: EphemeralCleanupReason,
+    },
     /// Notification that a VM process was launched.
     VmLaunched {
         /// Name of the VM.
@@ -380,6 +391,25 @@ impl CooperativeTimeoutReason {
             CooperativeTimeoutReason::TimeoutExpired => "timeout expired",
             CooperativeTimeoutReason::ChannelUnavailable => "channel unavailable",
             CooperativeTimeoutReason::ChannelError => "channel error",
+        }
+    }
+}
+
+/// Context explaining why an ephemeral overlay was discarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EphemeralCleanupReason {
+    /// Cleanup performed as part of an orderly shutdown.
+    Shutdown,
+    /// Cleanup performed when reclaiming leftovers from a prior crash or aborted run.
+    Orphan,
+}
+
+impl EphemeralCleanupReason {
+    /// Human-friendly label for rendering.
+    pub fn describe(self) -> &'static str {
+        match self {
+            EphemeralCleanupReason::Shutdown => "shutdown",
+            EphemeralCleanupReason::Orphan => "orphan-recovery",
         }
     }
 }

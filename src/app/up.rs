@@ -83,6 +83,23 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
             Event::ManagedArtifact { spec, text, .. } => {
                 println!("→ {} {}: {}", spec.id, spec.version, text);
             }
+            Event::EphemeralLayerDiscarded {
+                vm,
+                overlay_path,
+                reclaimed_bytes,
+                reason,
+            } => match reason {
+                crate::core::events::EphemeralCleanupReason::Orphan => println!(
+                    "→ {vm}: removed stale overlay {} (reclaimed {}).",
+                    overlay_path.display(),
+                    format_bytes(*reclaimed_bytes)
+                ),
+                crate::core::events::EphemeralCleanupReason::Shutdown => println!(
+                    "→ {vm}: discarded ephemeral overlay {} (reclaimed {}).",
+                    overlay_path.display(),
+                    format_bytes(*reclaimed_bytes)
+                ),
+            },
             Event::ManagedImageVerificationStarted {
                 image_id,
                 image_version,

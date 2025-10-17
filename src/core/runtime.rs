@@ -1,5 +1,5 @@
 use std::cmp;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, ErrorKind};
 #[cfg(unix)]
@@ -17,8 +17,7 @@ use libc::{self, pid_t};
 use sysinfo::{Disks, System};
 
 use crate::config::{
-    BaseImageSource, BootstrapMode, DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, ManagedDiskKind,
-    PortForward, PortProtocol, ProjectConfig, VmBootstrapConfig, VmDefinition,
+    BaseImageSource, ManagedDiskKind, PortForward, PortProtocol, ProjectConfig, VmDefinition,
 };
 use crate::error::{Error, Result};
 use crate::managed::{
@@ -29,7 +28,8 @@ use serde_json::{Value, json};
 
 use super::diagnostics::{Diagnostic, Severity};
 use super::events::{
-    CooperativeMethod, CooperativeTimeoutReason, Event, ShutdownOutcome, ShutdownSignal,
+    CooperativeMethod, CooperativeTimeoutReason, EphemeralCleanupReason, Event, ShutdownOutcome,
+    ShutdownSignal,
 };
 
 pub struct RuntimeContext {
@@ -57,6 +57,7 @@ pub struct AssetPreparation {
     pub assets: ResolvedVmAssets,
     pub managed: Option<ManagedAcquisition>,
     pub overlay_created: bool,
+    pub overlay_reclaimed_bytes: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -380,12 +381,13 @@ pub fn ensure_vm_assets(vm: &VmDefinition, context: &RuntimeContext) -> Result<A
                 });
             }
 
-            let overlay_created = ensure_overlay(vm, context, path)?;
+            let (overlay_created, overlay_reclaimed_bytes) = ensure_overlay(vm, context, path)?;
 
             Ok(AssetPreparation {
                 assets: ResolvedVmAssets { boot: None },
                 managed: None,
                 overlay_created,
+                overlay_reclaimed_bytes,
             })
         }
         BaseImageSource::Managed(reference) => {
@@ -414,7 +416,8 @@ pub fn ensure_vm_assets(vm: &VmDefinition, context: &RuntimeContext) -> Result<A
                 });
             }
 
-            let overlay_created = ensure_overlay(vm, context, &base_disk)?;
+            let (overlay_created, overlay_reclaimed_bytes) =
+                ensure_overlay(vm, context, &base_disk)?;
             let boot = build_boot_overrides(spec, &outcome.paths)?;
 
             Ok(AssetPreparation {
@@ -426,6 +429,7 @@ pub fn ensure_vm_assets(vm: &VmDefinition, context: &RuntimeContext) -> Result<A
                     paths: outcome.paths,
                 }),
                 overlay_created,
+                overlay_reclaimed_bytes,
             })
         }
     }
@@ -695,6 +699,12 @@ pub fn shutdown_vm(
             total_ms,
             changed: false,
         });
+        cleanup_ephemeral_layer(
+            vm,
+            &mut events,
+            &mut diagnostics,
+            EphemeralCleanupReason::Orphan,
+        );
         return Ok(VmShutdownReport::new(
             events,
             diagnostics,
@@ -731,6 +741,12 @@ pub fn shutdown_vm(
             total_ms,
             changed: false,
         });
+        cleanup_ephemeral_layer(
+            vm,
+            &mut events,
+            &mut diagnostics,
+            EphemeralCleanupReason::Orphan,
+        );
         return Ok(VmShutdownReport::new(
             events,
             diagnostics,
@@ -838,6 +854,12 @@ pub fn shutdown_vm(
                         total_ms,
                         changed: true,
                     });
+                    cleanup_ephemeral_layer(
+                        vm,
+                        &mut events,
+                        &mut diagnostics,
+                        EphemeralCleanupReason::Shutdown,
+                    );
                     return Ok(VmShutdownReport::new(
                         events,
                         diagnostics,
@@ -903,6 +925,12 @@ pub fn shutdown_vm(
                 total_ms,
                 changed: false,
             });
+            cleanup_ephemeral_layer(
+                vm,
+                &mut events,
+                &mut diagnostics,
+                EphemeralCleanupReason::Orphan,
+            );
             return Ok(VmShutdownReport::new(
                 events,
                 diagnostics,
@@ -975,6 +1003,12 @@ pub fn shutdown_vm(
         total_ms,
         changed: true,
     });
+    cleanup_ephemeral_layer(
+        vm,
+        &mut events,
+        &mut diagnostics,
+        EphemeralCleanupReason::Shutdown,
+    );
 
     Ok(VmShutdownReport::new(events, diagnostics, true, outcome))
 }
@@ -1486,7 +1520,11 @@ fn available_disk_space(disks: &mut Disks, path: &Path) -> Option<u64> {
     best.map(|(space, _)| space)
 }
 
-fn ensure_overlay(vm: &VmDefinition, context: &RuntimeContext, base_disk: &Path) -> Result<bool> {
+fn ensure_overlay(
+    vm: &VmDefinition,
+    context: &RuntimeContext,
+    base_disk: &Path,
+) -> Result<(bool, Option<u64>)> {
     if let Some(parent) = vm.overlay.parent() {
         fs::create_dir_all(parent).map_err(|err| Error::PreflightFailed {
             message: format!(
@@ -1497,20 +1535,27 @@ fn ensure_overlay(vm: &VmDefinition, context: &RuntimeContext, base_disk: &Path)
         })?;
     }
 
-    if vm.overlay.exists() {
-        return Ok(false);
-    }
-
     let Some(qemu_img) = &context.qemu_img else {
         return Err(Error::PreflightFailed {
             message: format!(
-                "Overlay image for VM `{}` missing at {} and `qemu-img` was not found. Create it manually using:\n  qemu-img create -f qcow2 -b {} {}",
+                "Ephemeral storage for VM `{}` requires `qemu-img` but it was not found in PATH. Install QEMU tooling (e.g. `brew install qemu` or `sudo apt install qemu-utils`) before running `castra up` again.",
                 vm.name,
-                vm.overlay.display(),
-                base_disk.display(),
-                vm.overlay.display()
             ),
         });
+    };
+
+    let reclaimed = match discard_overlay_file(&vm.overlay) {
+        Ok(result) => result,
+        Err(err) => {
+            return Err(Error::PreflightFailed {
+                message: format!(
+                    "Failed to remove stale ephemeral overlay {} for VM `{}`: {err}. Clean it manually (`rm {}`) and retry.",
+                    vm.overlay.display(),
+                    vm.name,
+                    vm.overlay.display()
+                ),
+            });
+        }
     };
 
     let base_format = detect_image_format(qemu_img, base_disk);
@@ -1521,7 +1566,7 @@ fn ensure_overlay(vm: &VmDefinition, context: &RuntimeContext, base_disk: &Path)
         &vm.name,
         base_format.as_deref(),
     )?;
-    Ok(true)
+    Ok((true, reclaimed))
 }
 
 fn build_boot_overrides(
@@ -1671,6 +1716,50 @@ fn detect_image_format(qemu_img: &Path, image: &Path) -> Option<String> {
     }
 }
 
+fn discard_overlay_file(path: &Path) -> io::Result<Option<u64>> {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            let bytes = metadata.len();
+            fs::remove_file(path)?;
+            Ok(Some(bytes))
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+fn cleanup_ephemeral_layer(
+    vm: &VmDefinition,
+    events: &mut Vec<Event>,
+    diagnostics: &mut Vec<Diagnostic>,
+    reason: EphemeralCleanupReason,
+) {
+    match discard_overlay_file(&vm.overlay) {
+        Ok(Some(bytes)) => {
+            events.push(Event::EphemeralLayerDiscarded {
+                vm: vm.name.clone(),
+                overlay_path: vm.overlay.clone(),
+                reclaimed_bytes: bytes,
+                reason,
+            });
+        }
+        Ok(None) => {}
+        Err(err) => {
+            diagnostics.push(
+                Diagnostic::new(
+                    Severity::Warning,
+                    format!(
+                        "Failed to remove ephemeral overlay {} for VM `{}`: {err}",
+                        vm.overlay.display(),
+                        vm.name
+                    ),
+                )
+                .with_help("Remove it manually or run `castra clean --include-overlays`."),
+            );
+        }
+    }
+}
+
 fn detect_available_accelerators(qemu_system: &Path) -> Vec<String> {
     let output = Command::new(qemu_system)
         .arg("-accel")
@@ -1814,9 +1903,11 @@ fn find_executable(candidates: &[&str]) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::config::{
-        BaseImageSource, BootstrapMode, MemorySpec, VmBootstrapConfig, VmDefinition,
+        BaseImageSource, BootstrapMode, MemorySpec, VmBootstrapConfig,
+        DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, VmDefinition,
     };
     use crate::error::Error;
+    use std::collections::HashMap;
     use std::fs;
     use std::net::TcpListener;
     use std::path::Path;
@@ -2035,7 +2126,7 @@ mod tests {
         assert!(!pidfile.exists());
 
         let events = &report.events;
-        assert_eq!(events.len(), 4, "unexpected event sequence: {:?}", events);
+        assert_eq!(events.len(), 5, "unexpected event sequence: {:?}", events);
         match &events[0] {
             Event::ShutdownRequested { vm: event_vm } => assert_eq!(event_vm, &vm.name),
             other => panic!("expected ShutdownRequested event, got {other:?}"),
@@ -2074,6 +2165,17 @@ mod tests {
                 assert!(*changed);
             }
             other => panic!("expected ShutdownComplete event, got {other:?}"),
+        }
+        match &events[4] {
+            Event::EphemeralLayerDiscarded {
+                vm: event_vm,
+                reason,
+                ..
+            } => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*reason, EphemeralCleanupReason::Shutdown);
+            }
+            other => panic!("expected EphemeralLayerDiscarded event after shutdown, got {other:?}"),
         }
 
         Ok(())
@@ -2181,6 +2283,20 @@ mod tests {
                 assert!(*changed);
             }
             other => panic!("expected ShutdownComplete last, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::EphemeralLayerDiscarded {
+                vm: event_vm,
+                reason,
+                ..
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*reason, EphemeralCleanupReason::Shutdown);
+            }
+            other => {
+                panic!("expected EphemeralLayerDiscarded after ShutdownComplete, got {other:?}")
+            }
         }
 
         assert!(
@@ -2330,6 +2446,20 @@ mod tests {
             other => panic!("unexpected event while finalizing shutdown: {other:?}"),
         }
 
+        match iter.next() {
+            Some(Event::EphemeralLayerDiscarded {
+                vm: event_vm,
+                reason,
+                ..
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*reason, EphemeralCleanupReason::Shutdown);
+            }
+            other => {
+                panic!("expected EphemeralLayerDiscarded after ShutdownComplete, got {other:?}")
+            }
+        }
+
         assert!(
             iter.next().is_none(),
             "no extra events expected after completion"
@@ -2470,19 +2600,56 @@ mod tests {
             other => panic!("expected ShutdownEscalated fourth, got {other:?}"),
         }
 
-        match iter.last() {
-            Some(Event::ShutdownComplete {
+        let completion_event = match iter.next() {
+            Some(Event::ShutdownEscalated {
+                vm: event_vm,
+                signal,
+                timeout_ms,
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*signal, ShutdownSignal::Sigkill);
+                assert_eq!(*timeout_ms, Some(500));
+                iter.next()
+                    .expect("expected ShutdownComplete event after SIGKILL escalation")
+            }
+            Some(event @ Event::ShutdownComplete { .. }) => event,
+            other => {
+                panic!("expected optional SIGKILL escalation or ShutdownComplete, got {other:?}")
+            }
+        };
+
+        match completion_event {
+            Event::ShutdownComplete {
                 vm: event_vm,
                 outcome,
                 changed,
                 ..
-            }) => {
+            } => {
                 assert_eq!(event_vm, &vm.name);
                 assert_eq!(*outcome, ShutdownOutcome::Forced);
                 assert!(*changed);
             }
-            other => panic!("expected ShutdownComplete last, got {other:?}"),
+            other => panic!("expected ShutdownComplete event, got {other:?}"),
         }
+
+        match iter.next() {
+            Some(Event::EphemeralLayerDiscarded {
+                vm: event_vm,
+                reason,
+                ..
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*reason, EphemeralCleanupReason::Shutdown);
+            }
+            other => {
+                panic!("expected EphemeralLayerDiscarded after ShutdownComplete, got {other:?}")
+            }
+        }
+
+        assert!(
+            iter.next().is_none(),
+            "no extra events expected after completion"
+        );
 
         Ok(())
     }
@@ -2624,6 +2791,20 @@ mod tests {
                 assert!(*changed);
             }
             other => panic!("expected ShutdownComplete fifth, got {other:?}"),
+        }
+
+        match iter.next() {
+            Some(Event::EphemeralLayerDiscarded {
+                vm: event_vm,
+                reason,
+                ..
+            }) => {
+                assert_eq!(event_vm, &vm.name);
+                assert_eq!(*reason, EphemeralCleanupReason::Shutdown);
+            }
+            other => {
+                panic!("expected EphemeralLayerDiscarded after ShutdownComplete, got {other:?}")
+            }
         }
 
         assert!(

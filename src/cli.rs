@@ -319,8 +319,8 @@ pub struct CleanArgs {
     #[arg(long, help = "List planned deletions without removing files")]
     pub dry_run: bool,
 
-    /// Delete VM overlays in addition to ephemeral state.
-    #[arg(long, help = "Include VM overlays in the cleanup plan")]
+    /// Deprecated: overlays are now always removed automatically.
+    #[arg(long, help = "Deprecated; overlays are always removed automatically")]
     pub include_overlays: bool,
 
     /// Retain orchestrator logs.
