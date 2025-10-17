@@ -2002,7 +2002,7 @@ mod tests {
             memory: MemorySpec::new("512 MiB", Some(512_u64 * 1024 * 1024)),
             port_forwards: Vec::new(),
             bootstrap: VmBootstrapConfig {
-                mode: BootstrapMode::Disabled,
+                mode: BootstrapMode::Skip,
                 script: None,
                 payload: None,
                 handshake_timeout_secs: DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,

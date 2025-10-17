@@ -108,7 +108,8 @@ pub struct UpArgs {
     #[arg(
         long,
         value_name = "TARGET",
-        help = "Override bootstrap behavior for this run. Use `--bootstrap <mode>` to set a global mode or `--bootstrap <vm>=<mode>` to target a specific VM. Modes: auto, disabled, always."
+        value_delimiter = ',',
+        help = "Override bootstrap behavior for this run. Use `--bootstrap <mode>` to set a global mode or `--bootstrap <vm>=<mode>` to target a specific VM. Modes: auto, skip, always. CSV overrides are supported (e.g. `--bootstrap web=skip,db=always`)."
     )]
     pub bootstrap: Vec<BootstrapOverrideArg>,
 }
@@ -151,7 +152,7 @@ fn parse_vm_override(vm: &str, mode: &str) -> Result<BootstrapOverrideArg, Strin
     let mode = mode.trim();
     if mode.is_empty() {
         return Err(format!(
-            "Bootstrap override for `{vm}` is missing a mode. Supported values: auto, disabled, always."
+            "Bootstrap override for `{vm}` is missing a mode. Supported values: auto, skip, always."
         ));
     }
 
@@ -168,8 +169,8 @@ mod bootstrap_override_tests {
 
     #[test]
     fn bootstrap_override_arg_parses_global() {
-        match "disabled".parse::<BootstrapOverrideArg>().unwrap() {
-            BootstrapOverrideArg::Global(mode) => assert_eq!(mode, BootstrapMode::Disabled),
+        match "skip".parse::<BootstrapOverrideArg>().unwrap() {
+            BootstrapOverrideArg::Global(mode) => assert_eq!(mode, BootstrapMode::Skip),
             other => panic!("expected global override, got {other:?}"),
         }
     }

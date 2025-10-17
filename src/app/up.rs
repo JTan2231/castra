@@ -35,6 +35,25 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
 
     render_up(&output.value, &output.events);
 
+    if args.plan {
+        let failed: Vec<&str> = output
+            .value
+            .plans
+            .iter()
+            .filter(|plan| plan.action == BootstrapPlanAction::Error)
+            .map(|plan| plan.vm.as_str())
+            .collect();
+
+        if !failed.is_empty() {
+            let joined = failed.join(", ");
+            return Err(Error::PreflightFailed {
+                message: format!(
+                    "Bootstrap plan detected configuration errors for {joined}. Resolve them before running without --plan."
+                ),
+            });
+        }
+    }
+
     Ok(())
 }
 
@@ -539,7 +558,7 @@ mod tests {
     #[test]
     fn build_bootstrap_overrides_supports_global_and_vm_specific_modes() {
         let overrides = build_bootstrap_overrides(&[
-            BootstrapOverrideArg::Global(BootstrapMode::Disabled),
+            BootstrapOverrideArg::Global(BootstrapMode::Skip),
             BootstrapOverrideArg::Vm {
                 vm: "api-0".to_string(),
                 mode: BootstrapMode::Always,
@@ -547,7 +566,7 @@ mod tests {
         ])
         .expect("build overrides");
 
-        assert_eq!(overrides.global, Some(BootstrapMode::Disabled));
+        assert_eq!(overrides.global, Some(BootstrapMode::Skip));
         assert_eq!(overrides.per_vm.get("api-0"), Some(&BootstrapMode::Always));
     }
 
@@ -579,7 +598,7 @@ mod tests {
             },
             BootstrapOverrideArg::Vm {
                 vm: "api-0".to_string(),
-                mode: BootstrapMode::Disabled,
+                mode: BootstrapMode::Skip,
             },
         ])
         .unwrap_err();

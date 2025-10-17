@@ -393,7 +393,7 @@ pub enum BootstrapStatus {
 pub enum BootstrapPlanAction {
     /// Pipeline would attempt to run (auto or always).
     WouldRun,
-    /// Pipeline would be skipped (disabled or auto without a script).
+    /// Pipeline would be skipped (skip mode or auto without a script).
     WouldSkip,
     /// Pipeline would fail due to configuration errors.
     Error,

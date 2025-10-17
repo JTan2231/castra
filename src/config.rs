@@ -126,7 +126,7 @@ impl LifecycleConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootstrapMode {
-    Disabled,
+    Skip,
     Auto,
     Always,
 }
@@ -134,7 +134,7 @@ pub enum BootstrapMode {
 impl BootstrapMode {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Disabled => "disabled",
+            Self::Skip => "skip",
             Self::Auto => "auto",
             Self::Always => "always",
         }
@@ -146,11 +146,11 @@ impl FromStr for BootstrapMode {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
-            "disabled" | "off" => Ok(Self::Disabled),
+            "skip" | "disabled" | "off" => Ok(Self::Skip),
             "auto" | "automatic" | "enabled" => Ok(Self::Auto),
             "always" | "force" => Ok(Self::Always),
             _ => Err(format!(
-                "Unknown bootstrap mode `{value}`. Supported values: auto, disabled, always."
+                "Unknown bootstrap mode `{value}`. Supported values: auto, skip, always."
             )),
         }
     }
@@ -1144,7 +1144,7 @@ impl RawVmBootstrap {
                     invalid_config(
                         path,
                         format!(
-                            "{context} has unknown bootstrap.mode `{value}`. Supported values: auto, disabled, always."
+                            "{context} has unknown bootstrap.mode `{value}`. Supported values: auto, skip, always."
                         ),
                     )
                 })
@@ -1912,12 +1912,13 @@ memory = "2048 MiB"
             BootstrapMode::Auto
         );
         assert_eq!(
-            "disabled".parse::<BootstrapMode>().unwrap(),
-            BootstrapMode::Disabled
+            "skip".parse::<BootstrapMode>().unwrap(),
+            BootstrapMode::Skip
         );
+        assert_eq!("off".parse::<BootstrapMode>().unwrap(), BootstrapMode::Skip);
         assert_eq!(
-            "off".parse::<BootstrapMode>().unwrap(),
-            BootstrapMode::Disabled
+            "disabled".parse::<BootstrapMode>().unwrap(),
+            BootstrapMode::Skip
         );
         assert_eq!(
             "always".parse::<BootstrapMode>().unwrap(),
@@ -1955,7 +1956,7 @@ base_image = "images/dev.qcow2"
 overlay = ".castra/dev.qcow2"
 
   [vms.bootstrap]
-  mode = "disabled"
+  mode = "skip"
   script = "bootstrap/dev/run.sh"
   payload = "bootstrap/dev/payload"
   handshake_timeout_secs = 15
@@ -1986,7 +1987,7 @@ overlay = ".castra/dev.qcow2"
 
         assert_eq!(project.vms.len(), 1);
         let vm = &project.vms[0];
-        assert_eq!(vm.bootstrap.mode, BootstrapMode::Disabled);
+        assert_eq!(vm.bootstrap.mode, BootstrapMode::Skip);
         let project_root = config_path.parent().unwrap();
         assert_eq!(
             vm.bootstrap.script.as_ref().expect("script path").as_path(),

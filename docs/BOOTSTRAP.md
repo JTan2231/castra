@@ -4,18 +4,18 @@ Castra's post-boot bootstrap pipeline applies host-provided configuration (for e
 
 ## Invocation Modes and Overrides
 
-Each VM declares a bootstrap mode in `castra.toml` (`auto`, `disabled`, or `always`). The CLI can override these settings per invocation:
+Each VM declares a bootstrap mode in `castra.toml` (`auto`, `skip`, or `always`). The CLI can override these settings per invocation:
 
 ```text
-castra up --bootstrap disabled          # disable bootstrap for all VMs
+castra up --bootstrap skip              # skip bootstrap for all VMs
 castra up --bootstrap always            # force bootstrap for every VM
 castra up --bootstrap web=always        # override a single VM
-castra up --bootstrap disabled --bootstrap db=auto
+castra up --bootstrap web=skip,db=always # CSV overrides targeting multiple VMs
 ```
 
 Rules:
 
-- Passing `--bootstrap <mode>` sets a global override (`auto`, `disabled`, `always`).
+- Passing `--bootstrap <mode>` sets a global override (`auto`, `skip`, `always`).
 - Passing `--bootstrap <vm>=<mode>` targets a specific VM by its expanded name (`api-0`, `web`, etc.).
 - Multiple overrides are allowed; per-VM values take precedence over the global override.
 - Unknown VM names cause a preflight failure so automation can surface configuration drift immediately.

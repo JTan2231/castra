@@ -933,15 +933,15 @@ mod tests {
         );
 
         let overrides = BootstrapOverrides {
-            global: Some(BootstrapMode::Disabled),
+            global: Some(BootstrapMode::Skip),
             per_vm: HashMap::new(),
         };
 
         apply_bootstrap_overrides(&mut project, &overrides).expect("apply overrides");
 
-        assert_eq!(project.bootstrap.mode, BootstrapMode::Disabled);
+        assert_eq!(project.bootstrap.mode, BootstrapMode::Skip);
         for vm in &project.vms {
-            assert_eq!(vm.bootstrap.mode, BootstrapMode::Disabled);
+            assert_eq!(vm.bootstrap.mode, BootstrapMode::Skip);
         }
     }
 
@@ -958,7 +958,7 @@ mod tests {
         let mut per_vm = HashMap::new();
         per_vm.insert("api-1".to_string(), BootstrapMode::Always);
         let overrides = BootstrapOverrides {
-            global: Some(BootstrapMode::Disabled),
+            global: Some(BootstrapMode::Skip),
             per_vm,
         };
 
@@ -967,8 +967,8 @@ mod tests {
         let api0 = project.vms.iter().find(|vm| vm.name == "api-0").unwrap();
         let api1 = project.vms.iter().find(|vm| vm.name == "api-1").unwrap();
 
-        assert_eq!(project.bootstrap.mode, BootstrapMode::Disabled);
-        assert_eq!(api0.bootstrap.mode, BootstrapMode::Disabled);
+        assert_eq!(project.bootstrap.mode, BootstrapMode::Skip);
+        assert_eq!(api0.bootstrap.mode, BootstrapMode::Skip);
         assert_eq!(api1.bootstrap.mode, BootstrapMode::Always);
     }
 

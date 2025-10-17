@@ -179,13 +179,13 @@ pub fn plan_all(
 fn plan_for_vm(vm: &VmDefinition) -> BootstrapPlanOutcome {
     let mode = vm.bootstrap.mode;
     match mode {
-        BootstrapMode::Disabled => {
+        BootstrapMode::Skip => {
             return BootstrapPlanOutcome {
                 vm: vm.name.clone(),
                 mode,
                 action: BootstrapPlanAction::WouldSkip,
                 trigger: None,
-                reason: "Bootstrap disabled via configuration.".to_string(),
+                reason: "Bootstrap skipped via configuration.".to_string(),
                 script_path: vm.bootstrap.script.clone(),
                 payload_path: None,
                 payload_bytes: None,
@@ -319,7 +319,7 @@ fn plan_for_vm(vm: &VmDefinition) -> BootstrapPlanOutcome {
                 .to_string()
         }
         BootstrapMode::Always => "Policy `always`; pipeline runs on every invocation.".to_string(),
-        BootstrapMode::Disabled => unreachable!(),
+        BootstrapMode::Skip => unreachable!(),
     };
 
     BootstrapPlanOutcome {
@@ -350,7 +350,7 @@ fn trigger_for_mode(mode: BootstrapMode) -> Option<BootstrapTrigger> {
     match mode {
         BootstrapMode::Auto => Some(BootstrapTrigger::Auto),
         BootstrapMode::Always => Some(BootstrapTrigger::Always),
-        BootstrapMode::Disabled => None,
+        BootstrapMode::Skip => None,
     }
 }
 
@@ -363,10 +363,10 @@ fn run_for_vm(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<BootstrapRunOutcome> {
     match vm.bootstrap.mode {
-        BootstrapMode::Disabled => {
+        BootstrapMode::Skip => {
             diagnostics.push(Diagnostic::new(
                 Severity::Info,
-                format!("Bootstrap disabled for VM `{}`; skipping.", vm.name),
+                format!("Bootstrap skipped for VM `{}`; skipping.", vm.name),
             ));
             return Ok(BootstrapRunOutcome {
                 vm: vm.name.clone(),
@@ -2275,7 +2275,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_pipeline_skips_when_disabled()
+    fn bootstrap_pipeline_skips_when_skip_mode()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let _env_guard = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let temp_dir = TempDir::new()?;
@@ -2310,7 +2310,7 @@ mod tests {
             memory: MemorySpec::new("2048 MiB", Some(2 * 1024 * 1024 * 1024)),
             port_forwards: Vec::new(),
             bootstrap: VmBootstrapConfig {
-                mode: BootstrapMode::Disabled,
+                mode: BootstrapMode::Skip,
                 script: Some(PathBuf::from("/tmp/bootstrap-script")),
                 payload: Some(PathBuf::from("/tmp/bootstrap-payload")),
                 handshake_timeout_secs: 30,
@@ -2363,7 +2363,7 @@ mod tests {
         let events = reporter.take();
         assert!(
             events.is_empty(),
-            "bootstrap should emit no events when disabled"
+            "bootstrap should emit no events when bootstrap mode is skip"
         );
 
         assert!(

@@ -72,7 +72,7 @@ Unix-specific QMP interactions handle cooperative ACPI powerdown; on non-Unix pl
 ### Bootstrap Pipeline
 
 - `src/core/bootstrap.rs` executes per-VM bootstrap plans after guests prove connectivity through broker handshakes (`status::HANDSHAKE_FRESHNESS`). It runs workers in parallel (scoped threads), streams bootstrap events over an `mpsc::channel`, and records durable logs under the state root—without persisting host-side stamps.
-- Bootstrap respects `BootstrapMode` (disabled/auto/always), gating on managed image availability and handshake freshness. Outcomes (`BootstrapRunOutcome`) distinguish `Success`, `NoOp`, and `Skipped`, and diagnostics explain missing plans or failed steps.
+- Bootstrap respects `BootstrapMode` (skip/auto/always), gating on managed image availability and handshake freshness. Outcomes (`BootstrapRunOutcome`) distinguish `Success`, `NoOp`, and `Skipped`, and diagnostics explain missing plans or failed steps.
 - Thread 12 progress (see `.vizier/.snapshot`) is reflected here: overrides (global/per-VM) are applied before launch (`apply_bootstrap_overrides`), reruns always attempt the pipeline, and failure modes surface as structured events (`BootstrapFailed`) with durable error logs.
 
 ### Broker & Bus
