@@ -1,9 +1,9 @@
-SNAPSHOT v0.9.4 — Castra (VM orchestration harness)
+SNAPSHOT v0.9.5 — Castra (VM orchestration harness)
 
 Edits since last snapshot refresh
-- Housekeeping: Removed accidental duplicate TODO files (*.md.md).
-- Thread 12 TODO expanded with concrete acceptance for --plan and TTY UX while keeping schema stable.
-- Thread 13 TODO now carries explicit acceptance for ephemerality messaging, cleanup, validation, and CLEAN integration.
+- Housekeeping: Removed lingering duplicate TODO files (double "todo_"/".md.md" variants).
+- Thread 12 TODO revised to lock in stamp-free policy across bootstrap: rerun semantics are policy-driven (auto|always|skip); idempotence via script-level NoOp/verify; --plan and TTY UX remain in scope with unchanged JSON schema.
+- Thread 13 TODO clarified to remove any host-side stamp references; tightened UX/validation notes and CLEAN attribution for reclaimed bytes.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (sequencing shipped): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -35,7 +35,7 @@ Active threads (intent + acceptance)
   Remaining (UX/plan mode):
   - Add --plan dry‑run that reports intent and resolved inputs without side effects.
   - TTY progress lines and concise completion summaries with hints and durable log paths (non‑JSON only). Help/docs updates and Quick Start/Troubleshooting.
-  Rerun semantics (policy-driven):
+  Rerun semantics (policy-driven; stamp-free):
   - auto: attempt bootstrap per run after handshake; idempotence achieved via script-level NoOp sentinel or verify logic.
   - always: force running regardless of prior runs; sentinel may still short-circuit at script level.
   - skip: do not run; surface as Skipped with rationale. Per‑VM overrides take precedence; conflicts rejected preflight.
@@ -54,7 +54,7 @@ Active threads (intent + acceptance)
   Acceptance:
   - Pristine restarts from the same base; no residual ephemeral artifacts after normal shutdown; opportunistic orphan reclamation without blocking healthy ops.
   - No CLI/opts/env allow persistence; validation errors include remediation guidance ("export via SSH before shutdown").
-  - CLEAN integrates reclaimed‑bytes reporting; stable JSON schemas preserved.
+  - CLEAN integrates reclaimed‑bytes reporting; stable JSON schemas preserved. No host-side bootstrap stamps are created/consulted as part of ephemeral handling.
   - Up/Down output (TTY/JSON) clearly indicates ephemeral‑only behavior with machine‑readable hints in JSON summaries.
   Anchors: src/core/operations/up.rs; src/app/up.rs; src/core/operations/clean.rs; src/app/clean.rs; src/core/runtime.rs; src/app/down.rs; docs/BOOTSTRAP.md; CLEAN.md; CLI help.
 
@@ -76,7 +76,7 @@ Narrative themes
 Direction of travel
 - Thread 2: expose timeouts in CLI/options, render fields consistently, and document payloads; keep exit‑success semantics on forced shutdowns.
 - Thread 10: add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
-- Thread 12: deliver --plan and TTY UX polish; update docs/help; keep JSON schema stable; continue refining hints and durable log paths. Reinforce stamp-free rerun semantics across docs/help.
+- Thread 12: deliver --plan and TTY UX polish; update docs/help; keep JSON schema stable; reinforce stamp-free rerun semantics.
 - Thread 13: implement cleanup + validation + UX notices; integrate reclaimed‑bytes with CLEAN; ensure crash/reboot orphan reclamation.
 
 Cross‑links
@@ -90,4 +90,4 @@ Editorial housekeeping
   - todo_cooperative_shutdown_lifecycle.md
   - todo_post_boot_bootstrap_pipeline.md
   - todo_ephemeral_vm_storage_and_cleanup.md
-- Snapshot version bumped to v0.9.4 to reflect TODO clarifications and duplicate cleanup.
+- Snapshot version bumped to v0.9.5 to reflect stamp‑free alignment and TODO clarifications; duplicate TODO files removed.
