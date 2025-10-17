@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -79,6 +80,10 @@ pub fn collect_status(project: &ProjectConfig) -> StatusSnapshot {
 
         if matches!(reachability, BrokerReachability::Reachable) {
             reachable = true;
+        }
+
+        if state != "running" {
+            cleanup_orphan_overlay(&vm.name, &vm.overlay, &mut diagnostics);
         }
 
         if let Some(ts) = timestamp {
@@ -281,6 +286,71 @@ fn should_update_last_handshake(
     match current {
         Some(existing) => candidate_ts > existing.timestamp,
         None => true,
+    }
+}
+
+fn cleanup_orphan_overlay(vm_name: &str, overlay_path: &Path, diagnostics: &mut Vec<Diagnostic>) {
+    match remove_overlay_if_present(overlay_path) {
+        Ok(Some(bytes)) => {
+            diagnostics.push(
+                Diagnostic::new(
+                    Severity::Info,
+                    format!(
+                        "Removed stale ephemeral overlay {} for VM `{vm_name}` (reclaimed {}).",
+                        overlay_path.display(),
+                        format_bytes(bytes)
+                    ),
+                )
+                .with_help("Guest changes are discarded on shutdown. Export via SSH before stopping if you need to retain data."),
+            );
+        }
+        Ok(None) => {}
+        Err(err) => {
+            diagnostics.push(
+                Diagnostic::new(
+                    Severity::Warning,
+                    format!(
+                        "Failed to remove stale ephemeral overlay {} for VM `{vm_name}`: {err}",
+                        overlay_path.display()
+                    ),
+                )
+                .with_help("Remove it manually (e.g. `rm <path>`) or run `castra clean --include-overlays`."),
+            );
+        }
+    }
+}
+
+fn remove_overlay_if_present(path: &Path) -> io::Result<Option<u64>> {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            if metadata.is_file() {
+                let bytes = metadata.len();
+                match fs::remove_file(path) {
+                    Ok(_) => Ok(Some(bytes)),
+                    Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+                    Err(err) => Err(err),
+                }
+            } else {
+                Ok(None)
+            }
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -572,6 +642,32 @@ mod tests {
         assert!(!snapshot.rows[0].bus_subscribed);
         assert!(snapshot.rows[0].last_publish_age.is_none());
         assert!(snapshot.rows[0].last_heartbeat_age.is_none());
+
+        project.state_root = PathBuf::new();
+    }
+
+    #[test]
+    fn collect_status_cleans_stale_overlay_when_vm_stopped() {
+        let dir = tempdir().unwrap();
+        let mut project = sample_project(dir.path());
+        let overlay_path = project.vms[0].overlay.clone();
+        fs::write(&overlay_path, vec![0_u8; 256]).unwrap();
+
+        let snapshot = collect_status(&project);
+
+        assert!(
+            snapshot
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("Removed stale ephemeral overlay")),
+            "expected cleanup diagnostic, found: {:?}",
+            snapshot.diagnostics
+        );
+        assert!(
+            !overlay_path.exists(),
+            "overlay {} should be removed",
+            overlay_path.display()
+        );
 
         project.state_root = PathBuf::new();
     }

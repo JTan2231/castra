@@ -1903,8 +1903,8 @@ fn find_executable(candidates: &[&str]) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::config::{
-        BaseImageSource, BootstrapMode, MemorySpec, VmBootstrapConfig,
-        DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, VmDefinition,
+        BaseImageSource, BootstrapMode, DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, MemorySpec,
+        VmBootstrapConfig, VmDefinition,
     };
     use crate::error::Error;
     use std::collections::HashMap;
