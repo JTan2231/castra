@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use crate::cli::DownArgs;
 use crate::core::diagnostics::Severity;
-use crate::core::events::{CooperativeMethod, EphemeralCleanupReason, Event, ShutdownOutcome};
+use crate::core::events::{
+    CooperativeMethod, CooperativeTimeoutReason, EphemeralCleanupReason, Event, ShutdownOutcome,
+};
 use crate::core::operations;
 use crate::core::options::DownOptions;
 use crate::core::project::format_config_warnings;
@@ -71,27 +73,24 @@ fn render_down(events: &[Event]) {
                 vm,
                 method,
                 timeout_ms,
-            } => match method {
-                CooperativeMethod::Acpi => {
-                    println!(
-                        "→ {vm}: attempting cooperative shutdown via {} (wait up to {}).",
-                        method.describe(),
-                        format_duration_ms(*timeout_ms)
-                    );
+            } => {
+                match method {
+                    CooperativeMethod::Acpi | CooperativeMethod::Agent => {
+                        println!(
+                            "→ {vm}: attempting cooperative shutdown via {} (wait up to {}).",
+                            method.describe(),
+                            format_duration_ms(*timeout_ms)
+                        );
+                    }
+                    CooperativeMethod::Unavailable => {
+                        println!(
+                            "→ {vm}: cooperative shutdown unavailable ({}; wait {}). Escalating immediately.",
+                            method.describe(),
+                            format_duration_ms(*timeout_ms)
+                        );
+                    }
                 }
-                CooperativeMethod::Agent => {
-                    println!(
-                        "→ {vm}: attempting cooperative shutdown via {} (wait up to {}).",
-                        method.describe(),
-                        format_duration_ms(*timeout_ms)
-                    );
-                }
-                CooperativeMethod::Unavailable => {
-                    println!(
-                        "→ {vm}: no cooperative shutdown channel available; proceeding to host termination."
-                    );
-                }
-            },
+            }
             Event::CooperativeSucceeded { vm, elapsed_ms } => {
                 println!(
                     "→ {vm}: guest confirmed shutdown in {}.",
@@ -106,18 +105,18 @@ fn render_down(events: &[Event]) {
             } => {
                 let reason_text = reason.describe();
                 match detail {
-                    Some(detail) if !detail.is_empty() => {
-                        println!(
-                            "→ {vm}: cooperative shutdown {reason_text} after {} ({detail}).",
-                            format_duration_ms(*waited_ms)
-                        );
-                    }
-                    _ => {
-                        println!(
-                            "→ {vm}: cooperative shutdown {reason_text} after {}.",
-                            format_duration_ms(*waited_ms)
-                        );
-                    }
+                    Some(detail) if !detail.is_empty() => println!(
+                        "→ {vm}: cooperative shutdown {reason_text} after {} ({detail}).",
+                        format_duration_ms(*waited_ms)
+                    ),
+                    _ => println!(
+                        "→ {vm}: cooperative shutdown {reason_text} after {}.",
+                        format_duration_ms(*waited_ms)
+                    ),
+                }
+
+                if let Some(hint) = cooperative_hint(*reason) {
+                    println!("   hint: {hint}");
                 }
             }
             Event::ShutdownEscalated {
@@ -192,6 +191,18 @@ fn render_down(events: &[Event]) {
     }
 }
 
+fn cooperative_hint(reason: CooperativeTimeoutReason) -> Option<&'static str> {
+    match reason {
+        CooperativeTimeoutReason::TimeoutExpired => None,
+        CooperativeTimeoutReason::ChannelUnavailable => Some(
+            "Enable the QMP powerdown channel (Castra-managed launches expose it automatically) or restart with `castra up` so the socket exists.",
+        ),
+        CooperativeTimeoutReason::ChannelError => Some(
+            "Check the QMP socket path and permissions or restart the VM before retrying `castra down`.",
+        ),
+    }
+}
+
 fn format_duration_ms(ms: u64) -> String {
     if ms == 0 {
         return "0s".to_string();
@@ -226,4 +237,24 @@ fn format_bytes(bytes: u64) -> String {
         return format!("{:.1} MiB", value / MIB);
     }
     format!("{:.1} GiB", value / GIB)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cooperative_hint_provides_guidance_for_channel_unavailable() {
+        let hint = cooperative_hint(CooperativeTimeoutReason::ChannelUnavailable)
+            .expect("expected guidance");
+        assert!(
+            hint.contains("QMP"),
+            "hint should mention QMP channel guidance: {hint}"
+        );
+    }
+
+    #[test]
+    fn cooperative_hint_is_none_for_timeout_expired() {
+        assert!(cooperative_hint(CooperativeTimeoutReason::TimeoutExpired).is_none());
+    }
 }
