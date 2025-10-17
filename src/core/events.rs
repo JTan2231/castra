@@ -197,7 +197,7 @@ pub enum Event {
         status: BootstrapStatus,
         /// Milliseconds spent across the bootstrap run.
         duration_ms: u64,
-        /// Optional stamp identifier recorded under the state root.
+        /// Legacy stamp identifier (reserved for compatibility; always `None`).
         stamp: Option<String>,
     },
     /// Host-side bootstrap pipeline failed.
@@ -301,7 +301,7 @@ pub struct CleanupManagedImageEvidence {
 pub enum BootstrapTrigger {
     /// Run initiated in automatic mode after detecting changes.
     Auto,
-    /// Run forced regardless of previous stamp state.
+    /// Run explicitly requested regardless of automatic heuristics.
     Always,
 }
 
@@ -316,7 +316,7 @@ pub enum BootstrapStepKind {
     Transfer,
     /// Executing the guest bootstrap script.
     Apply,
-    /// Verifying the bootstrap outcome (remote stamp / host stamp persistence).
+    /// Verifying the bootstrap outcome using remote checks or runner signals.
     Verify,
 }
 
@@ -336,7 +336,7 @@ pub enum BootstrapStepStatus {
 pub enum BootstrapStatus {
     /// Bootstrap executed successfully.
     Success,
-    /// Bootstrap determined no work was required (stamp already satisfied).
+    /// Bootstrap runner reported no additional work was required.
     NoOp,
 }
 

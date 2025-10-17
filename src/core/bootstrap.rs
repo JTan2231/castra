@@ -22,7 +22,6 @@ use crate::managed::ManagedArtifactKind;
 use sha2::{Digest, Sha256};
 
 const PLAN_FILE_NAME: &str = "plan.json";
-const STAMP_DIR_NAME: &str = "stamps";
 const LOG_SUBDIR: &str = "bootstrap";
 
 /// Execute bootstrap pipelines for all VMs in the project, returning per-VM summaries.
@@ -190,54 +189,6 @@ fn run_for_vm(
     let start = Instant::now();
     let mut steps = Vec::new();
     let log_dir = log_root.join(LOG_SUBDIR);
-    let stamps_dir = plan_dir.join(STAMP_DIR_NAME);
-    fs::create_dir_all(&stamps_dir).map_err(|err| Error::BootstrapFailed {
-        vm: vm.name.clone(),
-        message: format!(
-            "Failed to prepare stamp directory {}: {err}",
-            stamps_dir.display()
-        ),
-    })?;
-
-    let stamp_id = build_stamp_id(&base_hash, &plan.artifact_hash);
-    let stamp_path = stamps_dir.join(format!("{stamp_id}.json"));
-
-    if matches!(vm.bootstrap.mode, BootstrapMode::Auto) && stamp_path.is_file() {
-        let duration_ms = elapsed_ms(start.elapsed());
-        steps.push(StepLog::skipped(
-            BootstrapStepKind::WaitHandshake,
-            "Existing stamp matches artifact; no work required.",
-        ));
-        emit_event(Event::BootstrapStep {
-            vm: vm.name.clone(),
-            step: BootstrapStepKind::WaitHandshake,
-            status: BootstrapStepStatus::Skipped,
-            duration_ms: 0,
-            detail: Some("Bootstrap stamp already satisfied.".to_string()),
-        });
-        emit_event(Event::BootstrapCompleted {
-            vm: vm.name.clone(),
-            status: BootstrapStatus::NoOp,
-            duration_ms,
-            stamp: Some(stamp_id.clone()),
-        });
-
-        let log_path = write_run_log(
-            &log_dir,
-            &BootstrapRunLog::noop(&vm.name, &plan, &base_hash, &stamp_id, steps, duration_ms),
-        )
-        .map_err(|err| Error::BootstrapFailed {
-            vm: vm.name.clone(),
-            message: format!("Failed to persist bootstrap log: {err}"),
-        })?;
-
-        return Ok(BootstrapRunOutcome {
-            vm: vm.name.clone(),
-            status: BootstrapRunStatus::NoOp,
-            stamp: Some(stamp_id),
-            log_path: Some(log_path),
-        });
-    }
 
     let handshake_start = Instant::now();
     let handshake_result = wait_for_handshake(state_root, &vm.name, plan.handshake_timeout);
@@ -288,7 +239,6 @@ fn run_for_vm(
                     &vm.name,
                     &plan,
                     &base_hash,
-                    None,
                     steps,
                     duration_ms,
                     failure_detail.clone(),
@@ -334,7 +284,6 @@ fn run_for_vm(
                 &vm.name,
                 &plan,
                 &base_hash,
-                None,
                 steps,
                 duration_ms,
                 failure_detail.clone(),
@@ -383,7 +332,6 @@ fn run_for_vm(
                 &vm.name,
                 &plan,
                 &base_hash,
-                None,
                 steps,
                 duration_ms,
                 failure_detail.clone(),
@@ -432,7 +380,6 @@ fn run_for_vm(
                 &vm.name,
                 &plan,
                 &base_hash,
-                None,
                 steps,
                 duration_ms,
                 failure_detail.clone(),
@@ -449,7 +396,7 @@ fn run_for_vm(
         });
     }
 
-    let verify_res = verify_outcome(&plan, &stamp_path, &stamp_id, &base_hash, &plan_path);
+    let verify_res = verify_outcome(&plan);
     let verify_duration = verify_res.duration;
     emit_event(Event::BootstrapStep {
         vm: vm.name.clone(),
@@ -481,7 +428,6 @@ fn run_for_vm(
                 &vm.name,
                 &plan,
                 &base_hash,
-                Some(stamp_id.clone()),
                 steps,
                 duration_ms,
                 failure_detail.clone(),
@@ -503,11 +449,10 @@ fn run_for_vm(
         vm: vm.name.clone(),
         status: BootstrapStatus::Success,
         duration_ms: total_ms,
-        stamp: Some(stamp_id.clone()),
+        stamp: None,
     });
 
-    let log_record =
-        BootstrapRunLog::success(&vm.name, &plan, &base_hash, &stamp_id, steps, total_ms);
+    let log_record = BootstrapRunLog::success(&vm.name, &plan, &base_hash, steps, total_ms);
     let log_path = write_run_log(&log_dir, &log_record).map_err(|err| Error::BootstrapFailed {
         vm: vm.name.clone(),
         message: format!("Failed to persist bootstrap log: {err}"),
@@ -516,7 +461,7 @@ fn run_for_vm(
     Ok(BootstrapRunOutcome {
         vm: vm.name.clone(),
         status: BootstrapRunStatus::Success,
-        stamp: Some(stamp_id),
+        stamp: None,
         log_path: Some(log_path),
     })
 }
@@ -648,21 +593,6 @@ fn compute_file_sha256(path: &Path) -> std::result::Result<String, String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn build_stamp_id(base_hash: &str, artifact_hash: &str) -> String {
-    format!(
-        "{}__{}",
-        sanitize_for_filename(base_hash),
-        sanitize_for_filename(artifact_hash)
-    )
-}
-
-fn sanitize_for_filename(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect()
-}
-
 struct StepLog {
     kind: BootstrapStepKind,
     status: BootstrapStepStatus,
@@ -770,77 +700,32 @@ fn execute_remote(plan: &BootstrapPlan) -> CommandOutcome {
     }
 }
 
-fn verify_outcome(
-    plan: &BootstrapPlan,
-    stamp_path: &Path,
-    stamp_id: &str,
-    base_hash: &str,
-    plan_path: &Path,
-) -> CommandOutcome {
+fn verify_outcome(plan: &BootstrapPlan) -> CommandOutcome {
     let start = Instant::now();
+    let mut detail = Some("Bootstrap verification completed.".to_string());
 
     if let Some(remote) = plan.remote_verify_path.as_deref() {
-        if let Err(err) = run_ssh_command(plan, &format!("test -e {}", remote)) {
-            return CommandOutcome {
-                status: BootstrapStepStatus::Failed,
-                duration: start.elapsed(),
-                detail: Some(format!("Remote verification failed: {err}")),
-            };
+        match run_ssh_command(plan, &format!("test -e {}", remote)) {
+            Ok(_) => {
+                detail = Some(format!("Verified remote path {}.", remote));
+            }
+            Err(err) => {
+                return CommandOutcome {
+                    status: BootstrapStepStatus::Failed,
+                    duration: start.elapsed(),
+                    detail: Some(format!("Remote verification failed: {err}")),
+                };
+            }
         }
-    }
-
-    if let Err(err) = write_stamp(
-        stamp_path,
-        stamp_id,
-        base_hash,
-        &plan.artifact_hash,
-        plan_path,
-    ) {
-        return CommandOutcome {
-            status: BootstrapStepStatus::Failed,
-            duration: start.elapsed(),
-            detail: Some(err),
-        };
+    } else {
+        detail = Some("No remote verification checks configured.".to_string());
     }
 
     CommandOutcome {
         status: BootstrapStepStatus::Success,
         duration: start.elapsed(),
-        detail: Some("Bootstrap stamp recorded.".to_string()),
+        detail,
     }
-}
-
-fn write_stamp(
-    path: &Path,
-    stamp_id: &str,
-    base_hash: &str,
-    artifact_hash: &str,
-    plan_path: &Path,
-) -> std::result::Result<(), String> {
-    #[derive(Serialize)]
-    struct Stamp<'a> {
-        stamp: &'a str,
-        base_hash: &'a str,
-        artifact_hash: &'a str,
-        plan: String,
-        recorded_at: u64,
-    }
-
-    let record = Stamp {
-        stamp: stamp_id,
-        base_hash,
-        artifact_hash,
-        plan: plan_path.display().to_string(),
-        recorded_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| Duration::from_secs(0))
-            .as_secs(),
-    };
-
-    let payload = serde_json::to_vec_pretty(&record)
-        .map_err(|err| format!("Failed to encode bootstrap stamp: {err}"))?;
-    fs::write(path, payload)
-        .map_err(|err| format!("Failed to write bootstrap stamp {}: {err}", path.display()))
 }
 
 fn elapsed_ms(duration: Duration) -> u64 {
@@ -1109,6 +994,7 @@ struct BootstrapRunLog {
     vm: String,
     artifact_hash: String,
     base_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stamp: Option<String>,
     status: String,
     duration_ms: u64,
@@ -1129,7 +1015,6 @@ impl BootstrapRunLog {
         vm: &str,
         plan: &BootstrapPlan,
         base_hash: &str,
-        stamp_id: &str,
         steps: Vec<StepLog>,
         duration_ms: u64,
     ) -> Self {
@@ -1137,7 +1022,7 @@ impl BootstrapRunLog {
             vm: vm.to_string(),
             artifact_hash: plan.artifact_hash.clone(),
             base_hash: base_hash.to_string(),
-            stamp: Some(stamp_id.to_string()),
+            stamp: None,
             status: "success".to_string(),
             duration_ms,
             steps: steps.into_iter().map(StepRecord::from).collect(),
@@ -1148,7 +1033,6 @@ impl BootstrapRunLog {
         vm: &str,
         plan: &BootstrapPlan,
         base_hash: &str,
-        stamp_id: Option<String>,
         steps: Vec<StepLog>,
         duration_ms: u64,
         error: String,
@@ -1165,29 +1049,10 @@ impl BootstrapRunLog {
             vm: vm.to_string(),
             artifact_hash: plan.artifact_hash.clone(),
             base_hash: base_hash.to_string(),
-            stamp: stamp_id,
+            stamp: None,
             status: "failed".to_string(),
             duration_ms,
             steps: records,
-        }
-    }
-
-    fn noop(
-        vm: &str,
-        plan: &BootstrapPlan,
-        base_hash: &str,
-        stamp_id: &str,
-        steps: Vec<StepLog>,
-        duration_ms: u64,
-    ) -> Self {
-        Self {
-            vm: vm.to_string(),
-            artifact_hash: plan.artifact_hash.clone(),
-            base_hash: base_hash.to_string(),
-            stamp: Some(stamp_id.to_string()),
-            status: "noop".to_string(),
-            duration_ms,
-            steps: steps.into_iter().map(StepRecord::from).collect(),
         }
     }
 }
@@ -1551,8 +1416,10 @@ mod tests {
         assert_eq!(outcome.status, BootstrapRunStatus::Success);
 
         let base_hash = normalize_sha_result(compute_file_sha256(&base_image_path))?;
-        let expected_stamp = build_stamp_id(&base_hash, "artifact-hash-v1");
-        assert_eq!(outcome.stamp.as_deref(), Some(expected_stamp.as_str()));
+        assert!(
+            outcome.stamp.is_none(),
+            "bootstrap outcome should not include a stamp"
+        );
 
         let log_path = outcome
             .log_path
@@ -1567,13 +1434,9 @@ mod tests {
         assert_eq!(log_json["status"], "success");
         assert_eq!(log_json["vm"], "devbox");
 
-        let stamp_path = plan_dir
-            .join("stamps")
-            .join(format!("{expected_stamp}.json"));
         assert!(
-            stamp_path.is_file(),
-            "stamp should be recorded at {}",
-            stamp_path.display()
+            !plan_dir.join("stamps").exists(),
+            "bootstrap should not create a stamp directory"
         );
 
         let events = reporter.take();
@@ -1630,7 +1493,10 @@ mod tests {
             } => {
                 assert_eq!(vm, "devbox");
                 assert_eq!(*status, BootstrapStatus::Success);
-                assert_eq!(stamp.as_deref(), Some(expected_stamp.as_str()));
+                assert!(
+                    stamp.is_none(),
+                    "bootstrap completion should not include a stamp"
+                );
             }
             other => panic!("unexpected completion event: {other:?}"),
         }
@@ -1640,43 +1506,46 @@ mod tests {
             "no additional events expected after completion"
         );
 
-        let mut reporter_noop = RecordingReporter::default();
-        let mut diagnostics_noop = Vec::new();
-        let outcomes_noop = run_all(
+        let mut reporter_second = RecordingReporter::default();
+        let mut diagnostics_second = Vec::new();
+        let outcomes_second = run_all(
             &project,
             &context,
             &preparations,
-            &mut reporter_noop,
-            &mut diagnostics_noop,
+            &mut reporter_second,
+            &mut diagnostics_second,
         )?;
 
         assert!(
-            diagnostics_noop.is_empty(),
-            "unexpected diagnostics during noop run: {diagnostics_noop:?}"
+            diagnostics_second.is_empty(),
+            "unexpected diagnostics during second run: {diagnostics_second:?}"
         );
-        assert_eq!(outcomes_noop.len(), 1);
-        let noop_outcome = &outcomes_noop[0];
-        assert_eq!(noop_outcome.vm, "devbox");
-        assert_eq!(noop_outcome.status, BootstrapRunStatus::NoOp);
-        assert_eq!(noop_outcome.stamp.as_deref(), Some(expected_stamp.as_str()));
+        assert_eq!(outcomes_second.len(), 1);
+        let second_outcome = &outcomes_second[0];
+        assert_eq!(second_outcome.vm, "devbox");
+        assert_eq!(second_outcome.status, BootstrapRunStatus::Success);
+        assert!(
+            second_outcome.stamp.is_none(),
+            "second outcome should also omit stamp information"
+        );
 
-        let noop_log_path = noop_outcome
+        let second_log_path = second_outcome
             .log_path
             .as_ref()
-            .expect("noop outcome should still log run metadata");
+            .expect("second outcome should log run metadata");
         assert!(
-            noop_log_path.is_file(),
-            "noop bootstrap log should exist at {}",
-            noop_log_path.display()
+            second_log_path.is_file(),
+            "second bootstrap log should exist at {}",
+            second_log_path.display()
         );
-        let noop_log: serde_json::Value = serde_json::from_slice(&fs::read(noop_log_path)?)?;
-        assert_eq!(noop_log["status"], "noop");
-        assert_eq!(noop_log["vm"], "devbox");
+        let second_log: serde_json::Value = serde_json::from_slice(&fs::read(second_log_path)?)?;
+        assert_eq!(second_log["status"], "success");
+        assert_eq!(second_log["vm"], "devbox");
 
-        let noop_events = reporter_noop.take();
-        let mut iter = noop_events.iter();
+        let second_events = reporter_second.take();
+        let mut iter = second_events.iter();
 
-        match iter.next().expect("noop bootstrap started event") {
+        match iter.next().expect("second bootstrap started event") {
             Event::BootstrapStarted {
                 vm,
                 base_hash: event_base,
@@ -1689,34 +1558,55 @@ mod tests {
                 assert_eq!(artifact_hash, "artifact-hash-v1");
                 assert_eq!(*trigger, BootstrapTrigger::Auto);
             }
-            other => panic!("unexpected first noop event: {other:?}"),
+            other => panic!("unexpected first event on second run: {other:?}"),
         }
 
-        match iter.next().expect("noop wait handshake step") {
-            Event::BootstrapStep {
-                vm, step, status, ..
-            } => {
-                assert_eq!(vm, "devbox");
-                assert_eq!(*step, BootstrapStepKind::WaitHandshake);
-                assert_eq!(*status, BootstrapStepStatus::Skipped);
+        let expected_steps = [
+            (
+                BootstrapStepKind::WaitHandshake,
+                BootstrapStepStatus::Success,
+            ),
+            (BootstrapStepKind::Connect, BootstrapStepStatus::Success),
+            (BootstrapStepKind::Transfer, BootstrapStepStatus::Success),
+            (BootstrapStepKind::Apply, BootstrapStepStatus::Success),
+            (BootstrapStepKind::Verify, BootstrapStepStatus::Success),
+        ];
+
+        for (expected_kind, expected_status) in expected_steps {
+            match iter.next().expect("bootstrap step event during second run") {
+                Event::BootstrapStep {
+                    vm, step, status, ..
+                } => {
+                    assert_eq!(vm, "devbox");
+                    assert_eq!(*step, expected_kind);
+                    assert_eq!(*status, expected_status);
+                }
+                other => panic!("unexpected step event during second run: {other:?}"),
             }
-            other => panic!("unexpected noop step event: {other:?}"),
         }
 
-        match iter.next().expect("noop completion event") {
+        match iter.next().expect("second bootstrap completion event") {
             Event::BootstrapCompleted {
                 vm, status, stamp, ..
             } => {
                 assert_eq!(vm, "devbox");
-                assert_eq!(*status, BootstrapStatus::NoOp);
-                assert_eq!(stamp.as_deref(), Some(expected_stamp.as_str()));
+                assert_eq!(*status, BootstrapStatus::Success);
+                assert!(
+                    stamp.is_none(),
+                    "second run completion should not include a stamp"
+                );
             }
-            other => panic!("unexpected noop completion event: {other:?}"),
+            other => panic!("unexpected completion event during second run: {other:?}"),
         }
 
         assert!(
             iter.next().is_none(),
-            "no additional events expected during noop run"
+            "no additional events expected during second run"
+        );
+
+        assert!(
+            !plan_dir.join("stamps").exists(),
+            "second run should not create a stamp directory"
         );
 
         Ok(())
@@ -1827,18 +1717,10 @@ mod tests {
         }];
 
         let base_hash = normalize_sha_result(compute_file_sha256(&base_image_path))?;
-        let expected_stamp = build_stamp_id(&base_hash, "artifact-hash-v1");
-        let stamps_dir = bootstrap_dir.join(STAMP_DIR_NAME);
+        let stamps_dir = bootstrap_dir.join("stamps");
         fs::create_dir_all(&stamps_dir)?;
-        let stamp_path = stamps_dir.join(format!("{expected_stamp}.json"));
-        write_stamp(
-            &stamp_path,
-            &expected_stamp,
-            &base_hash,
-            "artifact-hash-v1",
-            &plan_path,
-        )
-        .expect("failed to seed existing stamp");
+        let legacy_stamp_path = stamps_dir.join("legacy-stamp.json");
+        fs::write(&legacy_stamp_path, b"{\"stamp\":\"legacy\"}")?;
 
         let mut reporter = RecordingReporter::default();
         let mut diagnostics = Vec::new();
@@ -1859,12 +1741,23 @@ mod tests {
         let outcome = &outcomes[0];
         assert_eq!(outcome.vm, "devbox");
         assert_eq!(outcome.status, BootstrapRunStatus::Success);
-        assert_eq!(outcome.stamp.as_deref(), Some(expected_stamp.as_str()));
+        assert!(
+            outcome.stamp.is_none(),
+            "forced run outcome should not include a stamp"
+        );
         let log_path = outcome
             .log_path
             .as_ref()
             .expect("forced run should emit a log path");
-        assert!(log_path.is_file(), "bootstrap log missing at {}", log_path.display());
+        assert!(
+            log_path.is_file(),
+            "bootstrap log missing at {}",
+            log_path.display()
+        );
+        assert!(
+            legacy_stamp_path.is_file(),
+            "legacy stamp file should remain untouched"
+        );
 
         let events = reporter.take();
         let mut iter = events.iter();
@@ -1886,7 +1779,10 @@ mod tests {
         }
 
         let expected_steps = [
-            (BootstrapStepKind::WaitHandshake, BootstrapStepStatus::Success),
+            (
+                BootstrapStepKind::WaitHandshake,
+                BootstrapStepStatus::Success,
+            ),
             (BootstrapStepKind::Connect, BootstrapStepStatus::Success),
             (BootstrapStepKind::Transfer, BootstrapStepStatus::Success),
             (BootstrapStepKind::Apply, BootstrapStepStatus::Success),
@@ -1912,7 +1808,10 @@ mod tests {
             } => {
                 assert_eq!(vm, "devbox");
                 assert_eq!(*status, BootstrapStatus::Success);
-                assert_eq!(stamp.as_deref(), Some(expected_stamp.as_str()));
+                assert!(
+                    stamp.is_none(),
+                    "forced run completion should not include a stamp"
+                );
             }
             other => panic!("unexpected completion event: {other:?}"),
         }

@@ -34,7 +34,7 @@ Field reference:
 | --- | --- | --- |
 | `BootstrapStarted` | `vm: String`, `base_hash: String`, `artifact_hash: String`, `trigger: BootstrapTrigger` | `trigger` is `auto` or `always`, mirroring mode resolution after overrides. |
 | `BootstrapStep` | `vm: String`, `step: BootstrapStepKind`, `status: BootstrapStepStatus`, `duration_ms: u64`, `detail: Option<String>` | `step` values: `wait-handshake`, `connect`, `transfer`, `apply`, `verify`. `status` is `success`, `skipped`, or `failed`. |
-| `BootstrapCompleted` | `vm: String`, `status: BootstrapStatus`, `duration_ms: u64`, `stamp: Option<String>` | `status` is `Success` when work executed, `NoOp` when the stamp already matched. `stamp` contains the idempotence stamp persisted under the state root when available. |
+| `BootstrapCompleted` | `vm: String`, `status: BootstrapStatus`, `duration_ms: u64`, `stamp: Option<String>` | `status` is `Success` when work executed, `NoOp` when the bootstrap runner declares no changes. `stamp` is retained for schema stability and is currently always `null`. |
 | `BootstrapFailed` | `vm: String`, `duration_ms: u64`, `error: String` | Emitted once per VM when the pipeline aborts; a durable log is written alongside the event. |
 
 ### JSON Example
@@ -63,7 +63,6 @@ Every bootstrap run appends a JSON log under `logs/bootstrap/` in the project st
   "vm": "web-0",
   "artifact_hash": "d71cd6…",
   "base_hash": "3b2d8c…",
-  "stamp": "web-0::3b2d8c…::d71cd6…",
   "status": "success",
   "duration_ms": 8421,
   "steps": [
@@ -82,10 +81,10 @@ Failure logs retain the same envelope with `status: "failed"` and append a termi
 { "step": "error", "status": "failed", "duration_ms": 0, "detail": "ssh exited with code 255" }
 ```
 
-No-op runs (`status: "noop"`) record a skipped `wait-handshake` step and preserve the cached stamp so automation can see which content hash short-circuited the pipeline.
+Castra does not persist host-side idempotence stamps; every invocation records a fresh log. If the bootstrap runner can detect a no-op, it reports that outcome through its own messaging while the host log continues to reflect the full pipeline execution.
 
 ## Consuming the Data
 
 - Use the event stream for live progress. Each VM emits events independently and in order, making it safe to multiplex multiple machines in a single reporter.
 - Tail the per-VM log directory for durable audit trails or to collect metrics after the run. The log schema is stable across retries and compatible with JSON tooling.
-- When scripting `castra up`, combine `--bootstrap` overrides with per-VM stamps to trigger targeted reconfiguration (for example forcing a bootstrap for `web-1` while leaving others in auto mode).
+- When scripting `castra up`, use `--bootstrap` overrides to force or skip runs explicitly. Castra always attempts bootstrap on warm runs; runners may self-report no-op outcomes.

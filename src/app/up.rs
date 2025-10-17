@@ -257,19 +257,15 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                 vm,
                 status,
                 duration_ms,
-                stamp,
+                ..
             } => {
                 let duration = format_duration_ms(*duration_ms);
-                let stamp_label = stamp.as_deref().unwrap_or("n/a");
                 match status {
                     BootstrapStatus::Success => {
-                        println!(
-                            "→ {}: bootstrap completed in {} (stamp {}).",
-                            vm, duration, stamp_label
-                        );
+                        println!("→ {}: bootstrap completed in {}.", vm, duration);
                     }
                     BootstrapStatus::NoOp => {
-                        println!("→ {}: bootstrap up-to-date (stamp {}).", vm, stamp_label);
+                        println!("→ {}: bootstrap runner reported no changes.", vm);
                     }
                 }
             }
@@ -299,21 +295,12 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
     if !outcome.bootstraps.is_empty() {
         for run in &outcome.bootstraps {
             match run.status {
-                BootstrapRunStatus::Success => {
-                    let stamp = run.stamp.as_deref().unwrap_or("n/a");
-                    match &run.log_path {
-                        Some(path) => println!(
-                            "→ {}: bootstrap log at {} (stamp {}).",
-                            run.vm,
-                            path.display(),
-                            stamp
-                        ),
-                        None => println!("→ {}: bootstrap completed (stamp {}).", run.vm, stamp),
-                    }
-                }
+                BootstrapRunStatus::Success => match &run.log_path {
+                    Some(path) => println!("→ {}: bootstrap log at {}.", run.vm, path.display()),
+                    None => println!("→ {}: bootstrap completed.", run.vm),
+                },
                 BootstrapRunStatus::NoOp => {
-                    let stamp = run.stamp.as_deref().unwrap_or("n/a");
-                    println!("→ {}: bootstrap no-op (stamp {}).", run.vm, stamp);
+                    println!("→ {}: bootstrap runner reported no changes.", run.vm);
                 }
                 BootstrapRunStatus::Skipped => {
                     println!("→ {}: bootstrap skipped.", run.vm);
