@@ -1,8 +1,9 @@
-SNAPSHOT v0.9.3 — Castra (VM orchestration harness)
+SNAPSHOT v0.9.4 — Castra (VM orchestration harness)
 
 Edits since last snapshot refresh
-- Thread 12 TODO updated to lock stamp-free policy and clarify rerun semantics (auto|always|skip) with script-level NoOp sentinel; removed host-stamp persistence language.
-- Thread 13 TODO corrected to remove residual mentions of host-side idempotence stamps; scope remains ephemeral-only with cleanup + CLEAN integration.
+- Housekeeping: Removed accidental duplicate TODO files (*.md.md).
+- Thread 12 TODO expanded with concrete acceptance for --plan and TTY UX while keeping schema stable.
+- Thread 13 TODO now carries explicit acceptance for ephemerality messaging, cleanup, validation, and CLEAN integration.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (sequencing shipped): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -40,6 +41,7 @@ Active threads (intent + acceptance)
   - skip: do not run; surface as Skipped with rationale. Per‑VM overrides take precedence; conflicts rejected preflight.
   Acceptance:
   - No stamp persistence; Auto/Always re‑attempts; per‑VM overrides honored with precedence; failures are observable with durable logs; JSON schema unchanged.
+  - --plan emits resolved inputs per VM, exits non‑zero on invalid configuration; TTY shows stepwise progress and final per‑VM summary with durable log path.
   Anchors: src/config.rs; src/core/bootstrap.rs; src/core/status.rs; src/core/reporter.rs; src/app/up.rs; src/cli.rs; docs/BOOTSTRAP.md.
 
 - Thread 13 — Stateless runs (ephemeral‑only write layer + cleanup): All VM disk changes are discarded on shutdown; there is no built‑in persistence or export. Users must manually export via SSH before shutdown.
@@ -53,7 +55,7 @@ Active threads (intent + acceptance)
   - Pristine restarts from the same base; no residual ephemeral artifacts after normal shutdown; opportunistic orphan reclamation without blocking healthy ops.
   - No CLI/opts/env allow persistence; validation errors include remediation guidance ("export via SSH before shutdown").
   - CLEAN integrates reclaimed‑bytes reporting; stable JSON schemas preserved.
-  - Up/Down output (TTY/JSON) clearly indicates ephemeral‑only behavior.
+  - Up/Down output (TTY/JSON) clearly indicates ephemeral‑only behavior with machine‑readable hints in JSON summaries.
   Anchors: src/core/operations/up.rs; src/app/up.rs; src/core/operations/clean.rs; src/app/clean.rs; src/core/runtime.rs; src/app/down.rs; docs/BOOTSTRAP.md; CLEAN.md; CLI help.
 
 Current code state (observable surfaces)
@@ -88,4 +90,4 @@ Editorial housekeeping
   - todo_cooperative_shutdown_lifecycle.md
   - todo_post_boot_bootstrap_pipeline.md
   - todo_ephemeral_vm_storage_and_cleanup.md
-- Snapshot version bumped to v0.9.3 to reflect TODO alignment with stamp‑free policy.
+- Snapshot version bumped to v0.9.4 to reflect TODO clarifications and duplicate cleanup.
