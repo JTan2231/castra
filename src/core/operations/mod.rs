@@ -809,9 +809,10 @@ mod tests {
     use super::*;
     use crate::DEFAULT_BROKER_PORT;
     use crate::config::{
-        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig, LifecycleConfig,
-        ManagedDiskKind, ManagedImageReference, MemorySpec, ProjectConfig, VmBootstrapConfig,
-        VmDefinition, Workflows,
+        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig,
+        DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, LifecycleConfig, ManagedDiskKind,
+        ManagedImageReference, MemorySpec, ProjectConfig, VmBootstrapConfig, VmDefinition,
+        Workflows,
     };
     use crate::core::reporter::Reporter;
     use crate::core::runtime::{ManagedAcquisition, RuntimeContext};
@@ -829,7 +830,8 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
     use tempfile::tempdir;
 
-    fn sample_vm(name: &str, mode: BootstrapMode) -> VmDefinition {
+    fn sample_vm(project_root: &Path, name: &str, mode: BootstrapMode) -> VmDefinition {
+        let bootstrap_dir = project_root.join("bootstrap").join(name);
         VmDefinition {
             name: name.to_string(),
             role_name: name.to_string(),
@@ -840,7 +842,15 @@ mod tests {
             cpus: 1,
             memory: MemorySpec::new("512 MiB", Some(512 * 1024 * 1024)),
             port_forwards: Vec::new(),
-            bootstrap: VmBootstrapConfig { mode },
+            bootstrap: VmBootstrapConfig {
+                mode,
+                script: Some(bootstrap_dir.join("run.sh")),
+                payload: Some(bootstrap_dir.join("payload")),
+                handshake_timeout_secs: DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+                remote_dir: PathBuf::from("/tmp/castra-bootstrap"),
+                env: HashMap::new(),
+                verify: None,
+            },
         }
     }
 
@@ -848,13 +858,15 @@ mod tests {
         vm_modes: &[(&str, BootstrapMode)],
         default_mode: BootstrapMode,
     ) -> ProjectConfig {
+        let project_root = PathBuf::from("/tmp/project");
         let vms = vm_modes
             .iter()
-            .map(|(name, mode)| sample_vm(name, *mode))
+            .map(|(name, mode)| sample_vm(&project_root, name, *mode))
             .collect();
 
         ProjectConfig {
             file_path: PathBuf::from("castra.toml"),
+            project_root: project_root.clone(),
             version: "0.1.0".to_string(),
             project_name: "demo".to_string(),
             vms,
@@ -864,7 +876,12 @@ mod tests {
                 port: DEFAULT_BROKER_PORT,
             },
             lifecycle: LifecycleConfig::default(),
-            bootstrap: BootstrapConfig { mode: default_mode },
+            bootstrap: BootstrapConfig {
+                mode: default_mode,
+                handshake_timeout_secs: DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+                remote_dir: PathBuf::from("/tmp/castra-bootstrap"),
+                env: HashMap::new(),
+            },
             warnings: Vec::new(),
         }
     }
@@ -1080,6 +1097,7 @@ mod tests {
             machine: Some("pc-q35".to_string()),
         };
 
+        let bootstrap_dir = temp.path().join("bootstrap").join("vm-test");
         let vm = VmDefinition {
             name: "vm-test".to_string(),
             role_name: "app".to_string(),
@@ -1098,6 +1116,12 @@ mod tests {
             port_forwards: Vec::new(),
             bootstrap: VmBootstrapConfig {
                 mode: BootstrapMode::Auto,
+                script: Some(bootstrap_dir.join("run.sh")),
+                payload: Some(bootstrap_dir.join("payload")),
+                handshake_timeout_secs: DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+                remote_dir: PathBuf::from("/tmp/castra-bootstrap"),
+                env: HashMap::new(),
+                verify: None,
             },
         };
 

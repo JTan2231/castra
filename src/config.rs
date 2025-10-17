@@ -81,6 +81,7 @@ impl ManagedDiskKind {
 #[derive(Debug, Clone)]
 pub struct ProjectConfig {
     pub file_path: PathBuf,
+    pub project_root: PathBuf,
     pub version: String,
     pub project_name: String,
     pub vms: Vec<VmDefinition>,
@@ -164,12 +165,18 @@ impl Default for BootstrapMode {
 #[derive(Debug, Clone)]
 pub struct BootstrapConfig {
     pub mode: BootstrapMode,
+    pub handshake_timeout_secs: u64,
+    pub remote_dir: PathBuf,
+    pub env: HashMap<String, String>,
 }
 
 impl Default for BootstrapConfig {
     fn default() -> Self {
         Self {
             mode: BootstrapMode::default(),
+            handshake_timeout_secs: DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+            remote_dir: PathBuf::from("/tmp/castra-bootstrap"),
+            env: HashMap::new(),
         }
     }
 }
@@ -177,6 +184,18 @@ impl Default for BootstrapConfig {
 #[derive(Debug, Clone)]
 pub struct VmBootstrapConfig {
     pub mode: BootstrapMode,
+    pub script: Option<PathBuf>,
+    pub payload: Option<PathBuf>,
+    pub handshake_timeout_secs: u64,
+    pub remote_dir: PathBuf,
+    pub env: HashMap<String, String>,
+    pub verify: Option<BootstrapVerifyConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BootstrapVerifyConfig {
+    pub command: Option<String>,
+    pub path: Option<PathBuf>,
 }
 
 impl ProjectConfig {
@@ -340,6 +359,7 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
         "workflows",
         "broker",
         "lifecycle",
+        "bootstrap",
     ];
 
     if let toml::Value::Table(table) = value {
@@ -375,6 +395,7 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
                                 "port_forwards",
                                 "count",
                                 "instances",
+                                "bootstrap",
                             ],
                             &format!("[[vms]] #{idx}"),
                             &mut warnings,
@@ -415,6 +436,37 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
                                 warnings.push(
                                     "`port_forwards` must be an array of tables.".to_string(),
                                 );
+                            }
+                        }
+
+                        if let Some(bootstrap) = vm_table.get("bootstrap") {
+                            if let toml::Value::Table(bootstrap_table) = bootstrap {
+                                warn_table(
+                                    bootstrap_table,
+                                    &[
+                                        "mode",
+                                        "script",
+                                        "payload",
+                                        "handshake_timeout_secs",
+                                        "remote_dir",
+                                        "env",
+                                        "verify_command",
+                                        "verify_path",
+                                    ],
+                                    &format!("[[vms]] #{idx}.bootstrap"),
+                                    &mut warnings,
+                                );
+                                if let Some(env) = bootstrap_table.get("env") {
+                                    if !env.is_table() {
+                                        warnings.push(format!(
+                                            "`env` on [[vms]] entry #{idx}.bootstrap must be a table mapping keys to values."
+                                        ));
+                                    }
+                                }
+                            } else {
+                                warnings.push(format!(
+                                    "`bootstrap` on [[vms]] entry #{idx} must be a table."
+                                ));
                             }
                         }
 
@@ -541,6 +593,27 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
                 );
             } else {
                 warnings.push("Expected [lifecycle] to be a table.".to_string());
+            }
+        }
+
+        if let Some(bootstrap) = table.get("bootstrap") {
+            if let toml::Value::Table(bootstrap_table) = bootstrap {
+                warn_table(
+                    bootstrap_table,
+                    &["mode", "handshake_timeout_secs", "remote_dir", "env"],
+                    "[bootstrap]",
+                    &mut warnings,
+                );
+                if let Some(env) = bootstrap_table.get("env") {
+                    if !env.is_table() {
+                        warnings.push(
+                            "`[bootstrap].env` must be a table mapping environment variables."
+                                .to_string(),
+                        );
+                    }
+                }
+            } else {
+                warnings.push("Expected [bootstrap] to be a table.".to_string());
             }
         }
     }
@@ -933,12 +1006,32 @@ struct RawManagedImage {
 struct RawBootstrap {
     #[serde(default)]
     mode: Option<String>,
+    #[serde(default)]
+    handshake_timeout_secs: Option<u64>,
+    #[serde(default)]
+    remote_dir: Option<PathBuf>,
+    #[serde(default)]
+    env: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RawVmBootstrap {
     #[serde(default)]
     mode: Option<String>,
+    #[serde(default)]
+    script: Option<PathBuf>,
+    #[serde(default)]
+    payload: Option<PathBuf>,
+    #[serde(default)]
+    handshake_timeout_secs: Option<u64>,
+    #[serde(default)]
+    remote_dir: Option<PathBuf>,
+    #[serde(default)]
+    env: HashMap<String, String>,
+    #[serde(default)]
+    verify_command: Option<String>,
+    #[serde(default)]
+    verify_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -1011,7 +1104,34 @@ impl RawBootstrap {
             None => BootstrapMode::default(),
         };
 
-        Ok(BootstrapConfig { mode })
+        let handshake_timeout_secs = match self.handshake_timeout_secs {
+            Some(0) => {
+                return Err(invalid_config(
+                    path,
+                    "`[bootstrap].handshake_timeout_secs` must be at least 1 second.",
+                ));
+            }
+            Some(value) => value,
+            None => DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+        };
+
+        let remote_dir = match self.remote_dir {
+            Some(dir) if dir.as_os_str().is_empty() => {
+                return Err(invalid_config(
+                    path,
+                    "`[bootstrap].remote_dir` must not be empty.",
+                ));
+            }
+            Some(dir) => dir,
+            None => PathBuf::from("/tmp/castra-bootstrap"),
+        };
+
+        Ok(BootstrapConfig {
+            mode,
+            handshake_timeout_secs,
+            remote_dir,
+            env: self.env,
+        })
     }
 }
 
@@ -1222,7 +1342,7 @@ impl RawConfig {
                 warnings,
             )?;
 
-            let base_bootstrap_mode = match bootstrap {
+            let base_bootstrap_mode = match bootstrap.as_ref() {
                 Some(config) => config
                     .resolve_mode(path, &format!("VM `{role_name}`"))?
                     .unwrap_or(bootstrap_config.mode),
@@ -1397,6 +1517,97 @@ impl RawConfig {
                         )
                     };
 
+                let bootstrap_override = bootstrap.as_ref();
+
+                if let Some(cfg) = bootstrap_override {
+                    if let Some(script_path) = cfg.script.as_ref() {
+                        if script_path.as_os_str().is_empty() {
+                            return Err(invalid_config(
+                                path,
+                                format!(
+                                    "VM `{instance_name}` declares an empty `bootstrap.script`; specify a script path or omit the field."
+                                ),
+                            ));
+                        }
+                    }
+                    if let Some(payload_path) = cfg.payload.as_ref() {
+                        if payload_path.as_os_str().is_empty() {
+                            return Err(invalid_config(
+                                path,
+                                format!(
+                                    "VM `{instance_name}` declares an empty `bootstrap.payload`; specify a payload directory or omit the field."
+                                ),
+                            ));
+                        }
+                    }
+                }
+
+                let script_override = bootstrap_override
+                    .and_then(|cfg| cfg.script.as_ref())
+                    .cloned()
+                    .map(|path| resolve_path(&project_root, path));
+                let default_script_path = project_root
+                    .join("bootstrap")
+                    .join(&instance_name)
+                    .join("run.sh");
+                let script_path = script_override.unwrap_or(default_script_path);
+
+                let payload_override = bootstrap_override
+                    .and_then(|cfg| cfg.payload.as_ref())
+                    .cloned()
+                    .map(|path| resolve_path(&project_root, path));
+                let default_payload_path = project_root
+                    .join("bootstrap")
+                    .join(&instance_name)
+                    .join("payload");
+                let payload_path = payload_override.unwrap_or(default_payload_path);
+
+                let handshake_timeout_secs = match bootstrap_override
+                    .and_then(|cfg| cfg.handshake_timeout_secs)
+                {
+                    Some(0) => {
+                        return Err(invalid_config(
+                            path,
+                            format!(
+                                "VM `{instance_name}` declares `bootstrap.handshake_timeout_secs = 0`; specify at least 1 second.",
+                            ),
+                        ));
+                    }
+                    Some(value) => value,
+                    None => bootstrap_config.handshake_timeout_secs,
+                };
+
+                let remote_dir = match bootstrap_override.and_then(|cfg| cfg.remote_dir.as_ref()) {
+                    Some(dir) if dir.as_os_str().is_empty() => {
+                        return Err(invalid_config(
+                            path,
+                            format!(
+                                "VM `{instance_name}` declares an empty `bootstrap.remote_dir`; specify a non-empty path.",
+                            ),
+                        ));
+                    }
+                    Some(dir) => dir.clone(),
+                    None => bootstrap_config.remote_dir.clone(),
+                };
+
+                let mut env = bootstrap_config.env.clone();
+                if let Some(cfg) = bootstrap_override {
+                    for (key, value) in &cfg.env {
+                        env.insert(key.clone(), value.clone());
+                    }
+                }
+
+                let verify = bootstrap_override.and_then(|cfg| {
+                    if cfg.verify_command.is_some() || cfg.verify_path.is_some() {
+                        Some(BootstrapVerifyConfig {
+                            command: cfg.verify_command.clone(),
+                            path: cfg.verify_path.clone(),
+                        })
+                    } else {
+                        None
+                    }
+                });
+
                 expanded_vms.push(VmDefinition {
                     name: instance_name,
                     role_name: role_name.clone(),
@@ -1409,6 +1620,12 @@ impl RawConfig {
                     port_forwards: forwards,
                     bootstrap: VmBootstrapConfig {
                         mode: base_bootstrap_mode,
+                        script: Some(script_path),
+                        payload: Some(payload_path),
+                        handshake_timeout_secs,
+                        remote_dir,
+                        env,
+                        verify,
                     },
                 });
             }
@@ -1439,6 +1656,7 @@ impl RawConfig {
 
         Ok(ProjectConfig {
             file_path: path.to_path_buf(),
+            project_root,
             version,
             project_name,
             vms: expanded_vms,
@@ -1710,6 +1928,89 @@ memory = "2048 MiB"
             BootstrapMode::Always
         );
         assert!("bogus".parse::<BootstrapMode>().is_err());
+    }
+
+    #[test]
+    fn parse_bootstrap_defaults_and_overrides() {
+        let dir = tempdir().unwrap();
+        let config_path = write_config(
+            &dir,
+            r#"
+version = "0.2.0"
+
+[project]
+name = "demo"
+
+[bootstrap]
+mode = "always"
+handshake_timeout_secs = 120
+remote_dir = "/opt/bootstrap"
+[bootstrap.env]
+SHARED = "true"
+FOO = "top"
+
+[[vms]]
+name = "dev"
+base_image = "images/dev.qcow2"
+overlay = ".castra/dev.qcow2"
+
+  [vms.bootstrap]
+  mode = "disabled"
+  script = "bootstrap/dev/run.sh"
+  payload = "bootstrap/dev/payload"
+  handshake_timeout_secs = 15
+  remote_dir = "/opt/dev"
+  verify_command = "check"
+  verify_path = "/status/ok"
+
+    [vms.bootstrap.env]
+    LOCAL = "yes"
+    FOO = "vm"
+"#,
+        );
+
+        let project =
+            load_project_config(&config_path).expect("configuration with bootstrap overrides");
+
+        assert_eq!(project.bootstrap.mode, BootstrapMode::Always);
+        assert_eq!(project.bootstrap.handshake_timeout_secs, 120);
+        assert_eq!(
+            project.bootstrap.remote_dir,
+            PathBuf::from("/opt/bootstrap")
+        );
+        assert_eq!(
+            project.bootstrap.env.get("SHARED"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(project.bootstrap.env.get("FOO"), Some(&"top".to_string()));
+
+        assert_eq!(project.vms.len(), 1);
+        let vm = &project.vms[0];
+        assert_eq!(vm.bootstrap.mode, BootstrapMode::Disabled);
+        let project_root = config_path.parent().unwrap();
+        assert_eq!(
+            vm.bootstrap.script.as_ref().expect("script path").as_path(),
+            &project_root.join("bootstrap/dev/run.sh")
+        );
+        assert_eq!(
+            vm.bootstrap
+                .payload
+                .as_ref()
+                .expect("payload path")
+                .as_path(),
+            &project_root.join("bootstrap/dev/payload")
+        );
+        assert_eq!(vm.bootstrap.handshake_timeout_secs, 15);
+        assert_eq!(vm.bootstrap.remote_dir, PathBuf::from("/opt/dev"));
+        assert_eq!(vm.bootstrap.env.get("SHARED"), Some(&"true".to_string()));
+        assert_eq!(vm.bootstrap.env.get("LOCAL"), Some(&"yes".to_string()));
+        assert_eq!(vm.bootstrap.env.get("FOO"), Some(&"vm".to_string()));
+        let verify = vm.bootstrap.verify.as_ref().expect("verify config");
+        assert_eq!(verify.command.as_deref(), Some("check"));
+        assert_eq!(
+            verify.path.as_ref().map(PathBuf::as_path),
+            Some(Path::new("/status/ok"))
+        );
     }
 
     #[test]

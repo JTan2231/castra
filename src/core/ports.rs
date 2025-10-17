@@ -285,13 +285,18 @@ fn inspect_udp_port(port: u16) -> io::Result<ForwardRuntimeState> {
 mod tests {
     use super::*;
     use crate::config::{
-        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig, LifecycleConfig, MemorySpec,
-        PortForward, PortProtocol, ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
+        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig,
+        DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, LifecycleConfig, MemorySpec, PortForward,
+        PortProtocol, ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
     };
+    use std::collections::HashMap;
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn sample_project(state_root: &std::path::Path) -> ProjectConfig {
+        let project_root = state_root.to_path_buf();
+        let bootstrap_dir = project_root.join("bootstrap").join("devbox");
         let vm = VmDefinition {
             name: "devbox".to_string(),
             role_name: "devbox".to_string(),
@@ -308,11 +313,18 @@ mod tests {
             }],
             bootstrap: VmBootstrapConfig {
                 mode: BootstrapMode::Auto,
+                script: Some(bootstrap_dir.join("run.sh")),
+                payload: Some(bootstrap_dir.join("payload")),
+                handshake_timeout_secs: DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+                remote_dir: PathBuf::from("/tmp/castra-bootstrap"),
+                env: HashMap::new(),
+                verify: None,
             },
         };
 
         ProjectConfig {
             file_path: state_root.join("castra.toml"),
+            project_root,
             version: "0.1.0".to_string(),
             project_name: "demo".to_string(),
             vms: vec![vm],

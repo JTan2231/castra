@@ -488,9 +488,11 @@ struct StoredHandshakeBusFile {
 mod tests {
     use super::*;
     use crate::config::{
-        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig, LifecycleConfig, MemorySpec,
-        ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
+        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig,
+        DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, LifecycleConfig, MemorySpec, ProjectConfig,
+        VmBootstrapConfig, VmDefinition, Workflows,
     };
+    use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -626,8 +628,12 @@ mod tests {
     }
 
     fn sample_project(state_root: &std::path::Path) -> ProjectConfig {
+        let project_root = state_root.to_path_buf();
+        let bootstrap_dir = project_root.join("bootstrap").join("devbox");
+
         ProjectConfig {
             file_path: state_root.join("castra.toml"),
+            project_root,
             version: "0.1.0".to_string(),
             project_name: "test".to_string(),
             vms: vec![VmDefinition {
@@ -642,6 +648,12 @@ mod tests {
                 port_forwards: Vec::new(),
                 bootstrap: VmBootstrapConfig {
                     mode: BootstrapMode::Auto,
+                    script: Some(bootstrap_dir.join("run.sh")),
+                    payload: Some(bootstrap_dir.join("payload")),
+                    handshake_timeout_secs: DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+                    remote_dir: PathBuf::from("/tmp/castra-bootstrap"),
+                    env: HashMap::new(),
+                    verify: None,
                 },
             }],
             state_root: state_root.to_path_buf(),

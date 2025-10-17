@@ -1,5 +1,5 @@
 use std::cmp;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, ErrorKind};
 #[cfg(unix)]
@@ -17,7 +17,8 @@ use libc::{self, pid_t};
 use sysinfo::{Disks, System};
 
 use crate::config::{
-    BaseImageSource, ManagedDiskKind, PortForward, PortProtocol, ProjectConfig, VmDefinition,
+    BaseImageSource, BootstrapMode, DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, ManagedDiskKind,
+    PortForward, PortProtocol, ProjectConfig, VmBootstrapConfig, VmDefinition,
 };
 use crate::error::{Error, Result};
 use crate::managed::{
@@ -1911,6 +1912,12 @@ mod tests {
             port_forwards: Vec::new(),
             bootstrap: VmBootstrapConfig {
                 mode: BootstrapMode::Disabled,
+                script: None,
+                payload: None,
+                handshake_timeout_secs: DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+                remote_dir: PathBuf::from("/tmp/castra-bootstrap"),
+                env: HashMap::new(),
+                verify: None,
             },
         }
     }

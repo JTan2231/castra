@@ -1,11 +1,13 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig, DEFAULT_BROKER_PORT,
-    LifecycleConfig, ManagedDiskKind, ManagedImageReference, MemorySpec, PortConflict,
-    ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
+    BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig,
+    DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, DEFAULT_BROKER_PORT, LifecycleConfig, ManagedDiskKind,
+    ManagedImageReference, MemorySpec, PortConflict, ProjectConfig, VmBootstrapConfig,
+    VmDefinition, Workflows,
 };
 use crate::error::{Error, Result};
 
@@ -158,8 +160,13 @@ fn synthesize_default_project(search_root: PathBuf) -> ProjectConfig {
     let synthetic_path = search_root.join("castra.toml");
     let project_name = default_project_name(&synthetic_path);
     let state_root = crate::config::default_state_root(&project_name, &synthetic_path);
+    let project_root = synthetic_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| search_root.clone());
 
     let overlay_path = state_root.join("alpine-minimal-overlay.qcow2");
+    let bootstrap_dir = project_root.join("bootstrap").join("alpine-0");
 
     let vm = VmDefinition {
         name: "alpine-0".to_string(),
@@ -179,11 +186,18 @@ fn synthesize_default_project(search_root: PathBuf) -> ProjectConfig {
         port_forwards: Vec::new(),
         bootstrap: VmBootstrapConfig {
             mode: BootstrapMode::Auto,
+            script: Some(bootstrap_dir.join("run.sh")),
+            payload: Some(bootstrap_dir.join("payload")),
+            handshake_timeout_secs: DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+            remote_dir: PathBuf::from("/tmp/castra-bootstrap"),
+            env: HashMap::new(),
+            verify: None,
         },
     };
 
     ProjectConfig {
         file_path: synthetic_path,
+        project_root,
         version: "0.2.0".to_string(),
         project_name,
         vms: vec![vm],
