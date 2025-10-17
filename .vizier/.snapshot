@@ -1,8 +1,8 @@
-SNAPSHOT v0.9.2 — Castra (VM orchestration harness)
+SNAPSHOT v0.9.3 — Castra (VM orchestration harness)
 
 Edits since last snapshot refresh
-- Housekeeping: Removed malformed duplicate TODO files (*.md.md variants). Canonical TODOs remain intact.
-- Thread 13 TODO clarified to reflect policy: ephemeral-only; removed residual mentions of a persistence mode and tightened acceptance around validation, cleanup, and CLEAN integration.
+- Thread 12 TODO updated to lock stamp-free policy and clarify rerun semantics (auto|always|skip) with script-level NoOp sentinel; removed host-stamp persistence language.
+- Thread 13 TODO corrected to remove residual mentions of host-side idempotence stamps; scope remains ephemeral-only with cleanup + CLEAN integration.
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (sequencing shipped): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
@@ -34,6 +34,10 @@ Active threads (intent + acceptance)
   Remaining (UX/plan mode):
   - Add --plan dry‑run that reports intent and resolved inputs without side effects.
   - TTY progress lines and concise completion summaries with hints and durable log paths (non‑JSON only). Help/docs updates and Quick Start/Troubleshooting.
+  Rerun semantics (policy-driven):
+  - auto: attempt bootstrap per run after handshake; idempotence achieved via script-level NoOp sentinel or verify logic.
+  - always: force running regardless of prior runs; sentinel may still short-circuit at script level.
+  - skip: do not run; surface as Skipped with rationale. Per‑VM overrides take precedence; conflicts rejected preflight.
   Acceptance:
   - No stamp persistence; Auto/Always re‑attempts; per‑VM overrides honored with precedence; failures are observable with durable logs; JSON schema unchanged.
   Anchors: src/config.rs; src/core/bootstrap.rs; src/core/status.rs; src/core/reporter.rs; src/app/up.rs; src/cli.rs; docs/BOOTSTRAP.md.
@@ -70,18 +74,18 @@ Narrative themes
 Direction of travel
 - Thread 2: expose timeouts in CLI/options, render fields consistently, and document payloads; keep exit‑success semantics on forced shutdowns.
 - Thread 10: add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
-- Thread 12: deliver --plan and TTY UX polish; update docs/help; keep JSON schema stable; continue refining hints and durable log paths.
+- Thread 12: deliver --plan and TTY UX polish; update docs/help; keep JSON schema stable; continue refining hints and durable log paths. Reinforce stamp-free rerun semantics across docs/help.
 - Thread 13: implement cleanup + validation + UX notices; integrate reclaimed‑bytes with CLEAN; ensure crash/reboot orphan reclamation.
 
 Cross‑links
 - CLEAN to integrate ephemeral layer reclamation (Thread 13) alongside managed‑image evidence.
 - Lifecycle canonical TODO: todo_cooperative_shutdown_lifecycle.md (sequencing shipped; configurability/rendering/docs next).
-- Thread 12 canonical TODO: todo_post_boot_bootstrap_pipeline.md (stamp‑free pipeline + UX polish/plan mode).
-- Thread 13 canonical TODO: todo_ephemeral_vm_storage_and_cleanup.md (ephemeral‑only policy + cleanup + UX notices).
+- Thread 12 canonical TODO: todo_post_boot_bootstrap_pipeline.md (stamp‑free pipeline + UX polish/plan mode; policy-driven reruns).
+- Thread 13 canonical TODO: todo_ephemeral_vm_storage_and_cleanup.md (ephemeral‑only policy + cleanup + UX notices; no stamps).
 
 Editorial housekeeping
 - Canonical TODO files remain:
   - todo_cooperative_shutdown_lifecycle.md
   - todo_post_boot_bootstrap_pipeline.md
   - todo_ephemeral_vm_storage_and_cleanup.md
-- Snapshot version bumped to v0.9.2 to record TODO cleanup and tightened Thread 13 brief.
+- Snapshot version bumped to v0.9.3 to reflect TODO alignment with stamp‑free policy.
