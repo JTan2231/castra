@@ -1,93 +1,85 @@
-SNAPSHOT v0.8.9 — Castra (VM orchestration harness)
+SNAPSHOT v0.9.0 — Castra (VM orchestration harness)
 
 Edits since last snapshot refresh
-- Clarified Thread 12 (bootstrap) UX/plan-mode expectations; canonical TODO expanded with acceptance criteria, anchors, and failure-hinting requirements.
-- Expanded Thread 13 (stateless runs) acceptance and UX details: default-ephemeral behavior, persistent opt-in signaling, CLEAN integration, orphan reclamation, and test cases. Canonical TODO updated accordingly.
+- Thread 12 progressed from “partial, behind flag” to “stamp‑free pipeline implemented with config + metadata”; plan mode/TTY polish remain.
+- Thread 13 TODO aligned with stamp‑free bootstrap; clarified durable evidence is logs/events only.
+- Snapshot version bumped to v0.9.0 to reflect shipped behavioral change (bootstrap stamps removed, new config surfaces).
 
 Active threads (intent + acceptance)
 - Thread 2 — Cooperative shutdown lifecycle (sequencing shipped): Before host termination, attempt guest‑cooperative shutdown with ordered, observable events and bounded waits.
   Progress:
   - Runtime emits CooperativeAttempted(method, timeout_ms) and CooperativeSucceeded/CooperativeTimedOut prior to TERM/KILL.
-  - Unavailable channel path: CooperativeAttempted(method: Unavailable, timeout_ms=0) → CooperativeTimedOut(reason: ChannelUnavailable, detail) → escalate.
-  - Available channel path (e.g., ACPI): success emits CooperativeSucceeded; timeout emits CooperativeTimedOut(reason: TimeoutExpired). Channel errors emit CooperativeTimedOut(reason: ChannelError) with diagnostics.
-  - `down` continues concurrent per‑VM shutdown with live streaming; ShutdownComplete includes total_ms; tests cover stale/invalid QMP sockets, zero‑wait semantics, ordering, and propagated detail.
+  - Unavailable channel path handled; errors surface as CooperativeTimedOut(reason: ChannelError) with diagnostics.
+  - down performs concurrent per‑VM shutdown with live streaming; ShutdownComplete includes total_ms.
   Next slice:
-  - Expose/propagate cooperative/TERM/KILL timeouts via CLI/options with clear defaults/help; render method + timeout/reason fields consistently in CLI/JSON and add brief remediation hints for ChannelUnavailable/ChannelError. Document example payloads and note 0ms unavailable path.
+  - Expose/propagate cooperative/TERM/KILL timeouts via CLI/options with clear defaults/help; render method + timeout/reason fields consistently in CLI/JSON and add remediation hints. Document example payloads and note 0ms unavailable path.
   Acceptance (per VM):
   - Event order: ShutdownRequested → CooperativeAttempted(method, timeout_ms) → CooperativeSucceeded | CooperativeTimedOut(timeout_ms, reason, detail?) → Escalation(SIGTERM)? → Escalation(SIGKILL)? → ShutdownComplete(outcome: Graceful|Forced, total_ms).
-  - Timeouts configurable via CLI/opts; status/UI remain responsive; per‑VM isolation; idempotent; stable JSON fields.
   Anchors: src/core/runtime.rs; src/core/events.rs; src/core/options.rs; src/core/reporter.rs; src/app/down.rs.
 
 - Thread 10 — Managed images: structured verification/profile events (shipped; docs/durability pending): Emit machine‑parseable events during verification/profile so downstream tools can rely on them.
   Shipped in v0.8.5:
-  - New Event variants in src/core/events.rs: ManagedImageVerificationStarted/Result and ManagedImageProfileApplied/Result.
-  - Support types: ManagedImageArtifactPlan, ManagedImageArtifactReport, ManagedImageChecksum; Profile components extended with steps[] in events.
-  - Emission path in src/core/operations/mod.rs::up; app/up.rs renders durations, sizes, and steps.
-  - CLEAN integrates reclaimed‑bytes evidence with latest ManagedImageVerificationResult per image and surfaces linkage (root disk path, bytes, verification delta) in CLI output.
+  - Event variants and support types added; CLEAN links reclaimed‑bytes evidence with verification results where available.
   Outstanding:
-  - Ensure reporter durability across sinks (unified stream + per‑image logs) with smoke tests; document field stability with example payloads (docs + CLEAN.md).
+  - Reporter durability smoke tests across sinks; document field stability with example payloads.
   Anchors: src/managed/mod.rs; src/core/events.rs; src/core/logs.rs; src/core/reporter.rs; src/core/operations/clean.rs; src/app/clean.rs; CLEAN.md.
 
-- Thread 12 — Post‑boot bootstrap pipeline (partially implemented, behind flag): After first successful broker handshake for a VM, attempt a host‑provided bootstrap (e.g., Nix flake) over SSH idempotently — without any host‑side stamp persistence.
-  Clarifications:
-  - Triggering: On first confirmed broker handshake for a VM within the run, bootstrap is attempted based on CLI mode. Castra does not persist stamps; idempotence/no‑op decisions are up to the runner.
-  - Config knobs: `--bootstrap=auto|always|skip` with per‑VM overrides; defaults favor auto.
-  - May consume ManagedImageVerificationResult (Thread 10) to validate inputs but must not block when absent.
-  Progress:
-  - Overrides shipped with precedence and conflict detection; docs/BOOTSTRAP.md documents invocation and precedence; unit tests cover parsing and precedence.
-  - Outcome handling: Disabled mode yields Skipped with diagnostic. Runner‑reported NoOp is surfaced if available. Handshake timeout failures are observable/durable: WaitHandshake step marked Failed, BootstrapFailed emitted, a single failed run log persisted with error detail. Polling uses sub‑second slices respecting deadlines. Runs execute per‑VM concurrently with live event streaming; outcomes returned in input order; first error captured without blocking others.
-  Next slice (UX/plan mode):
-  - Finalize removal of any stamp references in code/docs/tests; ensure no state‑root paths for stamps are touched.
-  - Add `--plan` dry‑run that reports intent without side effects; render compact TTY progress and one‑line outcomes; surface actionable hints on failure with pointers to durable logs; update help text and add Quick Start + Troubleshooting to BOOTSTRAP.md. JSON schema remains unchanged.
+- Thread 12 — Post‑boot bootstrap pipeline (stamp‑free pipeline implemented; UX polish next): After first successful broker handshake for a VM within a run, perform host‑driven bootstrap via per‑VM script/payload with optional metadata; no host‑side stamp persistence.
+  New behavior (shipped):
+  - Stamps purged: no stamp reads/writes; stamp fields in events/logs remain null for schema stability. Repeated up invocations in auto/always attempt bootstrap again.
+  - Configuration: Global [bootstrap] and per‑VM [vms.bootstrap] parse mode, handshake_timeout_secs, remote_dir, env, and optional verify_command/verify_path. Per‑VM overrides take precedence; conflicts validated.
+  - Artifact discovery: Script/payload resolved under project_root/bootstrap/<vm>/ by default; optional bootstrap.toml alongside script provides ssh/verify/remote_dir/env overrides. Payload directory is optional; missing payload is a warning, not fatal.
+  - SSH inference: Defaults (root@127.0.0.1:22) with StrictHostKeyChecking=no/UserKnownHostsFile=/dev/null; if SSH host/port unchanged and a TCP forward to guest 22 exists, host port is inferred from port_forwards.
+  - Steps and outcomes: WaitHandshake → Connect (ssh true) → Transfer (scp script + payload) → Apply (exec staged run.sh; recognizes Castra:noop sentinel) → Verify (optional command/path). Events and per‑VM JSON logs capture steps, durations, and final status Success|NoOp; durable logs written under logs/bootstrap.
+  - Failure handling: Each failed step emits BootstrapFailed and writes a single per‑VM log with diagnostic detail and hints; handshake timeout is explicit and bounded by config/metadata.
+  Remaining (UX/plan mode):
+  - Add --plan dry‑run that reports intent and resolved inputs without side effects.
+  - TTY progress lines and concise completion summaries with hints and durable log paths (non‑JSON only). Help/docs updates and Quick Start/Troubleshooting.
   Acceptance:
-  - No host‑side stamp reads/writes. Repeated `up` invocations in auto/always attempt bootstrap again without consulting persistence.
-  - Overrides honored with precedence (per‑VM over global); conflicts rejected preflight; responsive status during long runs.
-  - UX: `--plan` produces deterministic summary without side effects; TTY progress and final summaries appear only in non‑JSON mode; failures show concise hint + log path; help/docs include examples and troubleshooting.
-  Anchors: docs/BOOTSTRAP.md; src/core/status.rs (handshake fields); src/core/reporter.rs; src/app/up.rs; src/cli.rs; src/app/error.rs.
+  - No stamp persistence; Auto/Always re‑attempts; per‑VM overrides honored with precedence; failures are observable with durable logs; JSON schema unchanged.
+  Anchors: src/config.rs; src/core/bootstrap.rs; src/core/status.rs; src/core/reporter.rs; src/app/up.rs; src/cli.rs; docs/BOOTSTRAP.md.
 
 - Thread 13 — Stateless runs (ephemeral VM write layer + cleanup): Ensure all disk changes inside a VM vanish once it stops, independent of any bootstrap decision persistence.
   Intent:
   - Default VM launches use a non‑persistent write layer over managed base images; guest mutations are discarded on shutdown (graceful or forced).
-  - Deterministic teardown removes ephemeral layers and per‑VM temp dirs immediately post‑exit; bounded orphan cleanup on next command after crashes/reboots.
-  - CLEAN reports reclaimed bytes from ephemeral layers; output provides brief TTY notice after cleanup. Provide opt‑in persistent mode with prominent warnings.
-  Acceptance (expanded):
-  - Restarting a VM from the same base yields a pristine filesystem matching the base; host‑side durable artifacts are limited to logs/events (no stamps).
-  - No residual ephemeral artifacts remain after normal shutdown; orphaned layers are detected and reclaimed opportunistically without blocking healthy ops.
-  - CLI/opts expose ephemeral (default) vs persistent; persistent mode is clearly indicated in output and logs.
-  - CLEAN reports reclaimed bytes for ephemeral layers alongside managed‑image evidence; totals add up and remain stable.
-  - Behavioral tests cover pristine‑restart, crash‑orphan reclamation, persistent‑mode signaling, and stable JSON schemas.
+  - Deterministic teardown removes ephemeral layers and per‑VM temp dirs post‑exit; bounded orphan cleanup on next command after crashes/reboots.
+  - CLEAN reports reclaimed bytes from ephemeral layers; provide opt‑in persistent mode with prominent warnings.
+  Acceptance:
+  - Pristine restarts from the same base; no residual ephemeral artifacts after normal shutdown; opportunistic orphan reclamation without blocking healthy ops.
+  - CLI/opts expose ephemeral (default) vs persistent; persistent mode clearly indicated in output and logs.
+  - CLEAN integrates reclaimed‑bytes reporting; stable JSON schemas preserved.
   Anchors: src/core/operations/up.rs; src/app/up.rs; src/core/operations/clean.rs; src/app/clean.rs; src/core/runtime.rs; src/app/down.rs; docs/BOOTSTRAP.md; CLEAN.md; CLI help.
 
 Current code state (observable surfaces)
 - CLI/library split via feature gating; default includes CLI; library builds with no‑default‑features.
-- Status exposes broker reachability (reachable, last_handshake_age_ms) and bus health; designed to remain non‑blocking.
-- Ports view with stable columns; Clean command with byte accounting/safeguards; links managed‑image evidence (root disk, bytes, verification delta) where available.
-- Managed images emit structured verification/profile events with plans, reports, checksums, steps; app/up.rs renders size/duration and steps; automation can consume JSON streams.
-- Down command emits cooperative shutdown events before escalation and renders per‑VM shutdown durations; performs parallel shutdown with live event streaming; forced shutdown returns success with warning.
-- Bootstrap pipeline supports overrides (global and per‑VM) with precedence and conflict detection; surfaces handshake timeout failures with explicit events and durable run logs; executes per‑VM concurrently with live event streaming; outcomes returned in original order. No stamp persistence.
-- Stateless runs (Thread 13) not yet implemented; defaults will favor ephemeral layers with host‑durable logs/events only.
+- Status exposes broker reachability and bus health; designed to remain non‑blocking.
+- Ports view with stable columns; Clean command with byte accounting/safeguards; links managed‑image evidence when available.
+- Managed images emit structured verification/profile events; app/up.rs renders size/duration and steps; automation can consume JSON streams.
+- Down command emits cooperative shutdown events before escalation and renders per‑VM shutdown durations; forced shutdown returns success with warning.
+- Bootstrap (stamp‑free) now driven by config + optional per‑VM metadata and local script/payload directories; SSH defaults hardened; port‑forward inference supported. Per‑VM durable logs written; NoOp reported via script sentinel; JSON schema unchanged.
+- Stateless runs (Thread 13) design captured; not yet implemented.
 
 Narrative themes
 1) Robust VM lifecycle — predictable, observable cooperative shutdown with bounded waits and clear outcomes.
-10) Trustworthy bootstrap — verified managed images with structured events powering automation and cleanup; idempotence comes from the runner, not host stamps.
+10) Trustworthy bootstrap — verified managed images with structured events powering automation; idempotence comes from the runner, not host stamps.
 12) Day‑1 productivity — host‑driven post‑boot configuration triggered by real connectivity signals, with improved usability and discoverability.
 13) Stateless runs by default — ephemeral guests with durable host evidence (logs/events), enabling clean, reproducible sessions without stamp state.
 
 Direction of travel
 - Thread 2: expose timeouts in CLI/options, render fields consistently, and document payloads; keep exit‑success semantics on forced shutdowns.
 - Thread 10: add smoke tests across reporters and document stable fields with examples in docs and CLEAN.md.
-- Thread 12: purge stamp code/docs/tests; ensure reruns behave as stamp‑free; deliver UX polish (simplified flags, plan mode, TTY progress, actionable hints, docs) without altering JSON schema.
-- Thread 13: implement ephemeral write layer default with deterministic cleanup; add CLI/opts for persistence; integrate reclaimed‑bytes reporting into CLEAN; show TTY notices; ensure crash/reboot orphan reclamation.
+- Thread 12: deliver --plan and TTY UX polish; update docs/help; keep JSON schema stable; continue refining hints and durable log paths.
+- Thread 13: implement ephemeral write‑layer default with deterministic cleanup; add CLI/opts for persistence; integrate reclaimed‑bytes reporting into CLEAN; add TTY notices; ensure crash/reboot orphan reclamation.
 
 Cross‑links
-- CLEAN integrates with managed‑image events to present reclaimed‑bytes evidence via app surface; extend to ephemeral layer reclamation (Thread 13).
+- CLEAN to integrate ephemeral layer reclamation (Thread 13) alongside managed‑image evidence.
 - Lifecycle canonical TODO: todo_cooperative_shutdown_lifecycle.md (sequencing shipped; configurability/rendering/docs next).
 - Thread 12 canonical TODO: todo_post_boot_bootstrap_pipeline.md (stamp‑free pipeline + UX polish/plan mode).
-- Thread 13 canonical TODO: todo_ephemeral_vm_storage_and_cleanup.md (stateless runs + cleanup + CLEAN integration; no stamp artifacts).
+- Thread 13 canonical TODO: todo_ephemeral_vm_storage_and_cleanup.md (stateless runs + cleanup; no stamp artifacts).
 
 Editorial housekeeping
 - Canonical TODO files remain:
   - todo_cooperative_shutdown_lifecycle.md
   - todo_post_boot_bootstrap_pipeline.md
   - todo_ephemeral_vm_storage_and_cleanup.md
-- Snapshot version remains v0.8.9 (policy clarified; no code change).
+- Snapshot updated to v0.9.0 to record shipped stamp‑free bootstrap behavior and new config/metadata surfaces.
