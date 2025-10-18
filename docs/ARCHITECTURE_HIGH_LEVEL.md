@@ -1,6 +1,6 @@
 # Castra Architecture (High-Level)
 
-Castra is a CLI-forward orchestration harness that wraps QEMU-based guests with managed images, reproducible state roots, and a structured observability surface. This document walks the repository from the user experience down to the runtime that manipulates QEMU processes and the brokered host/guest bus.
+Castra is a CLI-forward orchestration harness that wraps QEMU-based guests with reproducible state roots, a cached base image pipeline, and a structured observability surface. This document walks the repository from the user experience down to the runtime that manipulates QEMU processes and the brokered host/guest bus.
 
 ## System Overview
 
@@ -10,7 +10,7 @@ At a high level, Castra layers the following subsystems:
 - **Application Adapters** – Command-specific handlers under `src/app/` translate CLI arguments into typed core options, invoke operations, and render events/diagnostics for humans.
 - **Core Operations API** – `src/core/` exposes pure library functions (init/up/down/status/etc.) that accept typed `Options`, emit structured `Event`s via a `Reporter`, accumulate `Diagnostic`s, and return typed `Outcome`s.
 - **Configuration & Project Model** – `src/config.rs` and `src/core/project.rs` discover, parse, validate, and synthesize `ProjectConfig` structures that describe VMs, lifecycle policy, bootstrap behaviour, and broker settings.
-- **Managed Artifact & Runtime Layer** – `src/managed/` and `src/core/runtime.rs` resolve image artifacts (local or remote), prepare overlays, ensure host headroom, and spawn/tear down QEMU processes with cooperative shutdown semantics.
+- **Runtime Layer** – `src/core/runtime.rs` resolves base image paths (downloading the default Alpine qcow2 on demand), prepares overlays, ensures host headroom, and spawns/tears down QEMU processes with cooperative shutdown semantics.
 - **Bootstrap & Post-Boot Automation** – `src/core/bootstrap.rs` runs per-VM bootstrap pipelines (e.g. Nix flakes) once broker handshakes prove connectivity.
 - **Broker & Bus** – `src/core/broker.rs` plus `src/core/operations/bus.rs` implement a lightweight TCP broker that mediates host/guest JSON frames, logs handshakes, and provides CLI helpers.
 - **Observability & Maintenance** – Event stream definitions (`src/core/events.rs`), diagnostics (`src/core/diagnostics.rs`), reporter plumbing, status/log collectors, and the clean workflow tie the lifecycle together.
@@ -21,7 +21,7 @@ The sections below dive into each layer and call out the principal modules, data
 
 - `src/main.rs` boots Clap's `Cli`, ensures a subcommand is present, and dispatches to `src/app` handlers. Errors are normalized to `ExitCode`s via `app::error::exit_code`.
 - `src/cli.rs` defines the CLI contract: top-level flags (e.g. `--config`) and subcommand enums. It also performs light parsing such as bootstrap override parsing into `BootstrapOverrideArg`.
-- `src/lib.rs` re-exports the `core` module plus config/error/managed APIs for embedding. The crate can be built without the CLI feature, allowing Castra to be consumed as a library.
+- `src/lib.rs` re-exports the `core` module plus config/error APIs for embedding. The crate can be built without the CLI feature, allowing Castra to be consumed as a library.
 
 ## Application Layer (`src/app`)
 
@@ -39,28 +39,28 @@ The `core` module is the public programmatic interface. Key building blocks:
 
 - **Options (`src/core/options.rs`)** – strongly typed option structs per command (e.g. `UpOptions`, `DownOptions`, `CleanOptions`). They carry config discovery hints, override knobs, and bootstrap overrides in a normalized form.
 - **Diagnostics (`src/core/diagnostics.rs`)** – severity-tagged messages with optional path/help metadata. Diagnostics travel alongside outcomes without aborting the workflow.
-- **Events (`src/core/events.rs`)** – structured telemetry covering lifecycle, managed image acquisition, bootstrap steps, cleanup evidence, etc. These drive both CLI rendering and machine consumption (JSON).
+- **Events (`src/core/events.rs`)** – structured telemetry covering lifecycle, cached image downloads, bootstrap steps, cleanup progress, etc. These drive both CLI rendering and machine consumption (JSON).
 - **Reporter (`src/core/reporter.rs`)** – minimal trait that callers implement to observe emitted events; the CLI uses an adapter that buffers events while keeping streaming semantics.
 - **Outcomes (`src/core/outcome.rs`)** – typed results for each command (e.g. `UpOutcome`, `DownOutcome`, `CleanOutcome`) so downstream tooling can inspect state without parsing text.
-- **Operations (`src/core/operations/`)** – orchestrators for each command. `mod.rs` stitches together configuration loading, runtime preparation, managed images, broker lifecycle, bootstrap runs, shutdown, port summaries, log collection, bus publishing, and cleaning. Each operation returns an `OperationOutput<T>` bundling the outcome, diagnostics, and events.
+- **Operations (`src/core/operations/`)** – orchestrators for each command. `mod.rs` stitches together configuration loading, runtime preparation, broker lifecycle, bootstrap runs, shutdown, port summaries, log collection, bus publishing, and cleaning. Each operation returns an `OperationOutput<T>` bundling the outcome, diagnostics, and events.
 
 ### Configuration & Project Model
 
-- `src/config.rs` defines the canonical config schema (`ProjectConfig`, `VmDefinition`, `LifecycleConfig`, `BootstrapMode`, etc.) and provides parsing, validation, and helper defaults (timeouts, managed image descriptors).
+- `src/config.rs` defines the canonical config schema (`ProjectConfig`, `VmDefinition`, `LifecycleConfig`, `BootstrapMode`, etc.) and provides parsing, validation, and helper defaults (timeouts, base image/overlay derivation).
 - `src/core/project.rs` resolves the effective config via `ConfigLoadOptions`. It supports discovery up the directory tree, explicit paths, and synthetic defaults (`synthesize_default_project`) when running in library contexts. The module also surfaces helper utilities such as `config_state_root` (where per-project state is stored) and `default_config_contents` for `castra init`.
 - Configuration warnings are converted into diagnostics so the CLI can separate "config health" messages from operational warnings.
 
-### Managed Image & Asset Preparation
+### Base Image & Asset Preparation
 
-- `src/managed/mod.rs` implements `ImageManager`, which downloads, verifies (checksums, sizes), transforms, and caches managed artifacts. It uses `ureq` for HTTP and optionally `qemu-img` for conversions. Structured `ManagedArtifactEvent`s map directly to `Event::ManagedArtifact` updates.
-- `core/runtime::ensure_vm_assets` combines managed image acquisition with overlay preparation and optional boot overrides (kernel/initrd/append).
-- Managed acquisition outcomes feed into `core/events` and `core/outcome::VmLaunchOutcome`, ensuring upstream automation sees which managed spec backed each VM.
+- `core/config` resolves a `BaseImageSource` per VM, marking provenance (`DefaultAlpine` vs `Explicit`).
+- `core/runtime::ensure_vm_assets` ensures the base image exists (downloading/verifying the default Alpine qcow2 when necessary), prepares overlays, and streams download status via `Event::Message`.
+- `core/outcome::VmLaunchOutcome` records the resolved base image path and provenance so automation can audit which qcow backed each VM.
 
 ### Runtime & Host Integration
 
 The runtime (`src/core/runtime.rs`) bridges higher-level operations to actual host processes:
 
-- **Context preparation** – `prepare_runtime_context` creates the state root (logs, images), locates QEMU binaries, chooses accelerators, and configures the `ImageManager`.
+- **Context preparation** – `prepare_runtime_context` creates the state root (logs, images), locates QEMU binaries, and chooses accelerators.
 - **Preflight checks** – `check_host_capacity`, `check_disk_space`, and `ensure_ports_available` enforce headroom and exclusive port usage before launch.
 - **Broker lifecycle** – `start_broker` spawns a detached `castra broker` subprocess with pid/log paths under the state root; `shutdown_broker` tears it down.
 - **VM launch** – `launch_vm` builds the QEMU command (daemonized, virtio devices, serial log, QMP socket on Unix) and records pidfiles/logs. It emits `Event::VmLaunched` when successful.
@@ -72,7 +72,7 @@ Unix-specific QMP interactions handle cooperative ACPI powerdown; on non-Unix pl
 ### Bootstrap Pipeline
 
 - `src/core/bootstrap.rs` executes per-VM bootstrap plans after guests prove connectivity through broker handshakes (`status::HANDSHAKE_FRESHNESS`). It runs workers in parallel (scoped threads), streams bootstrap events over an `mpsc::channel`, and records durable logs under the state root—without persisting host-side stamps.
-- Bootstrap respects `BootstrapMode` (skip/auto/always), gating on managed image availability and handshake freshness. Outcomes (`BootstrapRunOutcome`) distinguish `Success`, `NoOp`, and `Skipped`, and diagnostics explain missing plans or failed steps.
+- Bootstrap respects `BootstrapMode` (skip/auto/always), gating on handshake freshness. Outcomes (`BootstrapRunOutcome`) distinguish `Success`, `NoOp`, and `Skipped`, and diagnostics explain missing plans or failed steps.
 - Thread 12 progress (see `.vizier/.snapshot`) is reflected here: overrides (global/per-VM) are applied before launch (`apply_bootstrap_overrides`), reruns always attempt the pipeline, and failure modes surface as structured events (`BootstrapFailed`) with durable error logs.
 
 ### Broker & Bus
@@ -85,13 +85,13 @@ Unix-specific QMP interactions handle cooperative ACPI powerdown; on non-Unix pl
 
 - `src/core/status.rs` synthesizes a `StatusSnapshot` with per-VM rows (`VmStatusRow`) summarizing VM state, uptime, broker reachability, handshake recency, and bus health. It consumes pidfiles plus broker handshake JSON for durable evidence.
 - `src/core/logs.rs` aggregates per-VM and broker logs, returning `LogSection`s and optional `LogFollower`s for tail -f semantics (`castra logs --follow`).
-- Events defined in `src/core/events.rs` ensure all long-running operations stream machine-readable telemetry (managed image verification/profile, bootstrap steps, cooperative shutdown, cleanup evidence). This underpins both CLI rendering and automation that consumes JSON.
+- Events defined in `src/core/events.rs` ensure all long-running operations stream machine-readable telemetry (cached image downloads, bootstrap steps, cooperative shutdown, cleanup progress). This underpins both CLI rendering and automation that consumes JSON.
 - Diagnostics accompany every operation and are rendered in `app/common.rs` (with helpers to group config warnings separately).
 
 ### Cleaning & State Maintenance
 
-- `src/core/operations/clean.rs` removes stale state roots, managed caches, and log files. It supports dry-run mode, workspace-only cleaning (current project), or global pruning under `~/.castra/projects`.
-- The cleaner coordinates with runtime helpers to avoid disrupting live VMs, records reclaimed bytes, and emits `Event::CleanupManagedImageEvidence` when managed artifacts are purged so automation can reconcile reclaimed storage.
+- `src/core/operations/clean.rs` removes cached images, overlays, logs, and pidfiles. It supports dry-run mode, workspace-only cleaning (current project), or global pruning under `~/.castra/projects`.
+- The cleaner coordinates with runtime helpers to avoid disrupting live VMs, records reclaimed bytes, and emits `Event::CleanupProgress` entries so automation can reconcile storage changes.
 
 ## Command Flows
 
@@ -101,7 +101,7 @@ Unix-specific QMP interactions handle cooperative ACPI powerdown; on non-Unix pl
 2. `app::up::handle_up` builds `UpOptions` and calls `core::operations::up`.
 3. The operation loads/validates the project (`load_project_for_operation`), applies bootstrap overrides, and runs status preflight (`status_core::collect_status`) to ensure no guests are already running.
 4. Runtime preflights host capacity, disk headroom, and port conflicts.
-5. For each VM, `ensure_vm_assets` provisions overlays and optional managed artifacts, emitting acquisition/verification events.
+5. For each VM, `ensure_vm_assets` makes sure the base image is ready (downloading the default Alpine qcow2 if needed), provisions overlays, and emits events for overlays/download progress.
 6. Broker is launched (if not already running), then each VM is started (`launch_vm`), streaming `VmLaunched` events.
 7. Bootstrap workers execute as needed, publishing structured status events and capturing diagnostics.
 8. The aggregated `UpOutcome` reports launched VMs, broker PID, bootstrap summaries, diagnostics, and the event log for rendering.
@@ -133,17 +133,17 @@ Unix-specific QMP interactions handle cooperative ACPI powerdown; on non-Unix pl
 - **Concurrency** – Operations favor scoped threads (`std::thread::scope`) and channels for parallel VM work (bootstrap runs, shutdowns) while streaming events to the reporter.
 - **Error Handling** – `src/error.rs` centralizes failure types; operations propagate `Error` while still returning accumulated diagnostics/events for partial progress.
 - **Testing** – Rust unit tests exist where parsing/logic is localized (e.g. CLI bootstrap override parsing). Broader behaviours rely on integration/smoke tests (not in-tree here) and instrumentation described in `.vizier/.snapshot` threads.
-- **Docs & Roadmap** – `.vizier/.snapshot` highlights active threads (cooperative shutdown lifecycle, managed image events, bootstrap pipeline). Canonical TODO files under `.vizier/` provide implementation breadcrumbs that align with the architecture above.
+- **Docs & Roadmap** – `.vizier/.snapshot` highlights active threads (cooperative shutdown lifecycle, bootstrap pipeline, stateless overlay messaging). Canonical TODO files under `.vizier/` provide implementation breadcrumbs that align with the architecture above.
 
 ## Extensibility Notes
 
 - Adding a new CLI command typically means creating a handler in `src/app`, a typed options/outcome struct in `src/core`, and wiring the behaviour into `src/core/operations`.
 - Integrations can consume Castra as a library by disabling the default CLI feature and calling `castra::core::operations::*` with custom reporters.
-- Managed image extensions (new artifact kinds, transformations) belong in `src/managed` and piggyback on the existing event pipeline.
+- Enhancements to base image caching (alternate defaults, mirror selection) live in `src/core/runtime` / `src/config` so they stay aligned with overlay preparation.
 
 ## QEMU & System Dependencies
 
-- Castra expects `qemu-system-*` on `PATH` (auto-detected across x86/aarch64) and optionally `qemu-img` for managed image conversions. Missing binaries surface as `PreflightFailed` errors during runtime context preparation.
+- Castra expects `qemu-system-*` on `PATH` (auto-detected across x86/aarch64) and optionally `qemu-img` for overlay creation. Missing binaries surface as `PreflightFailed` errors during runtime context preparation.
 - Cooperative shutdown currently relies on QMP sockets (Unix); non-Unix platforms fall back to signal-only shutdown paths with explicit `CooperativeMethod::Unavailable` events.
 
-By following the layers above, contributors can trace any CLI command from user input through configuration, runtime orchestration, managed assets, and down to the QEMU process tree, while understanding where observability and cleanup hook into the lifecycle.
+By following the layers above, contributors can trace any CLI command from user input through configuration, runtime orchestration, base image caching, and down to the QEMU process tree, while understanding where observability and cleanup hook into the lifecycle.
