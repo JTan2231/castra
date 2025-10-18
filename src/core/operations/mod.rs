@@ -1,5 +1,6 @@
+use std::env;
 use std::panic;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
@@ -33,8 +34,78 @@ use super::runtime::{
     shutdown_vm, start_broker,
 };
 use super::status as status_core;
-use crate::config::{self, ProjectConfig};
+use crate::config::{self, BaseImageProvenance, BaseImageSource, ProjectConfig};
 use crate::error::{Error, Result};
+
+fn resolve_qcow_override_path(raw: &Path) -> Result<PathBuf> {
+    let candidate = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        let cwd = env::current_dir().map_err(|err| Error::PreflightFailed {
+            message: format!(
+                "Unable to resolve --qcow path {} relative to the current directory: {err}",
+                raw.display()
+            ),
+        })?;
+        cwd.join(raw)
+    };
+
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|err| Error::PreflightFailed {
+            message: format!("Failed to resolve --qcow path {}: {err}", raw.display()),
+        })?;
+
+    if !canonical.is_file() {
+        return Err(Error::PreflightFailed {
+            message: format!(
+                "QCOW override {} is not a regular file. Provide a valid qcow2 image.",
+                canonical.display()
+            ),
+        });
+    }
+
+    Ok(canonical)
+}
+
+fn apply_alpine_qcow_override(
+    project: &mut ProjectConfig,
+    override_path: &Path,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<()> {
+    let resolved = resolve_qcow_override_path(override_path)?;
+    let mut replaced = 0usize;
+
+    for vm in &mut project.vms {
+        if vm.base_image.provenance() == BaseImageProvenance::DefaultAlpine {
+            vm.base_image = BaseImageSource::from_explicit(resolved.clone());
+            replaced += 1;
+        }
+    }
+
+    if replaced == 0 {
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Warning,
+                format!(
+                    "--qcow {} ignored: no VMs rely on the bundled Alpine image.",
+                    override_path.display()
+                ),
+            )
+            .with_help("Remove --qcow or update castra.toml to use the default Alpine base image."),
+        );
+    } else {
+        diagnostics.push(Diagnostic::new(
+            Severity::Info,
+            format!(
+                "Using {} for {replaced} VM(s) in place of the bundled Alpine qcow2.",
+                resolved.display()
+            ),
+        ));
+    }
+
+    Ok(())
+}
 
 pub fn init(
     mut options: InitOptions,
@@ -104,6 +175,9 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
 
     let (mut project, _) = load_project_for_operation(&options.config, &mut diagnostics)?;
     apply_bootstrap_overrides(&mut project, &options.bootstrap)?;
+    if let Some(ref qcow) = options.alpine_qcow_override {
+        apply_alpine_qcow_override(&mut project, qcow, &mut diagnostics)?;
+    }
 
     let mut reporter_proxy = ReporterProxy::new(reporter, &mut events);
 
@@ -624,4 +698,107 @@ pub fn bus_tail(
     reporter: Option<&mut dyn Reporter>,
 ) -> OperationResult<BusTailOutcome> {
     bus::tail(options, reporter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        BootstrapConfig, BootstrapMode, BrokerConfig, DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+        DEFAULT_BROKER_PORT, LifecycleConfig, MemorySpec, VmBootstrapConfig, VmDefinition,
+        Workflows,
+    };
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use tempfile::NamedTempFile;
+
+    fn sample_project_with_default_alpine() -> ProjectConfig {
+        ProjectConfig {
+            file_path: PathBuf::from("castra.toml"),
+            project_root: PathBuf::from("."),
+            version: "0.1.0".to_string(),
+            project_name: "demo".to_string(),
+            vms: vec![VmDefinition {
+                name: "vm".to_string(),
+                role_name: "vm".to_string(),
+                replica_index: 0,
+                description: None,
+                base_image: BaseImageSource::from_default_alpine(PathBuf::from(
+                    "/tmp/state/images/alpine-x86_64.qcow2",
+                )),
+                overlay: PathBuf::from("/tmp/state/overlays/vm-overlay.qcow2"),
+                cpus: 1,
+                memory: MemorySpec::new("512MiB", Some(512 * 1024 * 1024)),
+                port_forwards: Vec::new(),
+                bootstrap: VmBootstrapConfig {
+                    mode: BootstrapMode::Skip,
+                    script: None,
+                    payload: None,
+                    handshake_timeout_secs: DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+                    remote_dir: PathBuf::from("/tmp/castra-bootstrap"),
+                    env: HashMap::new(),
+                    verify: None,
+                },
+            }],
+            state_root: PathBuf::from("/tmp/state"),
+            workflows: Workflows { init: Vec::new() },
+            broker: BrokerConfig {
+                port: DEFAULT_BROKER_PORT,
+            },
+            lifecycle: LifecycleConfig::default(),
+            bootstrap: BootstrapConfig::default(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn sample_project_with_explicit_images(path: &Path) -> ProjectConfig {
+        let mut project = sample_project_with_default_alpine();
+        for vm in &mut project.vms {
+            vm.base_image = BaseImageSource::from_explicit(path.to_path_buf());
+        }
+        project
+    }
+
+    #[test]
+    fn qcow_override_assigns_explicit_base_images() {
+        let file = NamedTempFile::new().unwrap();
+        let canonical = file.path().canonicalize().unwrap();
+        let mut project = sample_project_with_default_alpine();
+        let mut diagnostics = Vec::new();
+
+        apply_alpine_qcow_override(&mut project, file.path(), &mut diagnostics).unwrap();
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, Severity::Info);
+        for vm in &project.vms {
+            assert_eq!(vm.base_image.provenance(), BaseImageProvenance::Explicit);
+            assert_eq!(vm.base_image.path(), canonical);
+        }
+    }
+
+    #[test]
+    fn qcow_override_errors_when_file_missing() {
+        let mut project = sample_project_with_default_alpine();
+        let mut diagnostics = Vec::new();
+        let result =
+            apply_alpine_qcow_override(&mut project, Path::new("missing.qcow2"), &mut diagnostics);
+        match result {
+            Err(Error::PreflightFailed { .. }) => {}
+            other => panic!("expected PreflightFailed, got {other:?}"),
+        }
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn qcow_override_warns_when_unused() {
+        let file = NamedTempFile::new().unwrap();
+        let mut project = sample_project_with_explicit_images(file.path());
+        let mut diagnostics = Vec::new();
+
+        apply_alpine_qcow_override(&mut project, file.path(), &mut diagnostics).unwrap();
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, Severity::Warning);
+        assert!(diagnostics[0].message.contains("ignored"));
+    }
 }

@@ -104,6 +104,14 @@ pub struct UpArgs {
     )]
     pub plan: bool,
 
+    /// Use a pre-downloaded qcow2 instead of fetching the bundled Alpine image.
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Use PATH as the default Alpine qcow2 instead of downloading the bundled image."
+    )]
+    pub qcow: Option<PathBuf>,
+
     /// Override bootstrap behavior without editing castra.toml.
     #[arg(
         long,

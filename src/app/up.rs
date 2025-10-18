@@ -16,12 +16,21 @@ use crate::core::project::format_config_warnings;
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
 
 pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> {
-    let bootstrap_overrides = build_bootstrap_overrides(&args.bootstrap)?;
+    let UpArgs {
+        skip_discovery,
+        force,
+        plan,
+        qcow,
+        bootstrap,
+    } = args;
+
+    let bootstrap_overrides = build_bootstrap_overrides(&bootstrap)?;
     let options = UpOptions {
-        config: config_load_options(config_override, args.skip_discovery, "up")?,
-        force: args.force,
+        config: config_load_options(config_override, skip_discovery, "up")?,
+        force,
         bootstrap: bootstrap_overrides,
-        plan: args.plan,
+        plan,
+        alpine_qcow_override: qcow,
     };
 
     let output = operations::up(options, None)?;
@@ -34,7 +43,7 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
 
     render_up(&output.value, &output.events);
 
-    if args.plan {
+    if plan {
         let failed: Vec<&str> = output
             .value
             .plans

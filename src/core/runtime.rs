@@ -47,9 +47,10 @@ const DISK_WARN_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
 const DISK_FAIL_THRESHOLD: u64 = 500 * 1024 * 1024;
 const MEMORY_WARN_HEADROOM: u64 = 1 * 1024 * 1024 * 1024;
 const MEMORY_FAIL_HEADROOM: u64 = 512 * 1024 * 1024;
-const DEFAULT_ALPINE_URL: &str = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/generic_alpine-3.22.0-x86_64-bios-tiny-r0.qcow2";
-const DEFAULT_ALPINE_SHA512: &str = "8061e92e35cf7a3994d5f59154889d9e770c515ef538e6943cdc0dd4bc7da03de984989cbd2c6afefaed9fa5fd52bd0c1e4e3b97db8afb2c19a7eb2b77345175";
-const DEFAULT_ALPINE_SIZE_BYTES: u64 = 119_472_128;
+const DEFAULT_ALPINE_URL: &str =
+    "https://github.com/JTan2231/castra/releases/download/alpine-x86_64.qcow2/alpine-x86_64.qcow2";
+const DEFAULT_ALPINE_SHA512: &str = "10cd2d31e1d61c9dc323c4467cdc350c238e4234beb89bf6808681440180b477d51b3a16b7e522ebfd0c39dec3c22d593de87947a3f60d2ec67cde08685cc6c7";
+const DEFAULT_ALPINE_SIZE_BYTES: u64 = 94_240_768;
 
 #[derive(Debug)]
 pub struct AssetPreparation {

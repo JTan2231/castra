@@ -81,6 +81,8 @@ pub struct UpOptions {
     pub bootstrap: BootstrapOverrides,
     /// Plan mode renders bootstrap intent without side effects.
     pub plan: bool,
+    /// Override for the bundled Alpine qcow2 used by default VM definitions.
+    pub alpine_qcow_override: Option<PathBuf>,
 }
 
 impl Default for UpOptions {
@@ -90,6 +92,7 @@ impl Default for UpOptions {
             force: false,
             bootstrap: BootstrapOverrides::default(),
             plan: false,
+            alpine_qcow_override: None,
         }
     }
 }

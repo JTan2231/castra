@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::error::Error;
 
 pub const DEFAULT_IMAGE_SUBDIR: &str = "images";
-pub const DEFAULT_ALPINE_IMAGE_FILENAME: &str = "alpine-minimal.qcow2";
+pub const DEFAULT_ALPINE_IMAGE_FILENAME: &str = "alpine-x86_64.qcow2";
 const DEFAULT_OVERLAY_SUBDIR: &str = "overlays";
 const DEFAULT_OVERLAY_SUFFIX: &str = "overlay";
 const DEFAULT_OVERLAY_EXTENSION: &str = "qcow2";
@@ -2199,10 +2199,7 @@ count = 3
                 vm.base_image.path(),
                 dir.path().join("images/api-base.qcow2").as_path()
             );
-            assert_eq!(
-                vm.base_image.provenance(),
-                BaseImageProvenance::Explicit
-            );
+            assert_eq!(vm.base_image.provenance(), BaseImageProvenance::Explicit);
             let expected_overlay = match idx {
                 0 => state_root.join("api/overlay.qcow2"),
                 1 => state_root.join("api/overlay-1.qcow2"),
