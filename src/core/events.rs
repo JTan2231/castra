@@ -1,10 +1,4 @@
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
-
-use crate::managed::{
-    ManagedArtifactEventDetail, ManagedArtifactKind, ManagedImageProfileOutcome, ManagedImageSpec,
-    ManagedImageVerificationOutcome,
-};
 
 use crate::config::BootstrapMode;
 
@@ -18,87 +12,6 @@ pub enum Event {
         /// Severity of the message.
         severity: Severity,
         /// Human-readable text.
-        text: String,
-    },
-    /// Managed image verification started and expectations recorded.
-    ManagedImageVerificationStarted {
-        /// Identifier of the managed image being verified.
-        image_id: String,
-        /// Version of the managed image.
-        image_version: String,
-        /// Filesystem path to the managed image root disk on disk.
-        image_path: PathBuf,
-        /// When verification was initiated.
-        started_at: SystemTime,
-        /// Expected artifacts (paths, hashes, sizes) planned for verification.
-        plan: Vec<ManagedImageArtifactPlan>,
-    },
-    /// Outcome of managed image verification including artifacts.
-    ManagedImageVerificationResult {
-        /// Identifier of the managed image that was verified.
-        image_id: String,
-        /// Version of the managed image.
-        image_version: String,
-        /// Filesystem path to the managed image root disk on disk.
-        image_path: PathBuf,
-        /// When verification completed.
-        completed_at: SystemTime,
-        /// Milliseconds spent verifying artifacts.
-        duration_ms: u64,
-        /// Outcome of the verification.
-        outcome: ManagedImageVerificationOutcome,
-        /// Optional failure detail when outcome is unsuccessful.
-        error: Option<String>,
-        /// Total size of verified artifacts (bytes).
-        size_bytes: u64,
-        /// Artifact summaries including paths, sizes, and checksums.
-        artifacts: Vec<ManagedImageArtifactReport>,
-    },
-    /// Structured details about a boot profile being applied to a VM.
-    ManagedImageProfileApplied {
-        /// Identifier of the managed image providing the profile.
-        image_id: String,
-        /// Version of the managed image providing the profile.
-        image_version: String,
-        /// VM name receiving the profile.
-        vm: String,
-        /// Identifier of the applied profile.
-        profile_id: String,
-        /// When profile application started.
-        started_at: SystemTime,
-        /// Steps that will be applied to the VM boot configuration.
-        steps: Vec<String>,
-    },
-    /// Result of applying the managed image profile to a VM.
-    ManagedImageProfileResult {
-        /// Identifier of the managed image providing the profile.
-        image_id: String,
-        /// Version of the managed image providing the profile.
-        image_version: String,
-        /// VM name receiving the profile.
-        vm: String,
-        /// Identifier of the applied profile.
-        profile_id: String,
-        /// When profile application completed.
-        completed_at: SystemTime,
-        /// Milliseconds spent preparing the profile application.
-        duration_ms: u64,
-        /// Outcome of the profile application.
-        outcome: ManagedImageProfileOutcome,
-        /// Optional failure detail when outcome is unsuccessful.
-        error: Option<String>,
-        /// Steps that were applied to the VM boot configuration.
-        steps: Vec<String>,
-    },
-    /// Status update for managed artifact acquisition.
-    ManagedArtifact {
-        /// The artifact specification that is being provisioned.
-        spec: ManagedImageSpecHandle,
-        /// Which managed artifact the event refers to (root disk, kernel, ...).
-        artifact: ManagedArtifactKind,
-        /// Structured detail describing the progress step.
-        detail: ManagedArtifactEventDetail,
-        /// Human-readable progress message.
         text: String,
     },
     /// Notification that a VM overlay image was prepared.
@@ -279,69 +192,7 @@ pub enum Event {
         bytes: u64,
         /// Whether the action occurred in dry-run mode.
         dry_run: bool,
-        /// Evidence linking reclaimed bytes to managed image verification results, when available.
-        managed_evidence: Vec<CleanupManagedImageEvidence>,
     },
-}
-
-/// Planned managed image artifact verification entry.
-#[derive(Debug, Clone)]
-pub struct ManagedImageArtifactPlan {
-    /// Artifact kind (root disk, kernel, initrd, ...).
-    pub kind: ManagedArtifactKind,
-    /// Artifact filename as referenced in the manifest.
-    pub filename: String,
-    /// Resolved filesystem path, when known.
-    pub path: Option<PathBuf>,
-    /// Expected SHA-256 checksum for the artifact.
-    pub expected_sha256: Option<String>,
-    /// Expected size in bytes for the artifact.
-    pub expected_size_bytes: Option<u64>,
-}
-
-/// Verification summary for a managed image artifact.
-#[derive(Debug, Clone)]
-pub struct ManagedImageArtifactReport {
-    /// Artifact kind (root disk, kernel, initrd, ...).
-    pub kind: ManagedArtifactKind,
-    /// Artifact filename as recorded in the manifest.
-    pub filename: String,
-    /// Resolved filesystem path, when known.
-    pub path: Option<PathBuf>,
-    /// Observed size in bytes for the artifact.
-    pub size_bytes: Option<u64>,
-    /// Checksums recorded during verification.
-    pub checksums: Vec<ManagedImageChecksum>,
-}
-
-/// Recorded checksum for a managed image artifact.
-#[derive(Debug, Clone)]
-pub struct ManagedImageChecksum {
-    /// Algorithm label (e.g. `sha256`, `source_sha256`).
-    pub algo: String,
-    /// Hex-encoded checksum value.
-    pub value: String,
-}
-
-/// Evidence linking cleanup actions to prior managed image verification events.
-#[derive(Debug, Clone)]
-pub struct CleanupManagedImageEvidence {
-    /// Managed image identifier.
-    pub image_id: String,
-    /// Managed image version associated with the verification entry.
-    pub image_version: String,
-    /// Filesystem path to the managed image root disk.
-    pub root_disk_path: PathBuf,
-    /// Path to the log containing the verification record.
-    pub log_path: PathBuf,
-    /// Timestamp (UTC seconds since epoch) when verification completed.
-    pub verified_at: SystemTime,
-    /// Total artifact bytes recorded in the verification result (if present).
-    pub total_bytes: Option<u64>,
-    /// Artifact filenames recorded in the verification result.
-    pub artifacts: Vec<String>,
-    /// Absolute difference between verification completion and current on-disk timestamp.
-    pub verification_delta: Option<Duration>,
 }
 
 /// Trigger that initiated a bootstrap run.
@@ -506,8 +357,8 @@ impl EphemeralCleanupReason {
 /// Artifact categories that the cleanup pipeline operates on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CleanupKind {
-    /// Managed image cache contents.
-    ManagedImages,
+    /// Cached base images or downloaded artifacts.
+    Images,
     /// Orchestrator log directory.
     Logs,
     /// Broker handshake artifacts.
@@ -522,7 +373,7 @@ impl CleanupKind {
     /// Human-friendly label for rendering.
     pub fn describe(self) -> &'static str {
         match self {
-            CleanupKind::ManagedImages => "managed-images",
+            CleanupKind::Images => "images",
             CleanupKind::Logs => "logs",
             CleanupKind::Handshakes => "handshakes",
             CleanupKind::Overlay => "overlay",
@@ -565,33 +416,6 @@ impl ShutdownOutcome {
         match self {
             ShutdownOutcome::Graceful => "graceful",
             ShutdownOutcome::Forced => "forced",
-        }
-    }
-}
-
-/// Handle that identifies a managed image specification without leaking internal references.
-#[derive(Debug, Clone)]
-pub struct ManagedImageSpecHandle {
-    /// Stable managed image identifier.
-    pub id: String,
-    /// Managed image version.
-    pub version: String,
-    /// Human-readable description of the disk kind.
-    pub disk: String,
-}
-
-impl From<&'static ManagedImageSpec> for ManagedImageSpecHandle {
-    fn from(spec: &'static ManagedImageSpec) -> Self {
-        let disk = spec
-            .artifacts
-            .iter()
-            .find(|artifact| matches!(artifact.kind, ManagedArtifactKind::RootDisk))
-            .map(|artifact| artifact.kind.describe().to_string())
-            .unwrap_or_else(|| "root disk".to_string());
-        Self {
-            id: spec.id.to_string(),
-            version: spec.version.to_string(),
-            disk,
         }
     }
 }

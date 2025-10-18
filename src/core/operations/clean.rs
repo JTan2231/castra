@@ -1,13 +1,12 @@
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::error::{Error, Result};
 
 use crate::core::diagnostics::{Diagnostic, Severity};
-use crate::core::events::{CleanupKind, CleanupManagedImageEvidence, Event};
+use crate::core::events::{CleanupKind, Event};
 use crate::core::options::{CleanOptions, CleanScope, ConfigLoadOptions, ProjectSelector};
 use crate::core::outcome::{
     CleanOutcome, CleanupAction, OperationOutput, OperationResult, SkipReason, StateRootCleanup,
@@ -18,8 +17,6 @@ use crate::core::runtime::{
     BrokerProcessState, broker_handshake_dir_from_root, inspect_broker_state, inspect_vm_state,
 };
 use crate::core::status;
-
-use serde_json::Value;
 
 use super::{ReporterProxy, load_project_for_operation};
 
@@ -318,7 +315,7 @@ fn clean_state_root(
 
     reclaimed += process_target(
         &state_root.join("images"),
-        CleanupKind::ManagedImages,
+        CleanupKind::Images,
         options,
         reporter,
         &mut actions,
@@ -355,26 +352,15 @@ fn clean_state_root(
         )?;
     }
 
-    if options.managed_only {
-        for overlay in overlays {
-            actions.push(CleanupAction::Skipped {
-                path: overlay,
-                reason: SkipReason::ManagedOnly,
-                kind: CleanupKind::Overlay,
-                managed_evidence: Vec::new(),
-            });
-        }
-    } else {
-        for overlay in overlays {
-            reclaimed += process_target(
-                &overlay,
-                CleanupKind::Overlay,
-                options,
-                reporter,
-                &mut actions,
-                true,
-            )?;
-        }
+    for overlay in overlays {
+        reclaimed += process_target(
+            &overlay,
+            CleanupKind::Overlay,
+            options,
+            reporter,
+            &mut actions,
+            true,
+        )?;
     }
 
     Ok(StateRootCleanup {
@@ -427,17 +413,6 @@ fn process_target(
             path: path.to_path_buf(),
             reason: SkipReason::FlagDisabled,
             kind,
-            managed_evidence: Vec::new(),
-        });
-        return Ok(0);
-    }
-
-    if options.managed_only && !matches!(kind, CleanupKind::ManagedImages) {
-        actions.push(CleanupAction::Skipped {
-            path: path.to_path_buf(),
-            reason: SkipReason::ManagedOnly,
-            kind,
-            managed_evidence: Vec::new(),
         });
         return Ok(0);
     }
@@ -447,16 +422,9 @@ fn process_target(
             path: path.to_path_buf(),
             reason: SkipReason::Missing,
             kind,
-            managed_evidence: Vec::new(),
         });
         return Ok(0);
     }
-
-    let evidence = if matches!(kind, CleanupKind::ManagedImages) {
-        collect_managed_image_evidence(path)
-    } else {
-        Vec::new()
-    };
 
     let size = match measure_path(path) {
         Ok(bytes) => bytes,
@@ -465,7 +433,6 @@ fn process_target(
                 path: path.to_path_buf(),
                 reason: SkipReason::Io(err.to_string()),
                 kind,
-                managed_evidence: evidence,
             });
             return Ok(0);
         }
@@ -477,13 +444,11 @@ fn process_target(
             kind,
             bytes: size,
             dry_run: true,
-            managed_evidence: evidence.clone(),
         });
         actions.push(CleanupAction::Skipped {
             path: path.to_path_buf(),
             reason: SkipReason::DryRun,
             kind,
-            managed_evidence: evidence,
         });
         return Ok(0);
     }
@@ -501,13 +466,11 @@ fn process_target(
                 kind,
                 bytes: size,
                 dry_run: false,
-                managed_evidence: evidence.clone(),
             });
             actions.push(CleanupAction::Removed {
                 path: path.to_path_buf(),
                 bytes: size,
                 kind,
-                managed_evidence: evidence,
             });
             Ok(size)
         }
@@ -516,7 +479,6 @@ fn process_target(
                 path: path.to_path_buf(),
                 reason: SkipReason::Io(err.to_string()),
                 kind,
-                managed_evidence: evidence,
             });
             Ok(0)
         }
@@ -539,123 +501,9 @@ fn measure_path(path: &Path) -> io::Result<u64> {
     }
 }
 
-fn collect_managed_image_evidence(path: &Path) -> Vec<CleanupManagedImageEvidence> {
-    let state_root = match path.parent() {
-        Some(parent) => parent,
-        None => return Vec::new(),
-    };
-    let log_path = state_root.join("logs").join("image-manager.log");
-    let contents = match fs::read_to_string(&log_path) {
-        Ok(contents) => contents,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut latest: HashMap<(String, String), CleanupManagedImageEvidence> = HashMap::new();
-
-    for line in contents.lines() {
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if value.get("event").and_then(|entry| entry.as_str())
-            != Some("managed-image-verification-result")
-        {
-            continue;
-        }
-        let (Some(image_id), Some(image_version)) = (
-            value.get("image").and_then(|entry| entry.as_str()),
-            value.get("version").and_then(|entry| entry.as_str()),
-        ) else {
-            continue;
-        };
-
-        let timestamp = value
-            .get("completed_at")
-            .and_then(|entry| entry.as_u64())
-            .or_else(|| value.get("ts").and_then(|entry| entry.as_u64()));
-        let Some(ts) = timestamp else {
-            continue;
-        };
-        let verified_at: SystemTime = UNIX_EPOCH + Duration::from_secs(ts);
-
-        let mut artifacts = Vec::new();
-        let mut total_bytes: Option<u64> = Some(0);
-        let image_root = path.join(image_id).join(image_version);
-        let mut root_disk_path: Option<PathBuf> = None;
-        if let Some(entries) = value.get("artifacts").and_then(|entry| entry.as_array()) {
-            for artifact in entries {
-                if let Some(name) = artifact.get("filename").and_then(|field| field.as_str()) {
-                    artifacts.push(name.to_string());
-                }
-                if let Some(kind) = artifact.get("kind").and_then(|field| field.as_str()) {
-                    if root_disk_path.is_none() && kind.eq_ignore_ascii_case("root disk") {
-                        if let Some(name) =
-                            artifact.get("filename").and_then(|field| field.as_str())
-                        {
-                            root_disk_path = Some(image_root.join(name));
-                        }
-                    }
-                }
-                match artifact.get("size_bytes").and_then(|field| field.as_u64()) {
-                    Some(size) => {
-                        if let Some(acc) = total_bytes.as_mut() {
-                            *acc += size;
-                        }
-                    }
-                    None => {
-                        total_bytes = None;
-                    }
-                }
-            }
-        }
-
-        let root_disk_path = root_disk_path
-            .or_else(|| artifacts.first().map(|name| image_root.join(name)))
-            .unwrap_or(image_root.clone());
-        let verification_delta = fs::metadata(&root_disk_path)
-            .and_then(|meta| meta.modified())
-            .ok()
-            .map(|modified| system_time_abs_diff(modified, verified_at));
-
-        let evidence = CleanupManagedImageEvidence {
-            image_id: image_id.to_string(),
-            image_version: image_version.to_string(),
-            root_disk_path,
-            log_path: log_path.clone(),
-            verified_at,
-            total_bytes,
-            artifacts,
-            verification_delta,
-        };
-
-        match latest.entry((image_id.to_string(), image_version.to_string())) {
-            Entry::Occupied(mut occupied) => {
-                if evidence.verified_at > occupied.get().verified_at {
-                    occupied.insert(evidence);
-                }
-            }
-            Entry::Vacant(vacant) => {
-                vacant.insert(evidence);
-            }
-        }
-    }
-
-    latest.into_values().collect()
-}
-
-fn system_time_abs_diff(a: SystemTime, b: SystemTime) -> Duration {
-    match a.duration_since(b) {
-        Ok(delta) => delta,
-        Err(_) => b
-            .duration_since(a)
-            .unwrap_or_else(|_| Duration::from_secs(0)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-    use std::time::Duration;
     use tempfile::tempdir;
 
     fn base_options(scope: CleanScope) -> CleanOptions {
@@ -665,7 +513,6 @@ mod tests {
             include_overlays: false,
             include_logs: true,
             include_handshakes: true,
-            managed_only: false,
             force: true,
         }
     }
@@ -724,57 +571,5 @@ mod tests {
         assert!(!pidfile.exists());
         assert!(!result.value.state_roots.is_empty());
         assert!(result.value.state_roots[0].reclaimed_bytes > 0);
-    }
-
-    #[test]
-    fn collect_managed_evidence_includes_root_disk_path() {
-        let temp = tempdir().expect("tempdir");
-        let state_root = temp.path();
-        let images = state_root.join("images");
-        let logs = state_root.join("logs");
-        let image_dir = images.join("alpine").join("v1");
-        fs::create_dir_all(&image_dir).expect("image dir");
-        fs::create_dir_all(&logs).expect("logs dir");
-
-        let disk_path = image_dir.join("disk.qcow2");
-        fs::write(&disk_path, b"managed").expect("disk file");
-        let modified = fs::metadata(&disk_path)
-            .expect("metadata")
-            .modified()
-            .expect("modified");
-        let completed_secs = modified
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| Duration::from_secs(0))
-            .as_secs();
-
-        let log_entry = json!({
-            "ts": completed_secs,
-            "event": "managed-image-verification-result",
-            "image": "alpine",
-            "version": "v1",
-            "completed_at": completed_secs,
-            "artifacts": [{
-                "kind": "root disk",
-                "filename": "disk.qcow2",
-                "size_bytes": 7
-            }]
-        });
-        let log_path = logs.join("image-manager.log");
-        fs::write(&log_path, format!("{log_entry}\n")).expect("log write");
-
-        let evidence = collect_managed_image_evidence(&images);
-        assert_eq!(evidence.len(), 1);
-        let entry = &evidence[0];
-        assert_eq!(entry.image_id, "alpine");
-        assert_eq!(entry.image_version, "v1");
-        assert_eq!(entry.root_disk_path, disk_path);
-        assert_eq!(entry.total_bytes, Some(7));
-        assert_eq!(entry.artifacts, vec!["disk.qcow2".to_string()]);
-        assert!(
-            entry
-                .verification_delta
-                .map(|delta| delta < Duration::from_secs(1))
-                .unwrap_or(false)
-        );
     }
 }

@@ -73,24 +73,22 @@ fn render_down(events: &[Event]) {
                 vm,
                 method,
                 timeout_ms,
-            } => {
-                match method {
-                    CooperativeMethod::Acpi | CooperativeMethod::Agent => {
-                        println!(
-                            "→ {vm}: attempting cooperative shutdown via {} (wait up to {}).",
-                            method.describe(),
-                            format_duration_ms(*timeout_ms)
-                        );
-                    }
-                    CooperativeMethod::Unavailable => {
-                        println!(
-                            "→ {vm}: cooperative shutdown unavailable ({}; wait {}). Escalating immediately.",
-                            method.describe(),
-                            format_duration_ms(*timeout_ms)
-                        );
-                    }
+            } => match method {
+                CooperativeMethod::Acpi | CooperativeMethod::Agent => {
+                    println!(
+                        "→ {vm}: attempting cooperative shutdown via {} (wait up to {}).",
+                        method.describe(),
+                        format_duration_ms(*timeout_ms)
+                    );
                 }
-            }
+                CooperativeMethod::Unavailable => {
+                    println!(
+                        "→ {vm}: cooperative shutdown unavailable ({}; wait {}). Escalating immediately.",
+                        method.describe(),
+                        format_duration_ms(*timeout_ms)
+                    );
+                }
+            },
             Event::CooperativeSucceeded { vm, elapsed_ms } => {
                 println!(
                     "→ {vm}: guest confirmed shutdown in {}.",

@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::config::{BootstrapMode, BrokerConfig, PortForward};
-use crate::managed::ManagedImagePaths;
+use crate::config::{BaseImageProvenance, BootstrapMode, BrokerConfig, PortForward};
 
 use super::diagnostics::Diagnostic;
 use super::events::{
     BootstrapPlanAction, BootstrapPlanSsh, BootstrapPlanVerify, BootstrapTrigger, CleanupKind,
-    CleanupManagedImageEvidence, Event, ManagedImageSpecHandle, ShutdownOutcome,
+    Event, ShutdownOutcome,
 };
 use super::options::{BusLogTarget, PortsView};
 
@@ -73,14 +72,9 @@ pub struct UpOutcome {
 pub struct VmLaunchOutcome {
     pub name: String,
     pub pid: u32,
-    pub assets: ManagedVmAssets,
+    pub base_image: PathBuf,
+    pub base_image_provenance: BaseImageProvenance,
     pub overlay_created: bool,
-}
-
-#[derive(Debug)]
-pub struct ManagedVmAssets {
-    pub managed_spec: Option<ManagedImageSpecHandle>,
-    pub managed_paths: Option<ManagedImagePaths>,
 }
 
 #[derive(Debug)]
@@ -343,8 +337,6 @@ pub enum CleanupAction {
         bytes: u64,
         /// Kind of artifact that was removed.
         kind: CleanupKind,
-        /// Managed image evidence associated with the removal, when available.
-        managed_evidence: Vec<CleanupManagedImageEvidence>,
     },
     /// The path was skipped for the provided reason.
     Skipped {
@@ -354,8 +346,6 @@ pub enum CleanupAction {
         reason: SkipReason,
         /// Kind of artifact associated with the path.
         kind: CleanupKind,
-        /// Managed image evidence associated with the skipped action, when available.
-        managed_evidence: Vec<CleanupManagedImageEvidence>,
     },
 }
 
@@ -368,8 +358,6 @@ pub enum SkipReason {
     DryRun,
     /// The path was disabled by user flags.
     FlagDisabled,
-    /// Managed-only mode suppressed the path.
-    ManagedOnly,
     /// A running process prevented safe cleanup.
     RunningProcess,
     /// Input/output error prevented deletion.

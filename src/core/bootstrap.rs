@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::config::PortProtocol;
-use crate::config::{BaseImageSource, BootstrapMode, ProjectConfig, VmDefinition};
+use crate::config::{BootstrapMode, ProjectConfig, VmDefinition};
 use crate::core::diagnostics::{Diagnostic, Severity};
 use crate::core::events::{
     BootstrapPlanAction, BootstrapPlanSsh, BootstrapPlanVerify, BootstrapStatus, BootstrapStepKind,
@@ -21,7 +21,6 @@ use crate::core::reporter::Reporter;
 use crate::core::runtime::{AssetPreparation, RuntimeContext};
 use crate::core::status::HANDSHAKE_FRESHNESS;
 use crate::error::{Error, Result};
-use crate::managed::ManagedArtifactKind;
 use sha2::{Digest, Sha256};
 
 const LOG_SUBDIR: &str = "bootstrap";
@@ -65,7 +64,7 @@ pub fn run_all(
     std::thread::scope(|scope| {
         let mut handles = Vec::new();
 
-        for (index, (vm, prep)) in project.vms.iter().zip(preparations.iter()).enumerate() {
+        for (index, (vm, _prep)) in project.vms.iter().zip(preparations.iter()).enumerate() {
             let tx_clone = event_tx.clone();
             let state_root = state_root.clone();
             let log_root = log_root.clone();
@@ -78,7 +77,6 @@ pub fn run_all(
                     &state_root,
                     &log_root,
                     vm,
-                    prep,
                     &mut emit_event,
                     &mut local_diagnostics,
                 );
@@ -358,7 +356,6 @@ fn run_for_vm(
     state_root: &Path,
     log_root: &Path,
     vm: &VmDefinition,
-    prep: &AssetPreparation,
     emit_event: &mut dyn FnMut(Event),
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<BootstrapRunOutcome> {
@@ -447,7 +444,7 @@ fn run_for_vm(
         );
     }
 
-    let base_hash = derive_base_hash(vm, prep)?;
+    let base_hash = derive_base_hash(vm)?;
     let trigger = if matches!(vm.bootstrap.mode, BootstrapMode::Always) {
         BootstrapTrigger::Always
     } else {
@@ -812,39 +809,11 @@ fn read_handshake_timestamp(path: &Path) -> Result<Option<SystemTime>> {
     Ok(Some(UNIX_EPOCH + Duration::from_secs(parsed.timestamp)))
 }
 
-fn derive_base_hash(vm: &VmDefinition, prep: &AssetPreparation) -> Result<String> {
-    match &vm.base_image {
-        BaseImageSource::Managed(_) => {
-            if let Some(managed) = &prep.managed {
-                if let Some(summary) = managed
-                    .verification
-                    .artifacts
-                    .iter()
-                    .find(|artifact| artifact.kind == ManagedArtifactKind::RootDisk)
-                {
-                    return Ok(summary.final_sha256.clone());
-                }
-
-                return compute_file_sha256(&managed.paths.root_disk).map_err(|err| {
-                    Error::BootstrapFailed {
-                        vm: vm.name.clone(),
-                        message: err,
-                    }
-                });
-            }
-
-            Err(Error::BootstrapFailed {
-                vm: vm.name.clone(),
-                message: "Managed base image verification missing for bootstrap.".to_string(),
-            })
-        }
-        BaseImageSource::Path(path) => {
-            compute_file_sha256(path).map_err(|err| Error::BootstrapFailed {
-                vm: vm.name.clone(),
-                message: err,
-            })
-        }
-    }
+fn derive_base_hash(vm: &VmDefinition) -> Result<String> {
+    compute_file_sha256(vm.base_image.path()).map_err(|err| Error::BootstrapFailed {
+        vm: vm.name.clone(),
+        message: err,
+    })
 }
 
 fn compute_file_sha256(path: &Path) -> std::result::Result<String, String> {
@@ -2194,16 +2163,16 @@ fn write_run_log(dir: &Path, log: &BootstrapRunLog) -> io::Result<PathBuf> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::config::BaseImageSource;
     use crate::config::{
-        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig, DEFAULT_BROKER_PORT,
-        LifecycleConfig, MemorySpec, PortForward, PortProtocol, ProjectConfig, VmBootstrapConfig,
-        VmDefinition, Workflows,
+        BootstrapConfig, BootstrapMode, BrokerConfig, DEFAULT_BROKER_PORT, LifecycleConfig,
+        MemorySpec, PortForward, PortProtocol, ProjectConfig, VmBootstrapConfig, VmDefinition,
+        Workflows,
     };
     use crate::core::diagnostics::{Diagnostic, Severity};
     use crate::core::events::{BootstrapPlanAction, BootstrapStatus, BootstrapTrigger, Event};
     use crate::core::outcome::BootstrapRunStatus;
     use crate::core::runtime::{AssetPreparation, ResolvedVmAssets, RuntimeContext};
-    use crate::managed::ImageManager;
     use serde_json::json;
     use std::collections::HashMap;
     use std::env;
@@ -2288,14 +2257,11 @@ mod tests {
         let base_image_path = workspace.join("base.img");
         fs::write(&base_image_path, b"base-image")?;
 
-        let image_manager =
-            ImageManager::new(state_root.join("images"), state_root.join("logs"), None);
         let context = RuntimeContext {
             state_root: state_root.clone(),
             log_root: state_root.join("logs"),
             qemu_system: PathBuf::from("/usr/bin/false"),
             qemu_img: None,
-            image_manager,
             accelerators: Vec::new(),
         };
 
@@ -2304,7 +2270,7 @@ mod tests {
             role_name: "devbox".to_string(),
             replica_index: 0,
             description: None,
-            base_image: BaseImageSource::Path(base_image_path),
+            base_image: BaseImageSource::from_explicit(base_image_path),
             overlay: state_root.join("overlays/devbox.qcow2"),
             cpus: 2,
             memory: MemorySpec::new("2048 MiB", Some(2 * 1024 * 1024 * 1024)),
@@ -2338,9 +2304,9 @@ mod tests {
 
         let preparations = vec![AssetPreparation {
             assets: ResolvedVmAssets { boot: None },
-            managed: None,
             overlay_created: false,
             overlay_reclaimed_bytes: None,
+            events: Vec::new(),
         }];
 
         let mut reporter = RecordingReporter::default();
@@ -2397,7 +2363,7 @@ mod tests {
             role_name: "devbox".to_string(),
             replica_index: 0,
             description: None,
-            base_image: BaseImageSource::Path(base_image_path),
+            base_image: BaseImageSource::from_explicit(base_image_path),
             overlay: workspace.join("state/overlays/devbox.qcow2"),
             cpus: 2,
             memory: MemorySpec::new("2048 MiB", Some(2 * 1024 * 1024 * 1024)),
@@ -2481,7 +2447,7 @@ mod tests {
             role_name: "devbox".to_string(),
             replica_index: 0,
             description: None,
-            base_image: BaseImageSource::Path(base_image_path),
+            base_image: BaseImageSource::from_explicit(base_image_path),
             overlay: workspace.join("state/overlays/devbox.qcow2"),
             cpus: 2,
             memory: MemorySpec::new("2048 MiB", Some(2 * 1024 * 1024 * 1024)),
@@ -2591,14 +2557,11 @@ mod tests {
             env::set_var("MOCK_SSH_MODE", mode);
         }
 
-        let image_manager =
-            ImageManager::new(state_root.join("images"), state_root.join("logs"), None);
         let context = RuntimeContext {
             state_root: state_root.clone(),
             log_root: state_root.join("logs"),
             qemu_system: bin_dir.join("qemu-system-x86_64"),
             qemu_img: None,
-            image_manager,
             accelerators: Vec::new(),
         };
 
@@ -2607,7 +2570,7 @@ mod tests {
             role_name: "devbox".to_string(),
             replica_index: 0,
             description: None,
-            base_image: BaseImageSource::Path(base_image_path),
+            base_image: BaseImageSource::from_explicit(base_image_path),
             overlay: state_root.join("overlays/devbox.qcow2"),
             cpus: 2,
             memory: MemorySpec::new("2048 MiB", Some(2 * 1024 * 1024 * 1024)),
@@ -2645,9 +2608,9 @@ mod tests {
 
         let preparations = vec![AssetPreparation {
             assets: ResolvedVmAssets { boot: None },
-            managed: None,
             overlay_created: false,
             overlay_reclaimed_bytes: None,
+            events: Vec::new(),
         }];
 
         let mut reporter = RecordingReporter::default();

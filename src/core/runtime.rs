@@ -1,9 +1,9 @@
 use std::cmp;
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, Read, Write};
 #[cfg(unix)]
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -16,15 +16,12 @@ use std::time::{Duration, Instant, SystemTime};
 use libc::{self, pid_t};
 use sysinfo::{Disks, System};
 
-use crate::config::{
-    BaseImageSource, ManagedDiskKind, PortForward, PortProtocol, ProjectConfig, VmDefinition,
-};
+use sha2::{Digest, Sha512};
+
+use crate::config::{BaseImageProvenance, PortForward, PortProtocol, ProjectConfig, VmDefinition};
 use crate::error::{Error, Result};
-use crate::managed::{
-    ImageManager, ManagedArtifactEvent, ManagedArtifactKind, ManagedImagePaths, ManagedImageSpec,
-    ManagedImageVerification, lookup_managed_image,
-};
 use serde_json::{Value, json};
+use ureq::Error as UreqError;
 
 use super::diagnostics::{Diagnostic, Severity};
 use super::events::{
@@ -37,7 +34,6 @@ pub struct RuntimeContext {
     pub log_root: PathBuf,
     pub qemu_system: PathBuf,
     pub qemu_img: Option<PathBuf>,
-    pub image_manager: ImageManager,
     pub accelerators: Vec<String>,
 }
 
@@ -51,21 +47,16 @@ const DISK_WARN_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
 const DISK_FAIL_THRESHOLD: u64 = 500 * 1024 * 1024;
 const MEMORY_WARN_HEADROOM: u64 = 1 * 1024 * 1024 * 1024;
 const MEMORY_FAIL_HEADROOM: u64 = 512 * 1024 * 1024;
+const DEFAULT_ALPINE_URL: &str = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud/generic_alpine-3.22.0-x86_64-bios-tiny-r0.qcow2";
+const DEFAULT_ALPINE_SHA512: &str = "8061e92e35cf7a3994d5f59154889d9e770c515ef538e6943cdc0dd4bc7da03de984989cbd2c6afefaed9fa5fd52bd0c1e4e3b97db8afb2c19a7eb2b77345175";
+const DEFAULT_ALPINE_SIZE_BYTES: u64 = 119_472_128;
 
 #[derive(Debug)]
 pub struct AssetPreparation {
     pub assets: ResolvedVmAssets,
-    pub managed: Option<ManagedAcquisition>,
     pub overlay_created: bool,
     pub overlay_reclaimed_bytes: Option<u64>,
-}
-
-#[derive(Debug)]
-pub struct ManagedAcquisition {
-    pub spec: &'static ManagedImageSpec,
-    pub events: Vec<ManagedArtifactEvent>,
-    pub verification: ManagedImageVerification,
-    pub paths: ManagedImagePaths,
+    pub events: Vec<Event>,
 }
 
 #[derive(Debug)]
@@ -121,12 +112,11 @@ pub fn prepare_runtime_context(project: &ProjectConfig) -> Result<RuntimeContext
     let image_storage_root = state_root.join("images");
     fs::create_dir_all(&image_storage_root).map_err(|err| Error::PreflightFailed {
         message: format!(
-            "Failed to create managed image storage directory at {}: {err}",
+            "Failed to create image cache directory at {}: {err}",
             image_storage_root.display()
         ),
     })?;
 
-    let image_manager = ImageManager::new(image_storage_root, log_root.clone(), qemu_img.clone());
     let accelerators = detect_available_accelerators(&qemu_system);
 
     Ok(RuntimeContext {
@@ -134,7 +124,6 @@ pub fn prepare_runtime_context(project: &ProjectConfig) -> Result<RuntimeContext
         log_root,
         qemu_system,
         qemu_img,
-        image_manager,
         accelerators,
     })
 }
@@ -369,70 +358,297 @@ pub fn start_broker(
 }
 
 pub fn ensure_vm_assets(vm: &VmDefinition, context: &RuntimeContext) -> Result<AssetPreparation> {
-    match &vm.base_image {
-        BaseImageSource::Path(path) => {
-            if !path.is_file() {
+    let mut events = Vec::new();
+    let base_image_path = vm.base_image.path();
+
+    match vm.base_image.provenance() {
+        BaseImageProvenance::Explicit => {
+            if !base_image_path.is_file() {
                 return Err(Error::PreflightFailed {
                     message: format!(
                         "Base image for VM `{}` not found at {}. Update `base_image` or make sure the file exists.",
                         vm.name,
-                        path.display()
+                        base_image_path.display()
                     ),
                 });
             }
-
-            let (overlay_created, overlay_reclaimed_bytes) = ensure_overlay(vm, context, path)?;
-
-            Ok(AssetPreparation {
-                assets: ResolvedVmAssets { boot: None },
-                managed: None,
-                overlay_created,
-                overlay_reclaimed_bytes,
-            })
         }
-        BaseImageSource::Managed(reference) => {
-            let spec =
-                lookup_managed_image(&reference.name, &reference.version).ok_or_else(|| {
-                    Error::PreflightFailed {
-                        message: format!(
-                            "Managed image `{}` version `{}` is not available.",
-                            reference.name, reference.version
-                        ),
-                    }
-                })?;
-
-            let outcome = context.image_manager.ensure_image(spec)?;
-            let base_disk = match reference.disk {
-                ManagedDiskKind::RootDisk => outcome.paths.root_disk.clone(),
-            };
-
-            if !base_disk.is_file() {
-                return Err(Error::PreflightFailed {
-                    message: format!(
-                        "Managed base image for VM `{}` missing at {} after acquisition.",
-                        vm.name,
-                        base_disk.display()
-                    ),
-                });
-            }
-
-            let (overlay_created, overlay_reclaimed_bytes) =
-                ensure_overlay(vm, context, &base_disk)?;
-            let boot = build_boot_overrides(spec, &outcome.paths)?;
-
-            Ok(AssetPreparation {
-                assets: ResolvedVmAssets { boot },
-                managed: Some(ManagedAcquisition {
-                    spec,
-                    events: outcome.events,
-                    verification: outcome.verification,
-                    paths: outcome.paths,
-                }),
-                overlay_created,
-                overlay_reclaimed_bytes,
-            })
+        BaseImageProvenance::DefaultAlpine => {
+            ensure_default_alpine_image(base_image_path, &mut events)?;
         }
     }
+
+    let (overlay_created, overlay_reclaimed_bytes) = ensure_overlay(vm, context, base_image_path)?;
+
+    Ok(AssetPreparation {
+        assets: ResolvedVmAssets { boot: None },
+        overlay_created,
+        overlay_reclaimed_bytes,
+        events,
+    })
+}
+
+#[derive(Debug)]
+enum AlpineCacheStatus {
+    Valid,
+    NeedsDownload { reason: String },
+}
+
+fn ensure_default_alpine_image(target: &Path, events: &mut Vec<Event>) -> Result<()> {
+    let parent = target.parent().ok_or_else(|| Error::PreflightFailed {
+        message: format!(
+            "Unable to determine cache directory for default base image {}.",
+            target.display()
+        ),
+    })?;
+    fs::create_dir_all(parent).map_err(|err| Error::PreflightFailed {
+        message: format!(
+            "Failed to prepare image cache directory {}: {err}",
+            parent.display()
+        ),
+    })?;
+
+    match assess_alpine_cache(target)? {
+        AlpineCacheStatus::Valid => return Ok(()),
+        AlpineCacheStatus::NeedsDownload { reason } => {
+            events.push(Event::Message {
+                severity: Severity::Info,
+                text: format!("{reason} Downloading a fresh copy from {DEFAULT_ALPINE_URL}."),
+            });
+
+            if let Err(err) = fs::remove_file(target) {
+                if err.kind() != ErrorKind::NotFound {
+                    return Err(Error::PreflightFailed {
+                        message: format!(
+                            "Failed to remove cached Alpine image at {}: {err}",
+                            target.display()
+                        ),
+                    });
+                }
+            }
+
+            let digest_path = cached_digest_path(target);
+            if let Err(err) = fs::remove_file(&digest_path) {
+                if err.kind() != ErrorKind::NotFound {
+                    return Err(Error::PreflightFailed {
+                        message: format!(
+                            "Failed to remove cached digest {}: {err}",
+                            digest_path.display()
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    events.push(Event::Message {
+        severity: Severity::Info,
+        text: format!("Downloading Alpine base image to {}...", target.display()),
+    });
+
+    let digest = download_default_alpine_image(target)?;
+    write_cached_digest(&cached_digest_path(target), &digest)?;
+
+    events.push(Event::Message {
+        severity: Severity::Info,
+        text: format!(
+            "Cached Alpine base image at {} ({}).",
+            target.display(),
+            format_bytes(DEFAULT_ALPINE_SIZE_BYTES)
+        ),
+    });
+
+    Ok(())
+}
+
+fn assess_alpine_cache(path: &Path) -> Result<AlpineCacheStatus> {
+    if !path.is_file() {
+        return Ok(AlpineCacheStatus::NeedsDownload {
+            reason: format!("Default Alpine base image not found at {}.", path.display()),
+        });
+    }
+
+    let metadata = fs::metadata(path).map_err(|err| Error::PreflightFailed {
+        message: format!(
+            "Failed to inspect cached Alpine base image at {}: {err}",
+            path.display()
+        ),
+    })?;
+
+    if metadata.len() != DEFAULT_ALPINE_SIZE_BYTES {
+        return Ok(AlpineCacheStatus::NeedsDownload {
+            reason: format!(
+                "Cached Alpine base image at {} is {} bytes; expected {} bytes.",
+                path.display(),
+                metadata.len(),
+                DEFAULT_ALPINE_SIZE_BYTES
+            ),
+        });
+    }
+
+    let digest_path = cached_digest_path(path);
+    if let Some(stored) = read_cached_digest(&digest_path)? {
+        if stored.eq_ignore_ascii_case(DEFAULT_ALPINE_SHA512) {
+            return Ok(AlpineCacheStatus::Valid);
+        }
+    }
+
+    let computed = compute_sha512_hex(path)?;
+    if computed.eq_ignore_ascii_case(DEFAULT_ALPINE_SHA512) {
+        write_cached_digest(&digest_path, &computed)?;
+        return Ok(AlpineCacheStatus::Valid);
+    }
+
+    Ok(AlpineCacheStatus::NeedsDownload {
+        reason: format!(
+            "Cached Alpine base image at {} failed checksum verification.",
+            path.display()
+        ),
+    })
+}
+
+fn cached_digest_path(path: &Path) -> PathBuf {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some(name) => path.with_file_name(format!("{name}.sha512")),
+        None => path.with_extension("sha512"),
+    }
+}
+
+fn read_cached_digest(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(Some(contents.trim().to_string())),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(Error::PreflightFailed {
+            message: format!("Failed to read cached digest {}: {err}", path.display()),
+        }),
+    }
+}
+
+fn write_cached_digest(path: &Path, digest: &str) -> Result<()> {
+    fs::write(path, format!("{digest}\n")).map_err(|err| Error::PreflightFailed {
+        message: format!("Failed to persist digest file {}: {err}", path.display()),
+    })
+}
+
+fn compute_sha512_hex(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path).map_err(|err| Error::PreflightFailed {
+        message: format!(
+            "Failed to open {} for checksum verification: {err}",
+            path.display()
+        ),
+    })?;
+    let mut hasher = Sha512::new();
+    let mut buffer = [0u8; 64 * 1024];
+
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|err| Error::PreflightFailed {
+                message: format!(
+                    "Failed while reading {} for checksum verification: {err}",
+                    path.display()
+                ),
+            })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn download_default_alpine_image(target: &Path) -> Result<String> {
+    let temp_path = target.with_extension("download");
+    if temp_path.exists() {
+        let _ = fs::remove_file(&temp_path);
+    }
+
+    let response = ureq::get(DEFAULT_ALPINE_URL).call().map_err(|err| {
+        let detail = match &err {
+            UreqError::Status(code, _) => format!("server returned HTTP status {code}"),
+            UreqError::Transport(inner) => inner.to_string(),
+        };
+        Error::PreflightFailed {
+            message: format!(
+                "Failed to download Alpine base image from {DEFAULT_ALPINE_URL}: {detail}. \
+                 Check network connectivity or set an explicit `base_image` in castra.toml."
+            ),
+        }
+    })?;
+
+    let mut reader = response.into_reader();
+    let mut file = fs::File::create(&temp_path).map_err(|err| Error::PreflightFailed {
+        message: format!(
+            "Failed to create download target {}: {err}",
+            temp_path.display()
+        ),
+    })?;
+    let mut hasher = Sha512::new();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|err| Error::PreflightFailed {
+                message: format!(
+                    "Failed while downloading {DEFAULT_ALPINE_URL}: {err}. \
+                     Verify network connectivity or supply an explicit `base_image`."
+                ),
+            })?;
+        if read == 0 {
+            break;
+        }
+        file.write_all(&buffer[..read])
+            .map_err(|err| Error::PreflightFailed {
+                message: format!(
+                    "Failed to write cached Alpine image {}: {err}",
+                    temp_path.display()
+                ),
+            })?;
+        hasher.update(&buffer[..read]);
+        total += read as u64;
+    }
+
+    file.flush().map_err(|err| Error::PreflightFailed {
+        message: format!(
+            "Failed to flush cached Alpine image {}: {err}",
+            temp_path.display()
+        ),
+    })?;
+
+    if total != DEFAULT_ALPINE_SIZE_BYTES {
+        let _ = fs::remove_file(&temp_path);
+        return Err(Error::PreflightFailed {
+            message: format!(
+                "Downloaded Alpine base image has size {} bytes but expected {} bytes. \
+                 Try running `castra clean --workspace` and retry, or set an explicit `base_image`.",
+                total, DEFAULT_ALPINE_SIZE_BYTES
+            ),
+        });
+    }
+
+    let digest = hex::encode(hasher.finalize());
+    if !digest.eq_ignore_ascii_case(DEFAULT_ALPINE_SHA512) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(Error::PreflightFailed {
+            message: format!(
+                "Downloaded Alpine base image checksum mismatch (got {digest}). \
+                 Remove {} and retry, or configure `base_image` manually.",
+                target.display()
+            ),
+        });
+    }
+
+    fs::rename(&temp_path, target).map_err(|err| Error::PreflightFailed {
+        message: format!(
+            "Failed to finalize Alpine base image download to {}: {err}",
+            target.display()
+        ),
+    })?;
+
+    Ok(digest)
 }
 
 pub fn launch_vm(
@@ -1569,87 +1785,6 @@ fn ensure_overlay(
     Ok((true, reclaimed))
 }
 
-fn build_boot_overrides(
-    spec: &'static ManagedImageSpec,
-    paths: &ManagedImagePaths,
-) -> Result<Option<BootOverrides>> {
-    let kernel_path =
-        match spec.qemu.kernel {
-            Some(kind) => Some(resolve_managed_artifact(kind, paths).ok_or_else(|| {
-                Error::PreflightFailed {
-                    message: format!(
-                        "Managed image {} requires kernel artifact `{}` but it was not produced.",
-                        spec_identifier(spec),
-                        kind.describe()
-                    ),
-                }
-            })?),
-            None => None,
-        };
-
-    let initrd_path =
-        match spec.qemu.initrd {
-            Some(kind) => Some(resolve_managed_artifact(kind, paths).ok_or_else(|| {
-                Error::PreflightFailed {
-                    message: format!(
-                        "Managed image {} requires initrd artifact `{}` but it was not produced.",
-                        spec_identifier(spec),
-                        kind.describe()
-                    ),
-                }
-            })?),
-            None => None,
-        };
-
-    let append = spec.qemu.append.to_string();
-    let extra_args: Vec<String> = spec
-        .qemu
-        .extra_args
-        .iter()
-        .map(|arg| arg.to_string())
-        .collect();
-    let machine = spec.qemu.machine.map(|value| value.to_string());
-
-    if kernel_path.is_none()
-        && initrd_path.is_none()
-        && append.is_empty()
-        && extra_args.is_empty()
-        && machine.is_none()
-    {
-        return Ok(None);
-    }
-
-    let kernel = kernel_path.ok_or_else(|| Error::PreflightFailed {
-        message: format!(
-            "Managed image {} provides boot directives but no kernel artifact was resolved.",
-            spec_identifier(spec)
-        ),
-    })?;
-
-    Ok(Some(BootOverrides {
-        kernel,
-        initrd: initrd_path,
-        append,
-        extra_args,
-        machine,
-    }))
-}
-
-fn resolve_managed_artifact(
-    kind: ManagedArtifactKind,
-    paths: &ManagedImagePaths,
-) -> Option<PathBuf> {
-    match kind {
-        ManagedArtifactKind::RootDisk => Some(paths.root_disk.clone()),
-        ManagedArtifactKind::Kernel => paths.kernel.clone(),
-        ManagedArtifactKind::Initrd => paths.initrd.clone(),
-    }
-}
-
-fn spec_identifier(spec: &ManagedImageSpec) -> String {
-    format!("{}@{}", spec.id, spec.version)
-}
-
 fn create_overlay(
     qemu_img: &Path,
     base: &Path,
@@ -1916,6 +2051,33 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn assess_cache_reports_missing_image() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("alpine-minimal.qcow2");
+        let status = assess_alpine_cache(&path).expect("cache check");
+        match status {
+            AlpineCacheStatus::NeedsDownload { reason } => {
+                assert!(reason.contains("not found"));
+            }
+            other => panic!("unexpected status: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assess_cache_detects_size_mismatch() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("alpine-minimal.qcow2");
+        fs::write(&path, b"stub").unwrap();
+        let status = assess_alpine_cache(&path).expect("cache check");
+        match status {
+            AlpineCacheStatus::NeedsDownload { reason } => {
+                assert!(reason.contains("expected"), "{reason}");
+            }
+            other => panic!("unexpected status: {other:?}"),
+        }
+    }
+
+    #[test]
     fn format_bytes_formats_human_readable_values() {
         assert_eq!(format_bytes(0), "0 B");
         assert_eq!(format_bytes(1024), "1.0 KiB");
@@ -1996,7 +2158,7 @@ mod tests {
             role_name: "devbox".to_string(),
             replica_index: 0,
             description: None,
-            base_image: BaseImageSource::Path(base),
+            base_image: BaseImageSource::from_explicit(base),
             overlay,
             cpus: 1,
             memory: MemorySpec::new("512 MiB", Some(512_u64 * 1024 * 1024)),

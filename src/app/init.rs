@@ -25,6 +25,7 @@ pub fn handle_init(args: InitArgs, config_override: Option<&PathBuf>) -> Result<
     emit_diagnostics(&other);
 
     let outcome = output.value;
+    let default_overlay_dir = outcome.state_root.join("overlays");
     println!("✔ Created castra project scaffold.");
     println!("  config  → {}", outcome.config_path.display());
     println!("  state   → {}", outcome.state_root.display());
@@ -35,9 +36,10 @@ pub fn handle_init(args: InitArgs, config_override: Option<&PathBuf>) -> Result<
     println!();
     println!("Next steps:");
     println!(
-        "  • Update `base_image` or set `managed_image` in the config to choose your base disk."
+        "  • Edit [[vms]] if you need a base image other than the bundled `alpine-minimal@v1` or want overlays outside {}.",
+        default_overlay_dir.display()
     );
-    println!("  • Run `castra up` once the image is prepared.");
+    println!("  • Run `castra up` when you're ready to launch.");
 
     Ok(())
 }

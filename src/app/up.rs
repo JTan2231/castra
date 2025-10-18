@@ -12,7 +12,6 @@ use crate::core::operations;
 use crate::core::options::{BootstrapOverrides, UpOptions};
 use crate::core::outcome::{BootstrapRunStatus, UpOutcome};
 use crate::core::project::format_config_warnings;
-use castra::{ManagedImageProfileOutcome, ManagedImageVerificationOutcome};
 
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
 
@@ -101,9 +100,6 @@ fn build_bootstrap_overrides(inputs: &[BootstrapOverrideArg]) -> Result<Bootstra
 fn render_up(outcome: &UpOutcome, events: &[Event]) {
     for event in events {
         match event {
-            Event::ManagedArtifact { spec, text, .. } => {
-                println!("→ {} {}: {}", spec.id, spec.version, text);
-            }
             Event::BootstrapPlanned {
                 vm,
                 mode,
@@ -229,126 +225,6 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                     format_bytes(*reclaimed_bytes)
                 ),
             },
-            Event::ManagedImageVerificationStarted {
-                image_id,
-                image_version,
-                plan,
-                ..
-            } => {
-                let kinds: Vec<&str> = plan
-                    .iter()
-                    .map(|artifact| artifact.kind.describe())
-                    .collect();
-                if kinds.is_empty() {
-                    println!("→ {} {}: verification started.", image_id, image_version);
-                } else {
-                    println!(
-                        "→ {} {}: verification started for {}.",
-                        image_id,
-                        image_version,
-                        kinds.join(", ")
-                    );
-                }
-            }
-            Event::ManagedImageVerificationResult {
-                image_id,
-                image_version,
-                duration_ms,
-                outcome,
-                error,
-                size_bytes,
-                artifacts,
-                ..
-            } => {
-                let kinds: Vec<&str> = artifacts
-                    .iter()
-                    .map(|artifact| artifact.kind.describe())
-                    .collect();
-                let duration = format_duration_ms(*duration_ms);
-                let size_text = format_bytes(*size_bytes);
-                match outcome {
-                    ManagedImageVerificationOutcome::Success => {
-                        if kinds.is_empty() {
-                            println!(
-                                "→ {} {}: verification completed in {} ({}).",
-                                image_id, image_version, duration, size_text
-                            );
-                        } else {
-                            println!(
-                                "→ {} {}: verification completed in {} ({}; {}).",
-                                image_id,
-                                image_version,
-                                duration,
-                                size_text,
-                                kinds.join(", ")
-                            );
-                        }
-                    }
-                    ManagedImageVerificationOutcome::Failure { reason } => {
-                        let detail = error.as_deref().unwrap_or(reason);
-                        println!(
-                            "→ {} {}: verification failed after {} ({}).",
-                            image_id, image_version, duration, detail
-                        );
-                    }
-                }
-            }
-            Event::ManagedImageProfileApplied {
-                image_id,
-                image_version,
-                vm,
-                profile_id,
-                steps,
-                ..
-            } => {
-                println!(
-                    "→ {} {}: applying profile `{}` to VM `{}` ({}).",
-                    image_id,
-                    image_version,
-                    profile_id,
-                    vm,
-                    format_steps(steps)
-                );
-            }
-            Event::ManagedImageProfileResult {
-                image_id,
-                image_version,
-                vm,
-                profile_id,
-                duration_ms,
-                outcome,
-                error,
-                steps,
-                ..
-            } => {
-                let duration = format_duration_ms(*duration_ms);
-                match outcome {
-                    ManagedImageProfileOutcome::Applied => {
-                        println!(
-                            "→ {} {}: profile `{}` applied to `{}` in {} ({}).",
-                            image_id,
-                            image_version,
-                            profile_id,
-                            vm,
-                            duration,
-                            format_steps(steps)
-                        );
-                    }
-                    ManagedImageProfileOutcome::NoOp => {
-                        println!(
-                            "→ {} {}: profile `{}` skipped (no changes needed).",
-                            image_id, image_version, profile_id
-                        );
-                    }
-                    ManagedImageProfileOutcome::Failed { reason } => {
-                        let detail = error.as_deref().unwrap_or(reason);
-                        println!(
-                            "→ {} {}: profile `{}` failed for `{}` ({detail}).",
-                            image_id, image_version, profile_id, vm
-                        );
-                    }
-                }
-            }
             Event::OverlayPrepared { vm, overlay_path } => {
                 println!(
                     "Prepared overlay for VM `{vm}` at {}.",
@@ -474,14 +350,6 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                 }
             }
         }
-    }
-}
-
-fn format_steps(steps: &[String]) -> String {
-    if steps.is_empty() {
-        "no steps".to_string()
-    } else {
-        steps.join(", ")
     }
 }
 

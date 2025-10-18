@@ -207,8 +207,6 @@ pub struct CleanOptions {
     pub include_logs: bool,
     /// Include broker handshake artifacts.
     pub include_handshakes: bool,
-    /// Restrict cleanup to managed image artifacts.
-    pub managed_only: bool,
     /// Override running-process safeguards.
     pub force: bool,
 }

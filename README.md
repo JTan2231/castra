@@ -1,6 +1,6 @@
 # Castra
 
-Castra is a friendly orchestration layer for lightweight QEMU-based sandboxes. It bootstraps reproducible development VMs with managed images, a broker for host↔guest coordination, and a thin CLI that drives the core library APIs exposed under `castra::core`.
+Castra is a friendly orchestration layer for lightweight QEMU-based sandboxes. It bootstraps reproducible development VMs with cached base images, a broker for host↔guest coordination, and a thin CLI that drives the core library APIs exposed under `castra::core`.
 
 The CLI is a veneer over the library. Projects that embed Castra can disable the `cli` feature flag to depend on the core APIs without pulling in presentation code (see `docs/library_usage.md`).
 

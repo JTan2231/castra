@@ -15,8 +15,6 @@ pub mod app;
 
 mod config;
 mod error;
-mod managed;
 
 pub use config::*;
 pub use error::*;
-pub use managed::*;

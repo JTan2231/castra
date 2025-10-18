@@ -737,7 +737,7 @@ mod tests {
                 role_name: "devbox".to_string(),
                 replica_index: 0,
                 description: None,
-                base_image: BaseImageSource::Path(PathBuf::from("base.qcow2")),
+                base_image: BaseImageSource::from_explicit(PathBuf::from("base.qcow2")),
                 overlay: state_root.join("devbox-overlay.qcow2"),
                 cpus: 2,
                 memory: MemorySpec::new("2048 MiB", Some(2048 * 1024 * 1024)),

@@ -339,13 +339,6 @@ pub struct CleanArgs {
     #[arg(long, help = "Skip deleting broker handshakes/ under the state root")]
     pub no_handshakes: bool,
 
-    /// Only remove managed image caches.
-    #[arg(
-        long,
-        help = "Suppress non-managed artifacts (overlays, logs, pid files)"
-    )]
-    pub managed_only: bool,
-
     /// Override running-process safeguards.
     #[arg(
         long,
@@ -645,7 +638,6 @@ mod tests {
         assert!(!args.include_overlays);
         assert!(!args.no_logs);
         assert!(!args.no_handshakes);
-        assert!(!args.managed_only);
         assert!(!args.force);
     }
 
@@ -661,7 +653,6 @@ mod tests {
             "--include-overlays",
             "--no-logs",
             "--no-handshakes",
-            "--managed-only",
             "--force",
         ])
         .expect("parse clean flags");
@@ -677,7 +668,6 @@ mod tests {
         assert!(args.include_overlays);
         assert!(args.no_logs);
         assert!(args.no_handshakes);
-        assert!(args.managed_only);
         assert!(args.force);
     }
 

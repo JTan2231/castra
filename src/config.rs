@@ -9,6 +9,12 @@ use sha2::{Digest, Sha256};
 
 use crate::error::Error;
 
+pub const DEFAULT_IMAGE_SUBDIR: &str = "images";
+pub const DEFAULT_ALPINE_IMAGE_FILENAME: &str = "alpine-minimal.qcow2";
+const DEFAULT_OVERLAY_SUBDIR: &str = "overlays";
+const DEFAULT_OVERLAY_SUFFIX: &str = "overlay";
+const DEFAULT_OVERLAY_EXTENSION: &str = "qcow2";
+
 pub const DEFAULT_BROKER_PORT: u16 = 7070;
 pub const DEFAULT_GRACEFUL_SHUTDOWN_WAIT_SECS: u64 = 20;
 pub const DEFAULT_SIGTERM_WAIT_SECS: u64 = 10;
@@ -16,66 +22,41 @@ pub const DEFAULT_SIGKILL_WAIT_SECS: u64 = 5;
 pub const DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS: u64 = 300;
 
 #[derive(Debug, Clone)]
-pub enum BaseImageSource {
-    Path(PathBuf),
-    Managed(ManagedImageReference),
+pub struct BaseImageSource {
+    path: PathBuf,
+    provenance: BaseImageProvenance,
 }
 
 impl BaseImageSource {
     pub fn describe(&self) -> String {
-        match self {
-            BaseImageSource::Path(path) => path.display().to_string(),
-            BaseImageSource::Managed(reference) => {
-                let mut descriptor = format!(
-                    "managed:{}@{} ({})",
-                    reference.name,
-                    reference.version,
-                    reference.disk.describe()
-                );
-                if let Some(checksum) = &reference.checksum {
-                    descriptor.push_str(&format!(", checksum={checksum}"));
-                }
-                if let Some(size) = reference.size_bytes {
-                    descriptor.push_str(&format!(", size={size}B"));
-                }
-                descriptor
-            }
-        }
+        self.path.display().to_string()
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn provenance(&self) -> BaseImageProvenance {
+        self.provenance
+    }
+
+    pub(crate) fn new(path: PathBuf, provenance: BaseImageProvenance) -> Self {
+        Self { path, provenance }
+    }
+
+    pub fn from_explicit(path: impl Into<PathBuf>) -> Self {
+        Self::new(path.into(), BaseImageProvenance::Explicit)
+    }
+
+    pub fn from_default_alpine(path: impl Into<PathBuf>) -> Self {
+        Self::new(path.into(), BaseImageProvenance::DefaultAlpine)
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ManagedImageReference {
-    pub name: String,
-    pub version: String,
-    pub disk: ManagedDiskKind,
-    pub checksum: Option<String>,
-    pub size_bytes: Option<u64>,
-}
-
-#[derive(Debug, Clone)]
-pub enum ManagedDiskKind {
-    RootDisk,
-}
-
-impl ManagedDiskKind {
-    pub fn parse(input: Option<String>) -> Result<Self, String> {
-        match input {
-            None => Ok(Self::RootDisk),
-            Some(value) => match value.as_str() {
-                "root" | "rootfs" | "root_disk" => Ok(Self::RootDisk),
-                other => Err(format!(
-                    "Unknown managed disk kind `{other}`. Supported values: root"
-                )),
-            },
-        }
-    }
-
-    pub fn describe(&self) -> &'static str {
-        match self {
-            ManagedDiskKind::RootDisk => "root disk",
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseImageProvenance {
+    Explicit,
+    DefaultAlpine,
 }
 
 #[derive(Debug, Clone)]
@@ -677,99 +658,79 @@ fn parse_version_components(raw: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-fn parse_image_source(
+fn resolve_base_image(
     path: &Path,
     context: &str,
     config_root: &Path,
+    state_root: &Path,
     base_image: Option<PathBuf>,
     managed_image: Option<RawManagedImage>,
 ) -> Result<BaseImageSource, Error> {
-    match (base_image, managed_image) {
-        (Some(path_buf), None) => Ok(BaseImageSource::Path(resolve_path(config_root, path_buf))),
-        (None, Some(managed)) => Ok(BaseImageSource::Managed(build_managed_reference(
-            path, context, managed,
-        )?)),
-        (Some(_), Some(_)) => Err(invalid_config(
+    if managed_image.is_some() {
+        return Err(invalid_config(
             path,
             format!(
-                "{context} declares both `base_image` and `managed_image`. Choose a single source."
+                "{context} declares `managed_image`, which is no longer supported. Remove it and set `base_image` or rely on the default Alpine image."
             ),
-        )),
-        (None, None) => Err(invalid_config(
-            path,
-            format!("{context} must declare either `base_image` or `managed_image`."),
-        )),
+        ));
     }
+
+    if let Some(path_buf) = base_image {
+        return Ok(BaseImageSource::new(
+            resolve_path(config_root, path_buf),
+            BaseImageProvenance::Explicit,
+        ));
+    }
+
+    Ok(BaseImageSource::new(
+        default_alpine_base_image_path(state_root),
+        BaseImageProvenance::DefaultAlpine,
+    ))
 }
 
-fn build_managed_reference(
-    path: &Path,
-    context: &str,
-    managed: RawManagedImage,
-) -> Result<ManagedImageReference, Error> {
-    let name = managed.name.ok_or_else(|| {
-        invalid_config(
-            path,
-            format!("{context} declares `managed_image` but is missing required field `name`."),
-        )
-    })?;
-    let version = managed.version.ok_or_else(|| {
-        invalid_config(
-            path,
-            format!("{context} declares `managed_image` but is missing required field `version`."),
-        )
-    })?;
-    let disk = ManagedDiskKind::parse(managed.disk).map_err(|message| {
-        invalid_config(
-            path,
-            format!("{context} declares `managed_image` with invalid `disk`: {message}"),
-        )
-    })?;
+pub fn default_alpine_base_image_path(state_root: &Path) -> PathBuf {
+    state_root
+        .join(DEFAULT_IMAGE_SUBDIR)
+        .join(DEFAULT_ALPINE_IMAGE_FILENAME)
+}
 
-    let checksum = managed
-        .checksum
-        .map(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                return Err(invalid_config(
-                    path,
-                    format!("{context} declares `managed_image.checksum` but the value is empty."),
-                ));
-            }
-            if !trimmed.contains(':') {
-                return Err(invalid_config(
-                    path,
-                    format!(
-                        "{context} declares `managed_image.checksum` without an algorithm prefix (expected `sha256:<digest>`)."
-                    ),
-                ));
-            }
-            Ok(trimmed.to_string())
-        })
-        .transpose()?;
+pub(crate) fn default_overlay_base_path(state_root: &Path, role_name: &str) -> PathBuf {
+    let mut base = state_root.join(DEFAULT_OVERLAY_SUBDIR);
+    let slug = overlay_role_slug(role_name);
+    let file_name = format!(
+        "{slug}-{}.{}",
+        DEFAULT_OVERLAY_SUFFIX, DEFAULT_OVERLAY_EXTENSION
+    );
+    base.push(file_name);
+    base
+}
 
-    let size_bytes = managed
-        .size_bytes
-        .map(|value| {
-            if value == 0 {
-                return Err(invalid_config(
-                    path,
-                    format!(
-                        "{context} declares `managed_image.size_bytes = 0`; specify a positive size."
-                    ),
-                ));
-            }
-            Ok(value)
-        })
-        .transpose()?;
+fn overlay_role_slug(role_name: &str) -> String {
+    let mut slug = String::with_capacity(role_name.len());
+    let mut last_was_dash = true;
+    for ch in role_name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_was_dash = false;
+        } else if !last_was_dash {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
 
-    Ok(ManagedImageReference {
-        name,
-        version,
-        disk,
-        checksum,
-        size_bytes,
-    })
+    let trimmed = slug.trim_matches('-');
+    let base = if trimmed.is_empty() {
+        "vm".to_string()
+    } else {
+        trimmed.to_string()
+    };
+
+    let mut hasher = Sha256::new();
+    hasher.update(role_name.as_bytes());
+    let digest = hasher.finalize();
+    let suffix = hex::encode(&digest[..3]);
+
+    format!("{base}-{suffix}")
 }
 
 fn parse_port_forwards_list(
@@ -991,6 +952,7 @@ struct RawVmInstance {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct RawManagedImage {
     name: Option<String>,
     version: Option<String>,
@@ -1242,9 +1204,9 @@ impl RawConfig {
             let RawVm {
                 name,
                 description,
-                base_image,
-                managed_image,
-                overlay,
+                base_image: raw_base_image,
+                managed_image: raw_managed_image,
+                overlay: raw_overlay,
                 cpus,
                 memory,
                 port_forwards,
@@ -1296,23 +1258,20 @@ impl RawConfig {
             }
             let count_usize = count_value as usize;
 
-            let base_image = parse_image_source(
+            let context = format!("VM `{role_name}`");
+            let base_image = resolve_base_image(
                 path,
-                &format!("VM `{role_name}`"),
+                &context,
                 &root_dir,
-                base_image,
-                managed_image,
+                &state_root,
+                raw_base_image,
+                raw_managed_image,
             )?;
 
-            let overlay = overlay.ok_or_else(|| {
-                invalid_config(
-                    path,
-                    format!(
-                        "VM `{role_name}` is missing required field `overlay`. Example: `overlay = \".castra/{role_name}-overlay.qcow2\"`."
-                    ),
-                )
-            })?;
-            let base_overlay = resolve_overlay_path(&root_dir, &state_root, overlay);
+            let base_overlay = match raw_overlay {
+                Some(overlay) => resolve_overlay_path(&root_dir, &state_root, overlay),
+                None => default_overlay_base_path(&state_root, &role_name),
+            };
 
             let base_cpus = cpus.unwrap_or(2);
             if base_cpus == 0 {
@@ -1438,16 +1397,19 @@ impl RawConfig {
                             port_forwards: override_forwards,
                         } = data;
 
-                        let image_source = match (override_base_image, override_managed_image) {
-                            (None, None) => base_image.clone(),
-                            (base_image, managed_image) => parse_image_source(
-                                path,
-                                &format!("Replica `{id}`"),
-                                &root_dir,
-                                base_image,
-                                managed_image,
-                            )?,
-                        };
+                        let image_source =
+                            if override_base_image.is_none() && override_managed_image.is_none() {
+                                base_image.clone()
+                            } else {
+                                resolve_base_image(
+                                    path,
+                                    &format!("Replica `{id}`"),
+                                    &root_dir,
+                                    &state_root,
+                                    override_base_image,
+                                    override_managed_image,
+                                )?
+                            };
 
                         let overlay_path = override_overlay
                             .map(|overlay| resolve_overlay_path(&root_dir, &state_root, overlay))
@@ -1867,16 +1829,16 @@ memory = "2048 MiB"
         assert_eq!(vm.name, "devbox");
         assert_eq!(vm.role_name, "devbox");
         assert_eq!(vm.replica_index, 0);
-        match &vm.base_image {
-            BaseImageSource::Path(path) => {
-                assert_eq!(
-                    path,
-                    &dir.path().join("images/devbox.qcow2"),
-                    "base image path is resolved relative to file"
-                );
-            }
-            _ => panic!("expected base image path"),
-        }
+        assert_eq!(
+            vm.base_image.path(),
+            dir.path().join("images/devbox.qcow2").as_path(),
+            "base image path is resolved relative to file"
+        );
+        assert_eq!(
+            vm.base_image.provenance(),
+            BaseImageProvenance::Explicit,
+            "explicit base image marked as explicit provenance"
+        );
         assert_eq!(
             vm.overlay,
             dir.path().join(".castra/devbox-overlay.qcow2"),
@@ -1894,6 +1856,98 @@ memory = "2048 MiB"
             config.state_root,
             dir.path().join(".castra"),
             "state root uses project override"
+        );
+    }
+
+    #[test]
+    fn load_config_defaults_base_image_and_overlay() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config_v02(
+                r#"
+[[vms]]
+name = "devbox"
+cpus = 2
+memory = "1024 MiB"
+"#,
+            ),
+        );
+
+        let config = load_project_config(&path).expect("load config with defaults");
+        assert_eq!(config.vms.len(), 1);
+        let vm = &config.vms[0];
+        let expected_path = default_alpine_base_image_path(&config.state_root);
+        assert_eq!(
+            vm.base_image.path(),
+            expected_path.as_path(),
+            "default base image points at cached alpine image"
+        );
+        assert_eq!(
+            vm.base_image.provenance(),
+            BaseImageProvenance::DefaultAlpine,
+            "default base image provenance recorded"
+        );
+
+        assert_eq!(
+            vm.overlay,
+            default_overlay_base_path(&config.state_root, "devbox")
+        );
+        let overlay_name = vm
+            .overlay
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("overlay file name");
+        let re = Regex::new(r"^devbox-[0-9a-f]{6}-overlay\.qcow2$").unwrap();
+        assert!(
+            re.is_match(overlay_name),
+            "unexpected overlay file name {overlay_name}"
+        );
+    }
+
+    #[test]
+    fn load_config_defaults_multi_instance_overlays() {
+        let dir = tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            &minimal_config_v02(
+                r#"
+[[vms]]
+name = "Web App"
+cpus = 2
+memory = "1024 MiB"
+count = 2
+"#,
+            ),
+        );
+
+        let config = load_project_config(&path).expect("load multi-instance config with defaults");
+        assert_eq!(config.vms.len(), 2);
+        let base_overlay = default_overlay_base_path(&config.state_root, "Web App");
+        for (idx, vm) in config.vms.iter().enumerate() {
+            assert_eq!(vm.replica_index, idx);
+            let expected_path = default_alpine_base_image_path(&config.state_root);
+            assert_eq!(vm.base_image.path(), expected_path.as_path());
+            assert_eq!(
+                vm.base_image.provenance(),
+                BaseImageProvenance::DefaultAlpine
+            );
+            let expected_overlay = derive_overlay_for_instance(&base_overlay, idx, 2, true);
+            assert_eq!(vm.overlay, expected_overlay);
+        }
+    }
+
+    #[test]
+    fn overlay_role_slug_sanitizes_names() {
+        let slug = overlay_role_slug("API Box!");
+        let re = Regex::new(r"^api-box-[0-9a-f]{6}$").unwrap();
+        assert!(re.is_match(&slug), "unexpected slug {slug}");
+
+        let fallback = overlay_role_slug("???");
+        let fallback_re = Regex::new(r"^vm-[0-9a-f]{6}$").unwrap();
+        assert!(
+            fallback_re.is_match(&fallback),
+            "unexpected fallback {fallback}"
         );
     }
 
@@ -2012,41 +2066,6 @@ overlay = ".castra/dev.qcow2"
             verify.path.as_ref().map(PathBuf::as_path),
             Some(Path::new("/status/ok"))
         );
-    }
-
-    #[test]
-    fn load_config_with_managed_image() {
-        let dir = tempdir().unwrap();
-        let path = write_config(
-            &dir,
-            &minimal_config(
-                r#"
-[[vms]]
-name = "alpine"
-managed_image = { name = "alpine-minimal", version = "v1", disk = "root" }
-overlay = ".castra/alpine-overlay.qcow2"
-cpus = 1
-memory = "512 MiB"
-"#,
-            ),
-        );
-
-        let config = load_project_config(&path).expect("load managed config");
-        let vm = &config.vms[0];
-        assert_eq!(vm.name, "alpine");
-        assert_eq!(vm.role_name, "alpine");
-        assert_eq!(vm.replica_index, 0);
-        match &vm.base_image {
-            BaseImageSource::Managed(reference) => {
-                assert_eq!(reference.name, "alpine-minimal");
-                assert_eq!(reference.version, "v1");
-                assert!(matches!(reference.disk, ManagedDiskKind::RootDisk));
-                assert!(reference.checksum.is_none());
-                assert!(reference.size_bytes.is_none());
-            }
-            _ => panic!("expected managed image source"),
-        }
-        assert_eq!(vm.memory.bytes(), Some(512 * 1024 * 1024));
     }
 
     #[test]
@@ -2176,12 +2195,14 @@ count = 3
             assert_eq!(vm.name, expected[idx]);
             assert_eq!(vm.role_name, "api");
             assert_eq!(vm.replica_index, idx);
-            match &vm.base_image {
-                BaseImageSource::Path(path) => {
-                    assert_eq!(path, &dir.path().join("images/api-base.qcow2"));
-                }
-                other => panic!("unexpected image source: {other:?}"),
-            }
+            assert_eq!(
+                vm.base_image.path(),
+                dir.path().join("images/api-base.qcow2").as_path()
+            );
+            assert_eq!(
+                vm.base_image.provenance(),
+                BaseImageProvenance::Explicit
+            );
             let expected_overlay = match idx {
                 0 => state_root.join("api/overlay.qcow2"),
                 1 => state_root.join("api/overlay-1.qcow2"),
@@ -2204,7 +2225,7 @@ count = 3
                 r#"
 [[vms]]
 name = "api"
-managed_image = { name = "alpine-minimal", version = "v1", disk = "root", checksum = "sha256:abcd", size_bytes = 1024 }
+base_image = "images/api-base.qcow2"
 overlay = ".castra/api/overlay.qcow2"
 cpus = 2
 memory = "2048 MiB"
@@ -2219,6 +2240,7 @@ count = 2
   cpus = 4
   memory = "4096 MiB"
   overlay = ".castra/api/custom-1.qcow2"
+  base_image = "images/api-custom.qcow2"
 
     [[vms.instances.port_forwards]]
     host = 9000
@@ -2248,15 +2270,14 @@ count = 2
         assert_eq!(replica.port_forwards.len(), 1);
         assert_eq!(replica.port_forwards[0].host, 9000);
 
-        match &replica.base_image {
-            BaseImageSource::Managed(reference) => {
-                assert_eq!(reference.name, "alpine-minimal");
-                assert_eq!(reference.version, "v1");
-                assert_eq!(reference.checksum.as_deref(), Some("sha256:abcd"));
-                assert_eq!(reference.size_bytes, Some(1024));
-            }
-            other => panic!("unexpected image source: {other:?}"),
-        }
+        assert_eq!(
+            replica.base_image.path(),
+            dir.path().join("images/api-custom.qcow2").as_path()
+        );
+        assert_eq!(
+            replica.base_image.provenance(),
+            BaseImageProvenance::Explicit
+        );
     }
 
     #[test]
@@ -2388,64 +2409,6 @@ count = 2
     }
 
     #[test]
-    fn load_config_validates_managed_checksum_format() {
-        let dir = tempdir().unwrap();
-        let path = write_config(
-            &dir,
-            &minimal_config_v02(
-                r#"
-[[vms]]
-name = "api"
-managed_image = { name = "alpine", version = "v1", checksum = "deadbeef", size_bytes = 1024 }
-overlay = ".castra/api/overlay.qcow2"
-cpus = 2
-memory = "2048 MiB"
-"#,
-            ),
-        );
-
-        let err = load_project_config(&path).expect_err("checksum must include algorithm");
-        match err {
-            Error::InvalidConfig { message, .. } => {
-                assert!(
-                    message.contains("checksum"),
-                    "unexpected message: {message}"
-                );
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn load_config_validates_managed_size_bytes_positive() {
-        let dir = tempdir().unwrap();
-        let path = write_config(
-            &dir,
-            &minimal_config_v02(
-                r#"
-[[vms]]
-name = "api"
-managed_image = { name = "alpine", version = "v1", checksum = "sha256:abc", size_bytes = 0 }
-overlay = ".castra/api/overlay.qcow2"
-cpus = 2
-memory = "2048 MiB"
-"#,
-            ),
-        );
-
-        let err = load_project_config(&path).expect_err("size_bytes must be positive");
-        match err {
-            Error::InvalidConfig { message, .. } => {
-                assert!(
-                    message.contains("size_bytes"),
-                    "unexpected message: {message}"
-                );
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
     fn load_config_warns_on_future_version() {
         let dir = tempdir().unwrap();
         let path = write_config(
@@ -2511,7 +2474,7 @@ memory = "1 GiB"
     }
 
     #[test]
-    fn load_config_rejects_missing_base_and_managed() {
+    fn load_config_defaults_missing_base_and_managed() {
         let dir = tempdir().unwrap();
         let path = write_config(
             &dir,
@@ -2526,12 +2489,23 @@ memory = "1 GiB"
             ),
         );
 
-        let err = load_project_config(&path).expect_err("must fail without image");
-        assert!(matches!(err, Error::InvalidConfig { .. }));
+        let config = load_project_config(&path).expect("defaults missing image");
+        let vm = &config.vms[0];
+        let expected_path = default_alpine_base_image_path(&config.state_root);
+        assert_eq!(vm.base_image.path(), expected_path.as_path());
+        assert_eq!(
+            vm.base_image.provenance(),
+            BaseImageProvenance::DefaultAlpine
+        );
+        assert_eq!(
+            vm.overlay,
+            dir.path().join(".castra/a.qcow2"),
+            "explicit overlay should be preserved"
+        );
     }
 
     #[test]
-    fn load_config_rejects_both_image_types() {
+    fn load_config_rejects_managed_image_key() {
         let dir = tempdir().unwrap();
         let path = write_config(
             &dir,
@@ -2539,7 +2513,6 @@ memory = "1 GiB"
                 r#"
 [[vms]]
 name = "devbox"
-base_image = "images/a.qcow2"
 managed_image = { name = "alpine", version = "v1" }
 overlay = ".castra/a.qcow2"
 cpus = 1
@@ -2548,27 +2521,16 @@ memory = "1 GiB"
             ),
         );
 
-        let err = load_project_config(&path).expect_err("should reject both image types");
-        assert!(matches!(err, Error::InvalidConfig { .. }));
-    }
-
-    #[test]
-    fn managed_disk_kind_parse_supports_synonyms() {
-        assert!(matches!(
-            ManagedDiskKind::parse(None).expect("default disk"),
-            ManagedDiskKind::RootDisk
-        ));
-        for synonym in ["root", "rootfs", "root_disk"] {
-            assert!(matches!(
-                ManagedDiskKind::parse(Some(synonym.to_string())).expect("parse"),
-                ManagedDiskKind::RootDisk
-            ));
+        let err = load_project_config(&path).expect_err("should reject managed_image key");
+        match err {
+            Error::InvalidConfig { message, .. } => {
+                assert!(
+                    message.contains("managed_image"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
         }
-        let err = ManagedDiskKind::parse(Some("invalid".into())).unwrap_err();
-        assert!(
-            err.contains("Unknown managed disk kind"),
-            "unexpected message: {err}"
-        );
     }
 
     #[test]

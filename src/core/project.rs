@@ -4,10 +4,10 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig,
-    DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, DEFAULT_BROKER_PORT, LifecycleConfig, ManagedDiskKind,
-    ManagedImageReference, MemorySpec, PortConflict, ProjectConfig, VmBootstrapConfig,
-    VmDefinition, Workflows,
+    BaseImageProvenance, BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig,
+    DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, DEFAULT_BROKER_PORT, LifecycleConfig, MemorySpec,
+    PortConflict, ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
+    default_alpine_base_image_path, default_overlay_base_path,
 };
 use crate::error::{Error, Result};
 
@@ -22,7 +22,7 @@ pub struct ProjectLoad {
     pub synthetic: bool,
 }
 
-/// Shared projects root used for managed caches.
+/// Shared projects root used for cached VM assets.
 pub fn default_projects_root() -> PathBuf {
     crate::config::user_home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -112,8 +112,11 @@ name = "{project_name}"
 [[vms]]
 name = "devbox"
 description = "Primary development VM"
-base_image = "images/devbox-base.qcow2"
-overlay = ".castra/devbox/overlay.qcow2"
+# Castra downloads Alpine on demand into the state root (e.g. .castra/state/images/alpine-minimal.qcow2).
+# Uncomment the following to use a custom qcow2 instead:
+# base_image = "images/devbox-base.qcow2"
+# Override the default overlay location (state_root/overlays/devbox-*.qcow2):
+# overlay = ".castra/devbox/overlay.qcow2"
 cpus = 2
 memory = "2048 MiB"
 # count = 1  # Increase to scale replicas: devbox-0, devbox-1, ...
@@ -165,21 +168,20 @@ fn synthesize_default_project(search_root: PathBuf) -> ProjectConfig {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| search_root.clone());
 
-    let overlay_path = state_root.join("alpine-minimal-overlay.qcow2");
-    let bootstrap_dir = project_root.join("bootstrap").join("alpine-0");
+    let role_name = "alpine";
+    let instance_name = format!("{role_name}-0");
+    let overlay_path = default_overlay_base_path(&state_root, role_name);
+    let bootstrap_dir = project_root.join("bootstrap").join(&instance_name);
 
     let vm = VmDefinition {
-        name: "alpine-0".to_string(),
-        role_name: "alpine".to_string(),
+        name: instance_name.clone(),
+        role_name: role_name.to_string(),
         replica_index: 0,
-        description: Some("Managed Alpine Linux guest".to_string()),
-        base_image: BaseImageSource::Managed(ManagedImageReference {
-            name: "alpine-minimal".to_string(),
-            version: "v1".to_string(),
-            disk: ManagedDiskKind::RootDisk,
-            checksum: None,
-            size_bytes: None,
-        }),
+        description: Some("Alpine Linux guest".to_string()),
+        base_image: BaseImageSource::new(
+            default_alpine_base_image_path(&state_root),
+            BaseImageProvenance::DefaultAlpine,
+        ),
         overlay: overlay_path,
         cpus: 2,
         memory: MemorySpec::new("2048 MiB", Some(2048 * 1024 * 1024)),

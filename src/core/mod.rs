@@ -16,7 +16,7 @@ pub mod runtime;
 pub mod status;
 
 pub use diagnostics::{Diagnostic, Severity};
-pub use events::{CleanupKind, Event, ManagedImageSpecHandle};
+pub use events::{CleanupKind, Event};
 pub use operations::{broker, bus_publish, bus_tail, clean, down, init, logs, ports, status, up};
 pub use options::{
     BrokerOptions, BusLogTarget, BusPublishOptions, BusTailOptions, CleanOptions, CleanScope,
