@@ -1,14 +1,14 @@
-SNAPSHOT v0.9.6 — Castra (VM orchestration harness)
+SNAPSHOT v0.9.7 — Castra (VM orchestration harness)
 
-Edits since v0.9.5
-- Thread 2 (Cooperative shutdown) refined: surface effective timeouts via CLI/config and JSON; add docs/examples incl. 0ms Unavailable and ChannelError paths; TTY remains responsive with per-VM bounded waits.
-- Thread 12 (Bootstrap) refined: TTY one-line per-VM completion; JSON gains terminal BootstrapSummary with resolved policy/inputs, per-step durations, outcome, and durable log path; --plan emits same shape with outcome=Planned.
-- Thread 13 (Ephemeral storage) refined: bounded orphan reclamation on next command; CLEAN attributes reclaimed bytes to ephemeral layers; TTY shows concise, non-duplicated ephemerality reminder with pointer to docs.
-- Housekeeping: re-affirmed stamp-free alignment across Threads 12/13; TODOs updated for clarity and acceptance coverage.
+Edits since v0.9.6
+- Thread 2 (Cooperative shutdown): clarify surfacing of effective cooperative/TERM/KILL timeouts in CLI help and JSON. Examples to include 0ms Unavailable and ChannelError with remediation. TTY remains non-blocking.
+- Thread 12 (Bootstrap): commit to terminal BootstrapSummary in JSON (policy, effective inputs, per-step durations, outcome, durable log path). --plan emits same shape (outcome=Planned, zero durations) and fails non-zero on invalid config. In-flight event schema unchanged.
+- Thread 13 (Ephemeral storage): add bounded, opportunistic orphan reclamation on next status/clean/up without blocking healthy operations; CLEAN attributes reclaimed bytes to ephemeral layers; TTY ephemerality reminder is concise and non-duplicated.
+- Housekeeping: canonical TODOs updated; duplicate/legacy TODO stubs slated for removal; acceptance expanded for JSON/TTY specifics.
 
 Active threads (intent + acceptance deltas)
 - Thread 2 — Cooperative shutdown lifecycle (sequencing shipped; surfacing/config next):
-  Now committing to expose effective cooperative/TERM/KILL timeouts in both CLI help and JSON. Add examples covering success, Unavailable(0ms), and ChannelError with remediation hints. TTY must not block other VMs; per-VM isolation retained.
+  Expose effective cooperative/TERM/KILL timeouts via CLI/config and render in JSON. Include examples covering success, Unavailable(0ms), and ChannelError with remediation hints. TTY must not block other VMs; per-VM isolation retained.
   Anchors: src/core/options.rs; src/core/runtime.rs; src/core/events.rs; src/core/reporter.rs; src/app/down.rs; docs/.
 
 - Thread 12 — Post-boot bootstrap pipeline (stamp-free; UX/plan in progress):
@@ -34,7 +34,7 @@ Narrative themes
 
 Direction of travel
 - Thread 2: wire timeout options through CLI/config → runtime; emit effective values; document with examples; maintain non-blocking TTY.
-- Thread 12: implement BootstrapSummary in JSON and single-line TTY completion; deliver --plan output; keep schemas stable; update docs/help.
+- Thread 12: implement BootstrapSummary in JSON and single-line TTY completion; deliver --plan output with non-zero exit on invalid config; keep schemas stable; update docs/help.
 - Thread 13: add orphan reclamation pass and CLEAN attribution; add TTY ephemerality reminder and validation messaging.
 
 Cross-links
@@ -42,4 +42,4 @@ Cross-links
 - Canonical TODOs: cooperative_shutdown_lifecycle, post_boot_bootstrap_pipeline, ephemeral_vm_storage_and_cleanup.
 
 Editorial housekeeping
-- Canonical TODO files updated to reflect refinements; stamp-free policy reaffirmed across bootstrap and ephemerality threads.
+- Canonical TODO files updated to reflect refinements; duplicate stale TODO stubs identified for removal.
