@@ -19,6 +19,7 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
     let UpArgs {
         skip_discovery,
         force,
+        broker_only,
         plan,
         qcow,
         bootstrap,
@@ -29,6 +30,7 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
         config: config_load_options(config_override, skip_discovery, "up")?,
         force,
         bootstrap: bootstrap_overrides,
+        broker_only,
         plan,
         alpine_qcow_override: qcow,
     };

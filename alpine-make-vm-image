@@ -147,6 +147,8 @@ if ! command -v realpath >/dev/null; then
 	alias realpath='readlink -f'
 fi
 
+readonly CAS_SRC_DIR="$(dirname "$(realpath "$0")")"
+
 die() {
 	printf '\033[1;31mERROR:\033[0m %s\n' "$@" >&2  # bold red
 	exit 1
@@ -340,29 +342,16 @@ ttyS0::respawn:/sbin/agetty --autologin root --noclear ttyS0 115200 vt100
 EOF
 }
 
-write_castra_handshake_assets() {
+write_castra_bus_assets() {
 	local root="$1"
 
 	install -d -m 0755 "$root/usr/local/bin"
 	install -d -m 0755 "$root/etc/conf.d"
 	install -d -m 0755 "$root/etc/init.d"
 
-	cat >"$root/usr/local/bin/castra-handshake.sh" <<'EOF'
-#!/bin/sh
-set -eu
-
-. /etc/conf.d/castra-handshake 2>/dev/null || true
-: "${BROKER_HOST:=10.0.2.2}" "${BROKER_PORT:=7070}" "${BROKER_VM_NAME:=alpine}"
-
-while true; do
-	if printf 'hello vm:%s\n' "$BROKER_VM_NAME" | nc -w 5 "$BROKER_HOST" "$BROKER_PORT" | grep -qi '^ok'; then
-		echo "handshake ok"
-		exit 0
-	fi
-	sleep 5
-done
-EOF
-	chmod 0755 "$root/usr/local/bin/castra-handshake.sh"
+	install -m 0755 "$CAS_SRC_DIR/scripts/castra-bus-common.sh" "$root/usr/local/bin/castra-bus-common.sh"
+	install -m 0755 "$CAS_SRC_DIR/scripts/castra-bus-agent.sh" "$root/usr/local/bin/castra-bus-agent.sh"
+	install -m 0755 "$CAS_SRC_DIR/scripts/castra-bus-publish.sh" "$root/usr/local/bin/castra-bus-publish.sh"
 
 	cat >"$root/etc/conf.d/castra-handshake" <<EOF
 BROKER_HOST="${CASTRA_HANDSHAKE_HOST}"
@@ -370,12 +359,21 @@ BROKER_PORT="${CASTRA_HANDSHAKE_PORT}"
 BROKER_VM_NAME="${CASTRA_VM_NAME}"
 EOF
 
-	cat >"$root/etc/init.d/castra-handshake" <<'EOF'
+	cat >"$root/etc/init.d/castra-bus-agent" <<'EOF'
 #!/sbin/openrc-run
-command="/usr/local/bin/castra-handshake.sh"
-depend() { need net; }
+command="/usr/local/bin/castra-bus-agent.sh"
+command_background="yes"
+pidfile="/run/castra-bus-agent.pid"
+
+depend() {
+	need net
+}
+
+start_pre() {
+	checkpath --directory /run --mode 0755
+}
 EOF
-	chmod 0755 "$root/etc/init.d/castra-handshake"
+	chmod 0755 "$root/etc/init.d/castra-bus-agent"
 }
 
 configure_castra_sshd() {
@@ -384,6 +382,7 @@ configure_castra_sshd() {
 	[ -e "$root/etc/init.d/sshd" ] || return 0
 
 	rm -f "$root/etc/ssh/ssh_host_"*
+
 	enable_openrc_service "$root" sshd default
 }
 
@@ -779,16 +778,20 @@ rc_add shutdown killprocs savecache mount-ro
 if [ "$CASTRA_ENABLE_CUSTOMIZATIONS" = 'yes' ]; then
 	einfo 'Applying Castra customizations'
 
-	einfo 'Ensuring agetty and util-linux login utilities are present'
-	_apk add --root . agetty util-linux-login
+	# einfo 'Ensuring agetty and util-linux login utilities are present'
+	# _apk add --root . agetty util-linux-login
 
-	rewrite_castra_getty .
-	write_castra_handshake_assets .
-	enable_openrc_service . castra-handshake default
+	# rewrite_castra_getty .
+	# einfo 'Ensuring bash is installed for Castra bus scripts'
+	_apk add --root . bash
 
-	if [ "$CASTRA_INCLUDE_SSH" = 'yes' ]; then
-		configure_castra_sshd .
-	fi
+	einfo 'Installing Castra bus scripts'
+	write_castra_bus_assets .
+	rc_add default castra-bus-agent
+
+	einfo 'Ensuring OpenSSH server is installed'
+	_apk add --root . openssh
+	configure_castra_sshd .
 fi
 
 #-----------------------------------------------------------------------

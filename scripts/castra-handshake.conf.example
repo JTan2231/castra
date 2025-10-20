@@ -1,0 +1,14 @@
+# Example /etc/conf.d/castra-handshake configuration consumed by the guest bus helpers.
+# Values may be overridden at runtime via environment variables.
+
+# Broker host/IP. Default: 10.0.2.2 (QEMU user network gateway)
+#BUS_HOST="10.0.2.2"
+
+# Broker TCP port. Default: 7070
+#BUS_PORT="7070"
+
+# VM identity presented during the bus handshake. Default: short hostname.
+#BUS_VM_NAME="alpine"
+
+# Heartbeat interval (seconds). Clamped to 30s or less. Default: 25
+#BUS_HEARTBEAT_INTERVAL="25"

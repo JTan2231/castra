@@ -99,9 +99,9 @@ Unix-specific QMP interactions handle cooperative ACPI powerdown; on non-Unix pl
 
 1. CLI parses flags (`--force`, `--bootstrap`, etc.) into `UpArgs`.
 2. `app::up::handle_up` builds `UpOptions` and calls `core::operations::up`.
-3. The operation loads/validates the project (`load_project_for_operation`), applies bootstrap overrides, and runs status preflight (`status_core::collect_status`) to ensure no guests are already running.
+3. The operation loads/validates the project (`load_project_for_operation`), applies bootstrap overrides, and runs status preflight (`status_core::collect_status`) to ensure no guests are already running. `--broker-only` short-circuits here if VMs are already up, emitting a warning and leaving them untouched.
 4. Runtime preflights host capacity, disk headroom, and port conflicts.
-5. For each VM, `ensure_vm_assets` makes sure the base image is ready (downloading the default Alpine qcow2 if needed), provisions overlays, and emits events for overlays/download progress.
+5. For each VM, `ensure_vm_assets` makes sure the base image is ready (downloading the default Alpine qcow2 if needed), provisions overlays, and emits events for overlays/download progress. When `--broker-only` is set, this step and the rest of the VM/bootstrap pipeline are skipped entirely after creating the broker’s state/log directories and starting the listener.
 6. Broker is launched (if not already running), then each VM is started (`launch_vm`), streaming `VmLaunched` events.
 7. Bootstrap workers execute as needed, publishing structured status events and capturing diagnostics.
 8. The aggregated `UpOutcome` reports launched VMs, broker PID, bootstrap summaries, diagnostics, and the event log for rendering.

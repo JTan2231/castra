@@ -282,13 +282,45 @@ pub fn ensure_ports_available(project: &ProjectConfig) -> Result<()> {
     Ok(())
 }
 
+pub fn ensure_broker_port_available(project: &ProjectConfig) -> Result<()> {
+    let (conflicts, broker_collision) = project.port_conflicts();
+    if !conflicts.is_empty() {
+        let mut lines = Vec::new();
+        for conflict in conflicts {
+            lines.push(format!(
+                "- Port {} declared by: {}",
+                conflict.port,
+                conflict.vm_names.join(", ")
+            ));
+        }
+        return Err(Error::PreflightFailed {
+            message: format!("Host port conflicts detected:\n{}", lines.join("\n")),
+        });
+    }
+
+    if let Some(collision) = broker_collision {
+        return Err(Error::PreflightFailed {
+            message: format!(
+                "Host port {} is reserved for the castra broker. Update the broker port or VM forwards.",
+                collision.port
+            ),
+        });
+    }
+
+    ensure_port_is_free(
+        project.broker.port,
+        &format!("broker port {}", project.broker.port),
+    )
+}
+
 pub fn start_broker(
     project: &ProjectConfig,
-    context: &RuntimeContext,
+    state_root: &Path,
+    log_root: &Path,
     diagnostics: &mut Vec<Diagnostic>,
     events: &mut Vec<Event>,
 ) -> Result<Option<u32>> {
-    let pidfile = broker_pid_path(context);
+    let pidfile = broker_pid_path_from_root(state_root);
     let (state, mut warnings) = inspect_broker_state(&pidfile);
     diagnostics.extend(
         warnings
@@ -315,8 +347,15 @@ pub fn start_broker(
         message: format!("Failed to determine current executable for broker launch: {err}"),
     })?;
 
-    let log_path = broker_log_path(context);
-    let handshake_dir = broker_handshake_dir(context);
+    fs::create_dir_all(log_root).map_err(|err| Error::PreflightFailed {
+        message: format!(
+            "Failed to prepare broker log directory {}: {err}",
+            log_root.display()
+        ),
+    })?;
+
+    let log_path = broker_log_path_from_root(log_root);
+    let handshake_dir = broker_handshake_dir_from_root(state_root);
     fs::create_dir_all(&handshake_dir).map_err(|err| Error::PreflightFailed {
         message: format!(
             "Failed to prepare broker handshake directory {}: {err}",
@@ -732,8 +771,8 @@ pub fn launch_vm(
         .arg(&netdev)
         .arg("-device")
         .arg("virtio-net-pci,netdev=castra-net0")
-        .arg("-display")
-        .arg("none")
+        // .arg("-display")
+        // .arg("none")
         .arg("-serial")
         .arg(format!("file:{}", serial_path.display()))
         .stdout(Stdio::from(log_file))
@@ -1504,16 +1543,12 @@ fn ensure_port_is_free(port: u16, description: &str) -> Result<()> {
     }
 }
 
-fn broker_pid_path(context: &RuntimeContext) -> PathBuf {
-    context.state_root.join("broker.pid")
+fn broker_pid_path_from_root(state_root: &Path) -> PathBuf {
+    state_root.join("broker.pid")
 }
 
-fn broker_log_path(context: &RuntimeContext) -> PathBuf {
-    context.log_root.join("broker.log")
-}
-
-fn broker_handshake_dir(context: &RuntimeContext) -> PathBuf {
-    broker_handshake_dir_from_root(&context.state_root)
+fn broker_log_path_from_root(log_root: &Path) -> PathBuf {
+    log_root.join("broker.log")
 }
 
 pub(crate) fn broker_handshake_dir_from_root(state_root: &Path) -> PathBuf {

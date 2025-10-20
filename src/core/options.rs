@@ -77,6 +77,8 @@ pub struct UpOptions {
     pub config: ConfigLoadOptions,
     /// Whether to force operations even if host checks fail.
     pub force: bool,
+    /// Launch only the broker and skip VM launch/bootstrap.
+    pub broker_only: bool,
     /// Per-invocation overrides for bootstrap behavior.
     pub bootstrap: BootstrapOverrides,
     /// Plan mode renders bootstrap intent without side effects.
@@ -90,6 +92,7 @@ impl Default for UpOptions {
         Self {
             config: ConfigLoadOptions::discover(true),
             force: false,
+            broker_only: false,
             bootstrap: BootstrapOverrides::default(),
             plan: false,
             alpine_qcow_override: None,

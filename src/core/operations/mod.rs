@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -30,8 +31,8 @@ use super::project::{
 use super::reporter::Reporter;
 use super::runtime::{
     BrokerProcessState, CheckOutcome, ShutdownTimeouts, check_disk_space, check_host_capacity,
-    ensure_ports_available, ensure_vm_assets, launch_vm, prepare_runtime_context, shutdown_broker,
-    shutdown_vm, start_broker,
+    ensure_broker_port_available, ensure_ports_available, ensure_vm_assets, launch_vm,
+    prepare_runtime_context, shutdown_broker, shutdown_vm, start_broker,
 };
 use super::status as status_core;
 use crate::config::{self, BaseImageProvenance, BaseImageSource, ProjectConfig};
@@ -179,11 +180,12 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
         apply_alpine_qcow_override(&mut project, qcow, &mut diagnostics)?;
     }
 
+    let state_root = config_state_root(&project);
+    let log_root = state_root.join("logs");
+
     let mut reporter_proxy = ReporterProxy::new(reporter, &mut events);
 
     if options.plan {
-        let state_root = config_state_root(&project);
-        let log_root = state_root.join("logs");
         let plans = bootstrap::plan_all(&project, &mut reporter_proxy, &mut diagnostics)?;
         reporter_proxy.emit(Event::Message {
             severity: Severity::Info,
@@ -217,128 +219,188 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
             .map(|row| row.name.clone())
             .collect();
         if !running.is_empty() {
-            return Err(Error::PreflightFailed {
+            if options.broker_only {
+                diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Warning,
+                        format!("VMs already running: {}.", running.join(", ")),
+                    )
+                    .with_help(
+                        "Broker-only mode leaves running VMs untouched; stop them with `castra down` if you intend to relaunch.",
+                    ),
+                );
+            } else {
+                return Err(Error::PreflightFailed {
+                    message: format!(
+                        "VMs already running: {}. Use `castra status` or `castra down` before invoking `up` again.",
+                        running.join(", ")
+                    ),
+                });
+            }
+        }
+
+        if options.broker_only {
+            ensure_broker_port_available(&project)?;
+
+            fs::create_dir_all(&state_root).map_err(|err| Error::PreflightFailed {
                 message: format!(
-                    "VMs already running: {}. Use `castra status` or `castra down` before invoking `up` again.",
-                    running.join(", ")
+                    "Failed to create castra state directory at {}: {err}",
+                    state_root.display()
                 ),
-            });
-        }
+            })?;
+            fs::create_dir_all(&log_root).map_err(|err| Error::PreflightFailed {
+                message: format!(
+                    "Failed to create log directory at {}: {err}",
+                    log_root.display()
+                ),
+            })?;
 
-        process_check(
-            check_host_capacity(&project),
-            options.force,
-            &mut diagnostics,
-            "Host resource checks failed:",
-            "Rerun with `castra up --force` to override.",
-        )?;
-
-        let context = prepare_runtime_context(&project)?;
-
-        process_check(
-            check_disk_space(&project, &context),
-            options.force,
-            &mut diagnostics,
-            "Insufficient free disk space:",
-            "Rerun with `castra up --force` to override.",
-        )?;
-
-        ensure_ports_available(&project)?;
-
-        let mut preparations = Vec::new();
-        for vm in &project.vms {
-            let prep = ensure_vm_assets(vm, &context)?;
-            for event in prep.events.iter().cloned() {
-                reporter.emit(event);
-            }
-            if let Some(bytes) = prep.overlay_reclaimed_bytes {
-                reporter.emit(Event::EphemeralLayerDiscarded {
-                    vm: vm.name.clone(),
-                    overlay_path: vm.overlay.clone(),
-                    reclaimed_bytes: bytes,
-                    reason: EphemeralCleanupReason::Orphan,
+            let broker_outcome = reporter
+                .with_event_buffer(|events| {
+                    start_broker(&project, &state_root, &log_root, &mut diagnostics, events)
+                })?
+                .map(|pid| BrokerLaunchOutcome {
+                    pid,
+                    config: project.broker.clone(),
                 });
-            }
-            if prep.overlay_created {
-                reporter.emit(Event::OverlayPrepared {
-                    vm: vm.name.clone(),
-                    overlay_path: vm.overlay.clone(),
-                });
-            }
-            preparations.push(prep);
-        }
 
-        let broker_outcome = reporter
-            .with_event_buffer(|events| start_broker(&project, &context, &mut diagnostics, events))?
-            .map(|pid| BrokerLaunchOutcome {
-                pid,
-                config: project.broker.clone(),
-            });
-
-        let mut launched_vms = Vec::new();
-        for (vm, prep) in project.vms.iter().zip(preparations.iter()) {
-            let pid = reporter
-                .with_event_buffer(|events| launch_vm(vm, &prep.assets, &context, events))?;
-            launched_vms.push(VmLaunchOutcome {
-                name: vm.name.clone(),
-                pid,
-                base_image: vm.base_image.path().to_path_buf(),
-                base_image_provenance: vm.base_image.provenance(),
-                overlay_created: prep.overlay_created,
-            });
-        }
-
-        reporter.emit(Event::Message {
-            severity: Severity::Info,
-            text: format!("Launched {} VM(s).", launched_vms.len()),
-        });
-
-        reporter.emit(Event::Message {
-            severity: Severity::Info,
-            text: "Guest disk changes are ephemeral; export via SSH before running `castra down` if you need to retain data.".to_string(),
-        });
-
-        let bootstrap_runs = bootstrap::run_all(
-            &project,
-            &context,
-            &preparations,
-            &mut reporter,
-            &mut diagnostics,
-        )?;
-
-        if !bootstrap_runs.is_empty() {
-            let success = bootstrap_runs
-                .iter()
-                .filter(|run| matches!(run.status, BootstrapRunStatus::Success))
-                .count();
-            let noop = bootstrap_runs
-                .iter()
-                .filter(|run| matches!(run.status, BootstrapRunStatus::NoOp))
-                .count();
-            let skipped = bootstrap_runs
-                .iter()
-                .filter(|run| matches!(run.status, BootstrapRunStatus::Skipped))
-                .count();
             reporter.emit(Event::Message {
                 severity: Severity::Info,
-                text: format!(
-                    "Bootstrap pipeline: {success} succeeded, {noop} up-to-date, {skipped} skipped.",
-                ),
+                text: "Broker-only mode: VMs and bootstrap steps were skipped.".to_string(),
             });
-        }
 
-        reporter.emit(Event::Message {
-            severity: Severity::Info,
-            text: "Use `castra status` to monitor startup progress.".to_string(),
-        });
+            UpOutcome {
+                state_root: state_root.clone(),
+                log_root: log_root.clone(),
+                launched_vms: Vec::new(),
+                broker: broker_outcome,
+                bootstraps: Vec::new(),
+                plans: Vec::new(),
+            }
+        } else {
+            process_check(
+                check_host_capacity(&project),
+                options.force,
+                &mut diagnostics,
+                "Host resource checks failed:",
+                "Rerun with `castra up --force` to override.",
+            )?;
 
-        UpOutcome {
-            state_root: context.state_root.clone(),
-            log_root: context.log_root.clone(),
-            launched_vms,
-            broker: broker_outcome,
-            bootstraps: bootstrap_runs,
-            plans: Vec::new(),
+            let context = prepare_runtime_context(&project)?;
+
+            process_check(
+                check_disk_space(&project, &context),
+                options.force,
+                &mut diagnostics,
+                "Insufficient free disk space:",
+                "Rerun with `castra up --force` to override.",
+            )?;
+
+            ensure_ports_available(&project)?;
+
+            let mut preparations = Vec::new();
+            for vm in &project.vms {
+                let prep = ensure_vm_assets(vm, &context)?;
+                for event in prep.events.iter().cloned() {
+                    reporter.emit(event);
+                }
+                if let Some(bytes) = prep.overlay_reclaimed_bytes {
+                    reporter.emit(Event::EphemeralLayerDiscarded {
+                        vm: vm.name.clone(),
+                        overlay_path: vm.overlay.clone(),
+                        reclaimed_bytes: bytes,
+                        reason: EphemeralCleanupReason::Orphan,
+                    });
+                }
+                if prep.overlay_created {
+                    reporter.emit(Event::OverlayPrepared {
+                        vm: vm.name.clone(),
+                        overlay_path: vm.overlay.clone(),
+                    });
+                }
+                preparations.push(prep);
+            }
+
+            let broker_outcome = reporter
+                .with_event_buffer(|events| {
+                    start_broker(
+                        &project,
+                        &context.state_root,
+                        &context.log_root,
+                        &mut diagnostics,
+                        events,
+                    )
+                })?
+                .map(|pid| BrokerLaunchOutcome {
+                    pid,
+                    config: project.broker.clone(),
+                });
+
+            let mut launched_vms = Vec::new();
+            for (vm, prep) in project.vms.iter().zip(preparations.iter()) {
+                let pid = reporter
+                    .with_event_buffer(|events| launch_vm(vm, &prep.assets, &context, events))?;
+                launched_vms.push(VmLaunchOutcome {
+                    name: vm.name.clone(),
+                    pid,
+                    base_image: vm.base_image.path().to_path_buf(),
+                    base_image_provenance: vm.base_image.provenance(),
+                    overlay_created: prep.overlay_created,
+                });
+            }
+
+            reporter.emit(Event::Message {
+                severity: Severity::Info,
+                text: format!("Launched {} VM(s).", launched_vms.len()),
+            });
+
+            reporter.emit(Event::Message {
+                severity: Severity::Info,
+                text: "Guest disk changes are ephemeral; export via SSH before running `castra down` if you need to retain data.".to_string(),
+            });
+
+            let bootstrap_runs = bootstrap::run_all(
+                &project,
+                &context,
+                &preparations,
+                &mut reporter,
+                &mut diagnostics,
+            )?;
+
+            if !bootstrap_runs.is_empty() {
+                let success = bootstrap_runs
+                    .iter()
+                    .filter(|run| matches!(run.status, BootstrapRunStatus::Success))
+                    .count();
+                let noop = bootstrap_runs
+                    .iter()
+                    .filter(|run| matches!(run.status, BootstrapRunStatus::NoOp))
+                    .count();
+                let skipped = bootstrap_runs
+                    .iter()
+                    .filter(|run| matches!(run.status, BootstrapRunStatus::Skipped))
+                    .count();
+                reporter.emit(Event::Message {
+                    severity: Severity::Info,
+                    text: format!(
+                        "Bootstrap pipeline: {success} succeeded, {noop} up-to-date, {skipped} skipped.",
+                    ),
+                });
+            }
+
+            reporter.emit(Event::Message {
+                severity: Severity::Info,
+                text: "Use `castra status` to monitor startup progress.".to_string(),
+            });
+
+            UpOutcome {
+                state_root: context.state_root.clone(),
+                log_root: context.log_root.clone(),
+                launched_vms,
+                broker: broker_outcome,
+                bootstraps: bootstrap_runs,
+                plans: Vec::new(),
+            }
         }
     };
 

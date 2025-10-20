@@ -28,6 +28,10 @@ The binary is gated behind the `cli` feature (enabled by default). Library consu
 
 `castra --version` now prints the semantic version and the short git commit hash when the build runs inside a git checkout. When VCS metadata is unavailable the CLI falls back to the plain semantic version.
 
+## Broker-Only Mode
+
+Use `castra up --broker-only` to start just the TCP broker for bus testing. The flag prepares the workspace directories, verifies the broker port is free, and launches the listener without touching VM overlays or running bootstrap steps. If guests are already running, the command leaves them in place and surfaces a warning.
+
 ## Documentation
 
 - `docs/library_usage.md` explains how to drive Castra from another crate.

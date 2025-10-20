@@ -97,6 +97,14 @@ pub struct UpArgs {
     )]
     pub force: bool,
 
+    /// Launch only the broker listener without preparing or starting VMs.
+    #[arg(
+        long,
+        help = "Start the broker only; skips VM preparation, VM launch, and bootstrap steps.",
+        conflicts_with = "plan"
+    )]
+    pub broker_only: bool,
+
     /// Preview bootstrap inputs without launching VMs.
     #[arg(
         long,
@@ -505,6 +513,26 @@ mod tests {
         };
         assert!(args.skip_discovery);
         assert!(args.force);
+        assert!(!args.broker_only);
+        assert!(!args.plan);
+    }
+
+    #[test]
+    fn parse_up_broker_only_flag() {
+        let cli =
+            Cli::try_parse_from(["castra", "up", "--broker-only"]).expect("parse broker-only");
+        let Commands::Up(args) = cli.command.expect("up command present") else {
+            panic!("expected up command");
+        };
+        assert!(args.broker_only);
+        assert!(!args.plan);
+        assert!(!args.force);
+    }
+
+    #[test]
+    fn broker_only_conflicts_with_plan() {
+        let err = Cli::try_parse_from(["castra", "up", "--broker-only", "--plan"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
