@@ -67,16 +67,19 @@ pub fn collect_status(project: &ProjectConfig) -> StatusSnapshot {
         );
 
         let record = handshakes.remove(&vm.name);
+
+        let (bus_subscribed, last_publish_age, last_heartbeat_age) =
+            bus_state_for_vm(record.as_ref(), now, vm.name.as_str(), &mut diagnostics);
+
         let (reachability, handshake_age, timestamp) = broker_reachability_for_vm(
             &broker_state,
             record.as_ref(),
             now,
             vm.name.as_str(),
+            last_publish_age,
+            last_heartbeat_age,
             &mut diagnostics,
         );
-
-        let (bus_subscribed, last_publish_age, last_heartbeat_age) =
-            bus_state_for_vm(record.as_ref(), now, vm.name.as_str(), &mut diagnostics);
 
         if matches!(reachability, BrokerReachability::Reachable) {
             reachable = true;
@@ -180,6 +183,8 @@ fn broker_reachability_for_vm(
     record: Option<&HandshakeRecord>,
     now: SystemTime,
     vm_name: &str,
+    last_publish_age: Option<Duration>,
+    last_heartbeat_age: Option<Duration>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (BrokerReachability, Option<Duration>, Option<SystemTime>) {
     match broker_state {
@@ -194,7 +199,12 @@ fn broker_reachability_for_vm(
         BrokerProcessState::Running { .. } => match record {
             Some(record) => match now.duration_since(record.timestamp) {
                 Ok(age) => {
-                    let status = if age <= HANDSHAKE_FRESHNESS {
+                    let handshake_fresh = age <= HANDSHAKE_FRESHNESS;
+                    let bus_fresh = last_publish_age
+                        .into_iter()
+                        .chain(last_heartbeat_age.into_iter())
+                        .any(|bus_age| bus_age <= HANDSHAKE_FRESHNESS);
+                    let status = if handshake_fresh || bus_fresh {
                         BrokerReachability::Reachable
                     } else {
                         BrokerReachability::Waiting
@@ -621,6 +631,46 @@ mod tests {
         assert!(snapshot.rows[0].last_publish_age.is_none());
         assert!(snapshot.rows[0].last_heartbeat_age.is_none());
         assert!(snapshot.last_handshake.is_some());
+
+        project.state_root = PathBuf::new();
+    }
+
+    #[test]
+    fn collect_status_marks_reachable_with_fresh_bus_activity() {
+        let dir = tempdir().unwrap();
+        let mut project = sample_project(dir.path());
+        write_broker_pid(dir.path());
+        let stale_handshake = HANDSHAKE_FRESHNESS + Duration::from_secs(10);
+        write_handshake_with_bus(
+            dir.path(),
+            "devbox",
+            stale_handshake,
+            true,
+            None,
+            Some(Duration::from_secs(5)),
+        );
+
+        let snapshot = collect_status(&project);
+
+        assert!(snapshot.reachable);
+        assert!(matches!(
+            snapshot.rows[0].broker_reachability,
+            BrokerReachability::Reachable
+        ));
+        let handshake_age = snapshot.rows[0]
+            .handshake_age
+            .expect("expected handshake age");
+        assert!(
+            handshake_age >= HANDSHAKE_FRESHNESS,
+            "handshake age should remain stale to validate bus freshness handling"
+        );
+        let heartbeat_age = snapshot.rows[0]
+            .last_heartbeat_age
+            .expect("expected heartbeat age");
+        assert!(
+            heartbeat_age <= HANDSHAKE_FRESHNESS,
+            "heartbeat should be treated as fresh"
+        );
 
         project.state_root = PathBuf::new();
     }

@@ -1580,13 +1580,17 @@ fn attempt_graceful_shutdown(state_root: &Path, vm_name: &str) -> GracefulTrigge
                 };
                 GracefulTrigger::Unavailable { detail }
             }
-            Err(GracefulShutdownError::Io(err)) => GracefulTrigger::Failed {
-                detail: format!(
-                    "QMP connection error via {} while powering down `{vm_name}`: {err}",
-                    socket.display(),
-                    vm_name = vm_name
-                ),
-            },
+            Err(GracefulShutdownError::Io(err)) => {
+                let detail = describe_unavailable_connection_error(&socket, vm_name, &err);
+                match err.kind() {
+                    io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::NotConnected
+                    | io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::AddrNotAvailable => GracefulTrigger::Unavailable { detail },
+                    _ => GracefulTrigger::Failed { detail },
+                }
+            }
             Err(GracefulShutdownError::Protocol(reason)) => {
                 GracefulTrigger::Failed { detail: reason }
             }
@@ -1598,6 +1602,33 @@ fn attempt_graceful_shutdown(state_root: &Path, vm_name: &str) -> GracefulTrigge
         GracefulTrigger::Unavailable {
             detail: "cooperative shutdown not supported on this platform".to_string(),
         }
+    }
+}
+
+fn describe_unavailable_connection_error(socket: &Path, vm_name: &str, err: &io::Error) -> String {
+    match err.kind() {
+        io::ErrorKind::ConnectionRefused => format!(
+            "QMP connection to {} refused while powering down `{vm_name}`: {err}",
+            socket.display(),
+            vm_name = vm_name
+        ),
+        io::ErrorKind::ConnectionReset
+        | io::ErrorKind::NotConnected
+        | io::ErrorKind::BrokenPipe => format!(
+            "QMP connection closed unexpectedly via {} while powering down `{vm_name}`: {err}",
+            socket.display(),
+            vm_name = vm_name
+        ),
+        io::ErrorKind::AddrNotAvailable => format!(
+            "QMP socket {} not available for `{vm_name}`: {err}",
+            socket.display(),
+            vm_name = vm_name
+        ),
+        _ => format!(
+            "QMP connection error via {} while powering down `{vm_name}`: {err}",
+            socket.display(),
+            vm_name = vm_name
+        ),
     }
 }
 

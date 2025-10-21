@@ -383,7 +383,7 @@ configure_castra_sshd() {
 
 	rm -f "$root/etc/ssh/ssh_host_"*
 
-	enable_openrc_service "$root" sshd default
+	rc_add default sshd
 }
 
 # Ensures that the specified device node exists.
@@ -779,9 +779,9 @@ if [ "$CASTRA_ENABLE_CUSTOMIZATIONS" = 'yes' ]; then
 	einfo 'Applying Castra customizations'
 
 	# einfo 'Ensuring agetty and util-linux login utilities are present'
-	# _apk add --root . agetty util-linux-login
+	_apk add --root . agetty util-linux-login
+	rewrite_castra_getty .
 
-	# rewrite_castra_getty .
 	# einfo 'Ensuring bash is installed for Castra bus scripts'
 	_apk add --root . bash
 
