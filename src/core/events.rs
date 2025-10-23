@@ -113,7 +113,7 @@ pub enum Event {
         handshake_timeout_secs: Option<u64>,
         /// Remote directory that would receive staged assets.
         remote_dir: Option<String>,
-        /// SSH connection summary for the plan.
+        /// SSH command that can be used to connect.
         ssh: Option<BootstrapPlanSsh>,
         /// Environment variable keys that would be exported.
         env_keys: Vec<String>,
@@ -281,6 +281,60 @@ impl BootstrapPlanSsh {
     pub fn summary(&self) -> String {
         format!("{}@{}:{}", self.user, self.host, self.port)
     }
+
+    /// Format a full `ssh` command including identity and options.
+    pub fn command(&self) -> String {
+        let mut parts = Vec::new();
+        parts.push(String::from("ssh"));
+
+        if let Some(identity) = self.identity.as_ref() {
+            parts.push(String::from("-i"));
+            parts.push(shell_format_arg(identity.to_string_lossy().as_ref()));
+        }
+
+        for option in &self.options {
+            parts.push(String::from("-o"));
+            parts.push(shell_format_arg(option));
+        }
+
+        parts.push(String::from("-p"));
+        parts.push(self.port.to_string());
+        parts.push(shell_format_arg(&format!("{}@{}", self.user, self.host)));
+
+        parts.join(" ")
+    }
+}
+
+fn shell_format_arg(arg: &str) -> String {
+    if arg.is_empty() || arg.chars().any(|ch| !is_shell_safe(ch)) {
+        return shell_quote(arg);
+    }
+    arg.to_string()
+}
+
+fn is_shell_safe(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || matches!(
+            ch,
+            '/' | '-' | '_' | '.' | ':' | '@' | '+' | '=' | ',' | '%' | '~' | '\\'
+        )
+}
+
+fn shell_quote(input: &str) -> String {
+    if input.is_empty() {
+        return "''".to_string();
+    }
+
+    let mut result = String::from("'");
+    for ch in input.chars() {
+        if ch == '\'' {
+            result.push_str("'\\''");
+        } else {
+            result.push(ch);
+        }
+    }
+    result.push('\'');
+    result
 }
 
 /// Verification configuration surfaced in a bootstrap plan.

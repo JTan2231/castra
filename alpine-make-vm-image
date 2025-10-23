@@ -376,16 +376,6 @@ EOF
 	chmod 0755 "$root/etc/init.d/castra-bus-agent"
 }
 
-configure_castra_sshd() {
-	local root="$1"
-
-	[ -e "$root/etc/init.d/sshd" ] || return 0
-
-	rm -f "$root/etc/ssh/ssh_host_"*
-
-	rc_add default sshd
-}
-
 # Ensures that the specified device node exists.
 settle_dev_node() {
 	local dev="$1"
@@ -791,7 +781,12 @@ if [ "$CASTRA_ENABLE_CUSTOMIZATIONS" = 'yes' ]; then
 
 	einfo 'Ensuring OpenSSH server is installed'
 	_apk add --root . openssh
-	configure_castra_sshd .
+
+	[ -e "./etc/init.d/sshd" ] || return 0
+
+	rm -f "./etc/ssh/ssh_host_"*
+
+	rc_add default sshd
 fi
 
 #-----------------------------------------------------------------------

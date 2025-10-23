@@ -346,6 +346,7 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
                     base_image: vm.base_image.path().to_path_buf(),
                     base_image_provenance: vm.base_image.provenance(),
                     overlay_created: prep.overlay_created,
+                    port_forwards: vm.port_forwards.clone(),
                 });
             }
 

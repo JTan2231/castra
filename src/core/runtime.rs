@@ -771,8 +771,8 @@ pub fn launch_vm(
         .arg(&netdev)
         .arg("-device")
         .arg("virtio-net-pci,netdev=castra-net0")
-        // .arg("-display")
-        // .arg("none")
+        .arg("-display")
+        .arg("none")
         .arg("-serial")
         .arg(format!("file:{}", serial_path.display()))
         .stdout(Stdio::from(log_file))
@@ -1862,19 +1862,19 @@ fn create_overlay(
     let mut command = Command::new(qemu_img);
     command.arg("create").arg("-f").arg("qcow2");
     if let Some(format) = base_format {
-        command.arg("-F").arg(format);
+        command.arg("-B").arg(format);
     }
-    let status = command
-        .arg("-b")
-        .arg(base)
-        .arg(overlay)
-        .status()
-        .map_err(|err| Error::PreflightFailed {
-            message: format!(
-                "Failed to invoke `{}` while creating overlay for VM `{vm_name}`: {err}",
-                qemu_img.display()
-            ),
-        })?;
+    let x = command.arg("-b").arg(base).arg(overlay);
+    let args = x.get_args();
+
+    println!("COMMAND: {:?}", args);
+
+    let status = x.status().map_err(|err| Error::PreflightFailed {
+        message: format!(
+            "Failed to invoke `{}` while creating overlay for VM `{vm_name}`: {err}",
+            qemu_img.display()
+        ),
+    })?;
 
     if !status.success() {
         return Err(Error::PreflightFailed {

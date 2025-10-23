@@ -53,6 +53,24 @@ pub fn run_all(
         });
     }
 
+    let active_vm_names: Vec<String> = project
+        .vms
+        .iter()
+        .filter(|vm| !matches!(vm.bootstrap.mode, BootstrapMode::Skip))
+        .map(|vm| vm.name.clone())
+        .collect();
+    if !active_vm_names.is_empty() {
+        let list = active_vm_names.join(", ");
+        reporter.report(Event::Message {
+            severity: Severity::Info,
+            text: format!(
+                "Bootstrap starting for {} VM(s): {}.",
+                active_vm_names.len(),
+                list
+            ),
+        });
+    }
+
     let (event_tx, event_rx) = mpsc::channel::<Event>();
     let mut first_error: Option<Error> = None;
     let mut vm_slots: Vec<Option<BootstrapRunOutcome>> =
@@ -370,6 +388,7 @@ fn run_for_vm(
                 status: BootstrapRunStatus::Skipped,
                 stamp: None,
                 log_path: None,
+                ssh: None,
             });
         }
         BootstrapMode::Auto | BootstrapMode::Always => {}
@@ -396,6 +415,7 @@ fn run_for_vm(
                 status: BootstrapRunStatus::Skipped,
                 stamp: None,
                 log_path: None,
+                ssh: None,
             });
         }
     };
@@ -423,6 +443,7 @@ fn run_for_vm(
             status: BootstrapRunStatus::Skipped,
             stamp: None,
             log_path: None,
+            ssh: None,
         });
     }
 
@@ -444,6 +465,74 @@ fn run_for_vm(
         );
     }
 
+    let handshake_path = state_root.join("handshakes").join(format!(
+        "{}.json",
+        sanitize_handshake_identity(&blueprint.handshake_identity)
+    ));
+    let mut context_parts = Vec::new();
+    context_parts.push(format!("script {}", blueprint.script_source.display()));
+    context_parts.push(format!("staged {}", blueprint.staged_script.display()));
+    context_parts.push(format!("remote script {}", blueprint.remote_script));
+    context_parts.push(format!("remote dir {}", blueprint.remote_dir));
+    if let Some(payload_source) = blueprint.payload_source.as_ref() {
+        context_parts.push(format!(
+            "payload {} ({} bytes)",
+            payload_source.display(),
+            blueprint.payload_bytes
+        ));
+    } else {
+        context_parts.push("payload none".to_string());
+    }
+    if let Some(remote_payload_dir) = blueprint.remote_payload_dir.as_ref() {
+        context_parts.push(format!("remote payload dir {}", remote_payload_dir));
+    }
+    context_parts.push(format!(
+        "handshake `{}` -> {} (timeout {}s; freshness {}s)",
+        blueprint.handshake_identity,
+        handshake_path.display(),
+        blueprint.handshake_timeout.as_secs(),
+        HANDSHAKE_FRESHNESS.as_secs()
+    ));
+    let mut ssh_context = Vec::new();
+    ssh_context.push(format!(
+        "{}@{}:{}",
+        blueprint.ssh.user, blueprint.ssh.host, blueprint.ssh.port
+    ));
+    if let Some(identity) = blueprint.ssh.identity.as_ref() {
+        ssh_context.push(format!("identity {}", identity.display()));
+    }
+    if !blueprint.ssh.options.is_empty() {
+        ssh_context.push(format!("options {}", blueprint.ssh.options.join(", ")));
+    }
+    context_parts.push(format!("ssh {}", ssh_context.join("; ")));
+    if !blueprint.env.is_empty() {
+        let mut env_keys: Vec<_> = blueprint.env.keys().cloned().collect();
+        env_keys.sort();
+        context_parts.push(format!("env keys [{}]", env_keys.join(", ")));
+    }
+    if let Some(metadata) = blueprint.metadata_path.as_ref() {
+        context_parts.push(format!("metadata {}", metadata.display()));
+    }
+    if let Some(command) = blueprint.verify.command.as_ref() {
+        context_parts.push(format!("verify command {}", command));
+    }
+    if let Some(path) = blueprint.verify.path.as_ref() {
+        let scope = if blueprint.verify.path_is_relative {
+            "relative"
+        } else {
+            "absolute"
+        };
+        context_parts.push(format!("verify path {} ({scope})", path));
+    }
+    emit_event(Event::Message {
+        severity: Severity::Info,
+        text: format!(
+            "→ {}: bootstrap context resolved: {}.",
+            vm.name,
+            context_parts.join("; ")
+        ),
+    });
+
     let base_hash = derive_base_hash(vm)?;
     let trigger = if matches!(vm.bootstrap.mode, BootstrapMode::Always) {
         BootstrapTrigger::Always
@@ -458,12 +547,29 @@ fn run_for_vm(
         trigger,
     });
 
+    emit_event(Event::Message {
+        severity: Severity::Info,
+        text: format!(
+            "→ {}: waiting for broker handshake `{}` at {} (timeout {}s; freshness {}s).",
+            vm.name,
+            blueprint.handshake_identity,
+            handshake_path.display(),
+            blueprint.handshake_timeout.as_secs(),
+            HANDSHAKE_FRESHNESS.as_secs()
+        ),
+    });
+
     let log_dir = log_root.join(LOG_SUBDIR);
     let mut steps = Vec::new();
     let start = Instant::now();
 
     let handshake_start = Instant::now();
-    let handshake_result = wait_for_handshake(state_root, &vm.name, blueprint.handshake_timeout);
+    let handshake_result = wait_for_handshake(
+        state_root,
+        &vm.name,
+        &blueprint.handshake_identity,
+        blueprint.handshake_timeout,
+    );
     let handshake_duration = handshake_start.elapsed();
 
     match handshake_result {
@@ -471,14 +577,24 @@ fn run_for_vm(
             steps.push(StepLog::success(
                 BootstrapStepKind::WaitHandshake,
                 handshake_duration,
-                Some(format!("Fresh handshake observed at {:?}.", handshake_ts)),
+                Some(format!(
+                    "Fresh handshake observed at {:?} (identity `{}` via {}).",
+                    handshake_ts,
+                    blueprint.handshake_identity,
+                    handshake_path.display()
+                )),
             ));
             emit_event(Event::BootstrapStep {
                 vm: vm.name.clone(),
                 step: BootstrapStepKind::WaitHandshake,
                 status: BootstrapStepStatus::Success,
                 duration_ms: elapsed_ms(handshake_duration),
-                detail: Some("Handshake fresh".to_string()),
+                detail: Some(format!(
+                    "Handshake fresh at {:?}; identity `{}`; file {}.",
+                    handshake_ts,
+                    blueprint.handshake_identity,
+                    handshake_path.display()
+                )),
             });
         }
         Err(err) => {
@@ -486,24 +602,30 @@ fn run_for_vm(
                 Error::BootstrapFailed { message, .. } => message.clone(),
                 other => other.to_string(),
             };
+            let enriched_detail = format!(
+                "{} (identity `{}` expected at {}).",
+                failure_detail,
+                blueprint.handshake_identity,
+                handshake_path.display()
+            );
             steps.push(StepLog::from_result(
                 BootstrapStepKind::WaitHandshake,
                 BootstrapStepStatus::Failed,
                 handshake_duration,
-                Some(failure_detail.clone()),
+                Some(enriched_detail.clone()),
             ));
             emit_event(Event::BootstrapStep {
                 vm: vm.name.clone(),
                 step: BootstrapStepKind::WaitHandshake,
                 status: BootstrapStepStatus::Failed,
                 duration_ms: elapsed_ms(handshake_duration),
-                detail: Some(failure_detail.clone()),
+                detail: Some(enriched_detail.clone()),
             });
             let duration_ms = elapsed_ms(start.elapsed());
             emit_event(Event::BootstrapFailed {
                 vm: vm.name.clone(),
                 duration_ms,
-                error: failure_detail.clone(),
+                error: enriched_detail.clone(),
             });
             let log_record = BootstrapRunLog::failure(
                 &vm.name,
@@ -511,7 +633,7 @@ fn run_for_vm(
                 &base_hash,
                 steps,
                 duration_ms,
-                failure_detail.clone(),
+                enriched_detail.clone(),
             );
             write_run_log(&log_dir, &log_record).map_err(|io_err| Error::BootstrapFailed {
                 vm: vm.name.clone(),
@@ -520,6 +642,26 @@ fn run_for_vm(
             return Err(err);
         }
     }
+
+    let mut connectivity_context = Vec::new();
+    connectivity_context.push(format!(
+        "{}@{}:{}",
+        blueprint.ssh.user, blueprint.ssh.host, blueprint.ssh.port
+    ));
+    if let Some(identity) = blueprint.ssh.identity.as_ref() {
+        connectivity_context.push(format!("identity {}", identity.display()));
+    }
+    if !blueprint.ssh.options.is_empty() {
+        connectivity_context.push(format!("options {}", blueprint.ssh.options.join(", ")));
+    }
+    emit_event(Event::Message {
+        severity: Severity::Info,
+        text: format!(
+            "→ {}: checking SSH connectivity ({}).",
+            vm.name,
+            connectivity_context.join("; ")
+        ),
+    });
 
     let connect_outcome = check_connectivity(&blueprint);
     let connect_duration = connect_outcome.duration;
@@ -565,6 +707,35 @@ fn run_for_vm(
         });
     }
 
+    let mut transfer_context = Vec::new();
+    transfer_context.push(format!(
+        "{} -> {}",
+        blueprint.staged_script.display(),
+        blueprint.remote_script
+    ));
+    if let Some(staged_payload) = blueprint.staged_payload.as_ref() {
+        let remote_payload = blueprint
+            .remote_payload_dir
+            .as_deref()
+            .unwrap_or(&blueprint.remote_dir);
+        transfer_context.push(format!(
+            "{} -> {} ({} bytes)",
+            staged_payload.display(),
+            remote_payload,
+            blueprint.payload_bytes
+        ));
+    } else {
+        transfer_context.push("no payload staging".to_string());
+    }
+    emit_event(Event::Message {
+        severity: Severity::Info,
+        text: format!(
+            "→ {}: transferring bootstrap assets: {}.",
+            vm.name,
+            transfer_context.join("; ")
+        ),
+    });
+
     let transfer_outcome = transfer_artifacts(&blueprint);
     let transfer_duration = transfer_outcome.duration;
     emit_event(Event::BootstrapStep {
@@ -608,6 +779,28 @@ fn run_for_vm(
             message: failure_detail,
         });
     }
+
+    let mut apply_context = Vec::new();
+    apply_context.push(format!("remote dir {}", blueprint.remote_dir));
+    apply_context.push(format!("script {}", blueprint.remote_script));
+    if let Some(remote_payload_dir) = blueprint.remote_payload_dir.as_ref() {
+        apply_context.push(format!("payload dir {}", remote_payload_dir));
+    }
+    if !blueprint.env.is_empty() {
+        let mut env_keys: Vec<_> = blueprint.env.keys().cloned().collect();
+        env_keys.sort();
+        apply_context.push(format!("env keys [{}]", env_keys.join(", ")));
+    } else {
+        apply_context.push("env keys []".to_string());
+    }
+    emit_event(Event::Message {
+        severity: Severity::Info,
+        text: format!(
+            "→ {}: executing remote bootstrap script ({})",
+            vm.name,
+            apply_context.join("; ")
+        ),
+    });
 
     let apply_outcome = execute_remote(&blueprint);
     let apply_duration = apply_outcome.command.duration;
@@ -653,6 +846,30 @@ fn run_for_vm(
             message: failure_detail,
         });
     }
+
+    let mut verify_context = Vec::new();
+    if let Some(command) = blueprint.verify.command.as_ref() {
+        verify_context.push(format!("command {}", command));
+    }
+    if let Some(path) = blueprint.verify.path.as_ref() {
+        let scope = if blueprint.verify.path_is_relative {
+            "relative"
+        } else {
+            "absolute"
+        };
+        verify_context.push(format!("path {} ({scope})", path));
+    }
+    if verify_context.is_empty() {
+        verify_context.push("no verification checks configured".to_string());
+    }
+    emit_event(Event::Message {
+        severity: Severity::Info,
+        text: format!(
+            "→ {}: verifying remote state ({})",
+            vm.name,
+            verify_context.join("; ")
+        ),
+    });
 
     let verify_outcome = verify_remote(&blueprint);
     let verify_duration = verify_outcome.duration;
@@ -735,11 +952,18 @@ fn run_for_vm(
         status: run_status,
         stamp: None,
         log_path: Some(log_path),
+        ssh: Some(plan_ssh_from_config(&blueprint.ssh)),
     })
 }
 
-fn wait_for_handshake(state_root: &Path, vm: &str, timeout: Duration) -> Result<SystemTime> {
-    let handshake_path = state_root.join("handshakes").join(format!("{vm}.json"));
+fn wait_for_handshake(
+    state_root: &Path,
+    vm: &str,
+    handshake_identity: &str,
+    timeout: Duration,
+) -> Result<SystemTime> {
+    let file_name = format!("{}.json", sanitize_handshake_identity(handshake_identity));
+    let handshake_path = state_root.join("handshakes").join(file_name);
     let deadline = Instant::now() + timeout;
 
     loop {
@@ -759,8 +983,11 @@ fn wait_for_handshake(state_root: &Path, vm: &str, timeout: Duration) -> Result<
             return Err(Error::BootstrapFailed {
                 vm: vm.to_string(),
                 message: format!(
-                    "Timed out waiting for fresh broker handshake after {} seconds.",
-                    timeout.as_secs()
+                    "Timed out waiting for fresh broker handshake `{}` at {} after {} seconds (freshness window {}s).",
+                    handshake_identity,
+                    handshake_path.display(),
+                    timeout.as_secs(),
+                    HANDSHAKE_FRESHNESS.as_secs()
                 ),
             });
         }
@@ -809,6 +1036,23 @@ fn read_handshake_timestamp(path: &Path) -> Result<Option<SystemTime>> {
     Ok(Some(UNIX_EPOCH + Duration::from_secs(parsed.timestamp)))
 }
 
+fn sanitize_handshake_identity(identity: &str) -> String {
+    let mut sanitized: String = identity
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.chars().all(|ch| ch == '_' || ch == '.') {
+        sanitized = "vm".to_string();
+    }
+    sanitized
+}
+
 fn derive_base_hash(vm: &VmDefinition) -> Result<String> {
     compute_file_sha256(vm.base_image.path()).map_err(|err| Error::BootstrapFailed {
         vm: vm.name.clone(),
@@ -840,6 +1084,7 @@ fn compute_file_sha256(path: &Path) -> std::result::Result<String, String> {
 #[derive(Debug)]
 struct BootstrapBlueprintInputs {
     vm: String,
+    handshake_identity: String,
     script_source: PathBuf,
     payload_source: Option<PathBuf>,
     payload_bytes: u64,
@@ -858,6 +1103,7 @@ struct BootstrapBlueprintInputs {
 #[derive(Debug)]
 struct BootstrapBlueprint {
     vm: String,
+    handshake_identity: String,
     script_source: PathBuf,
     staged_script: PathBuf,
     payload_source: Option<PathBuf>,
@@ -884,6 +1130,16 @@ struct SshConfig {
     options: Vec<String>,
 }
 
+fn plan_ssh_from_config(ssh: &SshConfig) -> BootstrapPlanSsh {
+    BootstrapPlanSsh {
+        user: ssh.user.clone(),
+        host: ssh.host.clone(),
+        port: ssh.port,
+        identity: ssh.identity.clone(),
+        options: ssh.options.clone(),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct BootstrapVerifyPlan {
     command: Option<String>,
@@ -897,6 +1153,8 @@ struct BlueprintMetadata {
     ssh: Option<MetadataSsh>,
     #[serde(default)]
     verify: Option<MetadataVerify>,
+    #[serde(default)]
+    handshake_identity: Option<String>,
     #[serde(default)]
     handshake_timeout_secs: Option<u64>,
     #[serde(default)]
@@ -943,6 +1201,7 @@ fn assemble_blueprint(
 
     let BootstrapBlueprintInputs {
         vm,
+        handshake_identity,
         script_source: resolved_script,
         payload_source,
         payload_bytes: _,
@@ -961,6 +1220,7 @@ fn assemble_blueprint(
     Ok(BootstrapBlueprint {
         vm,
         script_source: resolved_script,
+        handshake_identity,
         staged_script,
         payload_source,
         staged_payload,
@@ -996,6 +1256,7 @@ fn resolve_blueprint_inputs(
     };
 
     let mut handshake_secs = vm.bootstrap.handshake_timeout_secs;
+    let mut handshake_identity = vm.name.clone();
     if let Some(meta) = metadata.as_ref() {
         if let Some(value) = meta.handshake_timeout_secs {
             if value == 0 {
@@ -1005,6 +1266,16 @@ fn resolve_blueprint_inputs(
                 ));
             }
             handshake_secs = value;
+        }
+        if let Some(identity) = meta.handshake_identity.as_ref() {
+            let trimmed = identity.trim();
+            if trimmed.is_empty() {
+                return Err(format!(
+                    "bootstrap.toml for `{}` specifies an empty handshake_identity.",
+                    vm.name
+                ));
+            }
+            handshake_identity = trimmed.to_string();
         }
     }
     let handshake_timeout = Duration::from_secs(handshake_secs);
@@ -1174,6 +1445,7 @@ fn resolve_blueprint_inputs(
 
     Ok(BootstrapBlueprintInputs {
         vm: vm.name.clone(),
+        handshake_identity,
         script_source: script_source.to_path_buf(),
         payload_source: payload_source_resolved,
         payload_bytes,
@@ -1605,22 +1877,88 @@ enum ApplyCompletion {
 }
 
 struct ProcessOutput {
+    command: String,
     stdout: String,
-    #[allow(dead_code)]
     stderr: String,
+}
+
+fn format_cli(program: &str, args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(args.len() + 1);
+    parts.push(program.to_string());
+    for arg in args {
+        if arg.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(ch, '-' | '_' | '/' | '.' | ':' | '=' | ',' | '@')
+        }) {
+            parts.push(arg.clone());
+        } else {
+            parts.push(shell_quote(arg));
+        }
+    }
+    parts.join(" ")
+}
+
+fn truncate_for_log(input: &str, limit: usize) -> String {
+    let mut buffer = String::new();
+    let mut chars = input.chars();
+    for _ in 0..limit {
+        match chars.next() {
+            Some(ch) => buffer.push(ch),
+            None => return buffer,
+        }
+    }
+    if chars.next().is_some() {
+        buffer.push_str("...");
+    }
+    buffer
+}
+
+fn summarize_output(label: &str, contents: &str) -> Option<String> {
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(format!("{label}: {}", truncate_for_log(trimmed, 240)))
+    }
+}
+
+fn append_command_detail(parts: &mut Vec<String>, label: &str, output: &ProcessOutput) {
+    parts.push(format!("{label} via `{}`.", output.command));
+    if let Some(snippet) = summarize_output("stdout", &output.stdout) {
+        parts.push(snippet);
+    }
+    if let Some(snippet) = summarize_output("stderr", &output.stderr) {
+        parts.push(snippet);
+    }
 }
 
 fn check_connectivity(blueprint: &BootstrapBlueprint) -> CommandOutcome {
     let start = Instant::now();
-    match run_ssh_command(&blueprint.ssh, &[String::from("true")]) {
-        Ok(()) => CommandOutcome {
-            status: BootstrapStepStatus::Success,
-            duration: start.elapsed(),
-            detail: Some(format!(
-                "SSH connectivity confirmed ({}@{}:{})",
-                blueprint.ssh.user, blueprint.ssh.host, blueprint.ssh.port
-            )),
-        },
+    let probe_args = vec![String::from("true")];
+    match run_ssh_command_capture(&blueprint.ssh, &probe_args) {
+        Ok(output) => {
+            let mut detail_parts = vec![format!(
+                "SSH connectivity confirmed ({}@{}:{}) via `{}`.",
+                blueprint.ssh.user, blueprint.ssh.host, blueprint.ssh.port, output.command
+            )];
+            if let Some(identity) = blueprint.ssh.identity.as_ref() {
+                detail_parts.push(format!("identity {}", identity.display()));
+            }
+            if !blueprint.ssh.options.is_empty() {
+                detail_parts.push(format!("options {}", blueprint.ssh.options.join(", ")));
+            }
+            if let Some(snippet) = summarize_output("stdout", &output.stdout) {
+                detail_parts.push(snippet);
+            }
+            if let Some(snippet) = summarize_output("stderr", &output.stderr) {
+                detail_parts.push(snippet);
+            }
+            CommandOutcome {
+                status: BootstrapStepStatus::Success,
+                duration: start.elapsed(),
+                detail: Some(detail_parts.join(" ")),
+            }
+        }
         Err(err) => CommandOutcome {
             status: BootstrapStepStatus::Failed,
             duration: start.elapsed(),
@@ -1632,30 +1970,13 @@ fn check_connectivity(blueprint: &BootstrapBlueprint) -> CommandOutcome {
 fn transfer_artifacts(blueprint: &BootstrapBlueprint) -> CommandOutcome {
     let start = Instant::now();
 
-    if let Err(err) = prepare_remote_directory(blueprint) {
-        return CommandOutcome {
-            status: BootstrapStepStatus::Failed,
-            duration: start.elapsed(),
-            detail: Some(err),
-        };
-    }
+    let mut detail_parts = Vec::new();
 
-    if let Err(err) = run_scp_path(
-        &blueprint.ssh,
-        &blueprint.staged_script,
-        &blueprint.remote_script,
-        false,
-    ) {
-        return CommandOutcome {
-            status: BootstrapStepStatus::Failed,
-            duration: start.elapsed(),
-            detail: Some(err),
-        };
-    }
-
-    if let Some(staged_payload) = blueprint.staged_payload.as_ref() {
-        if let Err(err) = run_scp_path(&blueprint.ssh, staged_payload, &blueprint.remote_dir, true)
-        {
+    match prepare_remote_directory(blueprint) {
+        Ok(output) => {
+            append_command_detail(&mut detail_parts, "Prepared remote directory", &output)
+        }
+        Err(err) => {
             return CommandOutcome {
                 status: BootstrapStepStatus::Failed,
                 duration: start.elapsed(),
@@ -1664,30 +1985,61 @@ fn transfer_artifacts(blueprint: &BootstrapBlueprint) -> CommandOutcome {
         }
     }
 
-    if let Err(err) = run_ssh_shell(
+    match run_scp_path(
+        &blueprint.ssh,
+        &blueprint.staged_script,
+        &blueprint.remote_script,
+        false,
+    ) {
+        Ok(output) => append_command_detail(&mut detail_parts, "Uploaded remote script", &output),
+        Err(err) => {
+            return CommandOutcome {
+                status: BootstrapStepStatus::Failed,
+                duration: start.elapsed(),
+                detail: Some(err),
+            };
+        }
+    }
+
+    if let Some(staged_payload) = blueprint.staged_payload.as_ref() {
+        match run_scp_path(&blueprint.ssh, staged_payload, &blueprint.remote_dir, true) {
+            Ok(output) => {
+                append_command_detail(&mut detail_parts, "Uploaded payload directory", &output)
+            }
+            Err(err) => {
+                return CommandOutcome {
+                    status: BootstrapStepStatus::Failed,
+                    duration: start.elapsed(),
+                    detail: Some(err),
+                };
+            }
+        }
+    } else {
+        detail_parts.push("No payload directory configured; only script uploaded.".to_string());
+    }
+
+    match run_ssh_shell(
         &blueprint.ssh,
         format!("chmod +x {}", shell_quote(&blueprint.remote_script)),
     ) {
-        return CommandOutcome {
-            status: BootstrapStepStatus::Failed,
-            duration: start.elapsed(),
-            detail: Some(err),
-        };
+        Ok(output) => append_command_detail(&mut detail_parts, "Marked script executable", &output),
+        Err(err) => {
+            return CommandOutcome {
+                status: BootstrapStepStatus::Failed,
+                duration: start.elapsed(),
+                detail: Some(err),
+            };
+        }
     }
-
-    let detail = if let Some(bytes) = blueprint_remote_payload_summary(blueprint) {
-        Some(format!(
-            "Uploaded script and payload ({}) to {}",
-            bytes, blueprint.remote_dir
-        ))
-    } else {
-        Some(format!("Uploaded script to {}", blueprint.remote_dir))
-    };
+    detail_parts.push(match blueprint_remote_payload_summary(blueprint) {
+        Some(bytes) => format!("Uploaded assets to {} ({}).", blueprint.remote_dir, bytes),
+        None => format!("Uploaded script to {}.", blueprint.remote_dir),
+    });
 
     CommandOutcome {
         status: BootstrapStepStatus::Success,
         duration: start.elapsed(),
-        detail,
+        detail: Some(detail_parts.join(" ")),
     }
 }
 
@@ -1706,7 +2058,10 @@ fn execute_remote(blueprint: &BootstrapBlueprint) -> ApplyOutcome {
     match run_ssh_shell(&blueprint.ssh, apply_script) {
         Ok(output) => {
             let mut completion = ApplyCompletion::Success;
-            let mut detail = "Guest bootstrap script completed.".to_string();
+            let mut detail_parts = vec![format!(
+                "Guest bootstrap script completed via `{}`.",
+                output.command
+            )];
 
             for line in output.stdout.lines() {
                 let trimmed = line.trim();
@@ -1725,15 +2080,22 @@ fn execute_remote(blueprint: &BootstrapBlueprint) -> ApplyOutcome {
                 }
                 if trimmed == SENTINEL_NOOP {
                     completion = ApplyCompletion::NoOp;
-                    detail = "Bootstrap script reported no-op.".to_string();
+                    detail_parts.push("Bootstrap script reported no-op.".to_string());
                 }
+            }
+
+            if let Some(snippet) = summarize_output("stdout", &output.stdout) {
+                detail_parts.push(snippet);
+            }
+            if let Some(snippet) = summarize_output("stderr", &output.stderr) {
+                detail_parts.push(snippet);
             }
 
             ApplyOutcome {
                 command: CommandOutcome {
                     status: BootstrapStepStatus::Success,
                     duration: start.elapsed(),
-                    detail: Some(detail),
+                    detail: Some(detail_parts.join(" ")),
                 },
                 completion,
             }
@@ -1755,14 +2117,18 @@ fn verify_remote(blueprint: &BootstrapBlueprint) -> CommandOutcome {
 
     if let Some(command) = blueprint.verify.command.as_ref() {
         let verify_script = build_verify_command(blueprint, command);
-        if let Err(err) = run_ssh_shell(&blueprint.ssh, verify_script) {
-            return CommandOutcome {
-                status: BootstrapStepStatus::Failed,
-                duration: start.elapsed(),
-                detail: Some(format!("Verification command failed: {err}")),
-            };
+        match run_ssh_shell(&blueprint.ssh, verify_script) {
+            Ok(output) => {
+                append_command_detail(&mut detail_parts, "Verification command succeeded", &output)
+            }
+            Err(err) => {
+                return CommandOutcome {
+                    status: BootstrapStepStatus::Failed,
+                    duration: start.elapsed(),
+                    detail: Some(format!("Verification command failed: {err}")),
+                };
+            }
         }
-        detail_parts.push("Verification command succeeded.".to_string());
     }
 
     if let Some(path) = blueprint.verify.path.as_ref() {
@@ -1772,15 +2138,22 @@ fn verify_remote(blueprint: &BootstrapBlueprint) -> CommandOutcome {
             path.clone()
         };
         let script = format!("test -e {}", shell_quote(&resolved_path));
-        if let Err(err) = run_ssh_shell(&blueprint.ssh, script) {
-            return CommandOutcome {
-                status: BootstrapStepStatus::Failed,
-                duration: start.elapsed(),
-                detail: Some(format!(
-                    "Verification path check failed for {}: {err}",
-                    resolved_path
-                )),
-            };
+        match run_ssh_shell(&blueprint.ssh, script) {
+            Ok(output) => append_command_detail(
+                &mut detail_parts,
+                "Verification path check succeeded",
+                &output,
+            ),
+            Err(err) => {
+                return CommandOutcome {
+                    status: BootstrapStepStatus::Failed,
+                    duration: start.elapsed(),
+                    detail: Some(format!(
+                        "Verification path check failed for {}: {err}",
+                        resolved_path
+                    )),
+                };
+            }
         }
         detail_parts.push(format!("Verified remote path {} exists.", resolved_path));
     }
@@ -1798,13 +2171,15 @@ fn verify_remote(blueprint: &BootstrapBlueprint) -> CommandOutcome {
     }
 }
 
-fn prepare_remote_directory(blueprint: &BootstrapBlueprint) -> std::result::Result<(), String> {
+fn prepare_remote_directory(
+    blueprint: &BootstrapBlueprint,
+) -> std::result::Result<ProcessOutput, String> {
     let script = format!(
         "rm -rf {} && mkdir -p {}",
         shell_quote(&blueprint.remote_dir),
         shell_quote(&blueprint.remote_dir)
     );
-    run_ssh_shell(&blueprint.ssh, script).map(|_| ())
+    run_ssh_shell(&blueprint.ssh, script)
 }
 
 fn build_apply_command(blueprint: &BootstrapBlueprint, run_id: &str) -> String {
@@ -1853,10 +2228,6 @@ fn build_verify_command(blueprint: &BootstrapBlueprint, command: &str) -> String
     script
 }
 
-fn run_ssh_command(ssh: &SshConfig, remote_args: &[String]) -> std::result::Result<(), String> {
-    run_ssh_command_capture(ssh, remote_args).map(|_| ())
-}
-
 fn run_ssh_shell(ssh: &SshConfig, script: String) -> std::result::Result<ProcessOutput, String> {
     run_ssh_command_capture(ssh, &[String::from("sh"), String::from("-lc"), script])
 }
@@ -1887,7 +2258,7 @@ fn run_scp_path(
     local: &Path,
     remote_destination: &str,
     recursive: bool,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<ProcessOutput, String> {
     let mut args = Vec::new();
     if let Some(identity) = ssh.identity.as_ref() {
         args.push(String::from("-i"));
@@ -1910,7 +2281,7 @@ fn run_scp_path(
         escape_scp_destination(remote_destination)
     ));
 
-    run_command("scp", &args).map(|_| ())
+    run_command("scp", &args)
 }
 
 fn escape_scp_destination(path: &str) -> String {
@@ -1918,6 +2289,7 @@ fn escape_scp_destination(path: &str) -> String {
 }
 
 fn run_command(program: &str, args: &[String]) -> std::result::Result<ProcessOutput, String> {
+    let command_repr = format_cli(program, args);
     let mut command = Command::new(program);
     command.args(args);
     command.stdout(Stdio::piped());
@@ -1932,6 +2304,7 @@ fn run_command(program: &str, args: &[String]) -> std::result::Result<ProcessOut
 
     if output.status.success() {
         Ok(ProcessOutput {
+            command: command_repr,
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         })
@@ -1939,7 +2312,8 @@ fn run_command(program: &str, args: &[String]) -> std::result::Result<ProcessOut
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!(
-            "`{program}` exited with code {:?}. stdout: {} stderr: {}",
+            "`{}` exited with code {:?}. stdout: {} stderr: {}",
+            command_repr,
             output.status.code(),
             stdout.trim(),
             stderr.trim()

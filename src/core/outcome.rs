@@ -75,6 +75,7 @@ pub struct VmLaunchOutcome {
     pub base_image: PathBuf,
     pub base_image_provenance: BaseImageProvenance,
     pub overlay_created: bool,
+    pub port_forwards: Vec<PortForward>,
 }
 
 #[derive(Debug)]
@@ -89,6 +90,7 @@ pub struct BootstrapRunOutcome {
     pub status: BootstrapRunStatus,
     pub stamp: Option<String>,
     pub log_path: Option<PathBuf>,
+    pub ssh: Option<BootstrapPlanSsh>,
 }
 
 #[derive(Debug, Clone)]

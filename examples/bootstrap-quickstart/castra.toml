@@ -1,0 +1,21 @@
+version = "0.2.0"
+
+[project]
+name = "bootstrap-quickstart"
+
+[[vms]]
+name = "quickstart"
+base_image = "../minimal-bootstrap/alpine-x86_64.qcow2"
+cpus = 2
+memory = "2 GiB"
+
+  [[vms.port_forwards]]
+  host = 2222
+  guest = 22
+  protocol = "tcp"
+
+  [vms.bootstrap]
+  mode = "always"
+  script = "bootstrap/run.sh"
+  payload = "bootstrap/payload"
+  verify_path = "state/quickstart.txt"

@@ -1,0 +1,82 @@
+###############################################################################
+# Minimal Bootstrap Showcase
+# -----------------------------------------------------------------------------
+# This configuration is intentionally verbose and heavily commented so you can
+# trace how every knob influences Castra's bootstrap pipeline. Pair it with
+# README.md in the same directory for a narrated walkthrough.
+###############################################################################
+
+# Schema version for the project file. v0.2.0 enables multi-VM features such as
+# replica expansion and per-instance overrides. We only use a single VM here,
+# but retaining the newer schema keeps the example aligned with production
+# defaults.
+version = "0.2.0"
+
+[project]
+# Human-friendly project identifier. Castra derives the state root
+# (~/.castra/projects/<slug>/) and durable log prefixes from this value.
+name = "bootstrap-demo"
+
+[bootstrap]
+# Upper bound (in seconds) for the global handshake wait. If the guest does not
+# report a fresh broker handshake before this deadline the bootstrap run aborts
+# before any SSH work is attempted.
+handshake_timeout_secs = 45
+# Default remote working directory. Each VM derives its per-instance directory
+# from this base unless a more specific path is provided below.
+remote_dir = "/var/tmp/castra"
+
+[bootstrap.env]
+# Shared environment variables injected into every VM's bootstrap script.
+# Override or extend per VM under `[vms.bootstrap.env]`.
+DEPLOY_ENV = "dev"
+SHARED_TOKEN = "replace-me"
+
+[[vms]]
+# Logical role name; the runtime expands this to `devbox-0` because the schema
+# allows multi-VM roles. Any durable artifacts (logs, staged scripts, stamps)
+# are keyed by this expanded name.
+name = "devbox"
+# Free-form description shown in plan output.
+description = "Minimal bootstrap pipeline example"
+# QEMU base image bundled with this repository. Relative paths are resolved
+# against the directory that contains this configuration file.
+base_image = "alpine-x86_64.qcow2"
+# Basic resource sizing for the VM.
+cpus = 2
+memory = "2 GiB"
+
+  [[vms.port_forwards]]
+  # Expose guest SSH (port 22) on localhost:2222 so the host bootstrap runner
+  # can talk to the VM. The bootstrap metadata below reuses this forwarding.
+  host = 2222
+  guest = 22
+  protocol = "tcp"
+
+  [vms.bootstrap]
+  # Policy when `castra up` runs without overrides:
+  #   auto   - run once unless the guest reports Castra:noop
+  #   always - force execution every time
+  #   skip   - never run automatically
+  mode = "auto"
+  # Path to the guest-side script. Castra stages the file under the state root
+  # and uploads it to the VM before execution.
+  script = "bootstrap/run.sh"
+  # Optional payload directory copied alongside the script. The helper script
+  # in this example reads the bundled app.env file.
+  payload = "bootstrap/payload"
+  # Verification guard rails. The pipeline re-connects over SSH after the main
+  # script exits and ensures both checks succeed before reporting success.
+  verify_command = "test -f state/bootstrap-user"
+  verify_path = "state/bootstrap-user"
+  # Per-VM handshake override. This value is tighter than the global deadline
+  # to demonstrate that the pipeline reports the most specific timeout.
+  handshake_timeout_secs = 30
+  # Remote working directory for this VM. The script stages into
+  # `/var/tmp/castra/devbox` even though the global default would have sufficed.
+  remote_dir = "/var/tmp/castra/devbox"
+
+    [vms.bootstrap.env]
+    # Per-VM environment variables layered on top of the shared defaults above.
+    SERVICE_USER = "deployer"
+    APP_NAME = "demo-service"

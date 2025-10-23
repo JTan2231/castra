@@ -1,17 +1,19 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::Error;
 use crate::Result;
 use crate::cli::{BootstrapOverrideArg, UpArgs};
 use crate::core::diagnostics::Severity;
 use crate::core::events::{
-    BootstrapPlanAction, BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger,
-    Event,
+    BootstrapPlanAction, BootstrapPlanSsh, BootstrapStatus, BootstrapStepKind, BootstrapStepStatus,
+    BootstrapTrigger, Event,
 };
 use crate::core::operations;
 use crate::core::options::{BootstrapOverrides, UpOptions};
 use crate::core::outcome::{BootstrapRunStatus, UpOutcome};
 use crate::core::project::format_config_warnings;
+use castra::PortProtocol;
 
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
 
@@ -155,14 +157,7 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                 }
 
                 if let Some(ssh) = ssh {
-                    let mut summary = ssh.summary();
-                    if let Some(identity) = &ssh.identity {
-                        summary = format!("{} (identity: {})", summary, identity.display());
-                    }
-                    println!("   ssh: {}", summary);
-                    if !ssh.options.is_empty() {
-                        println!("   ssh options: {}", ssh.options.join(", "));
-                    }
+                    println!("   ssh: {}", ssh.command());
                 }
 
                 let payload_path_ref = payload_path.as_ref();
@@ -361,6 +356,56 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                 }
             }
         }
+    }
+
+    if !outcome.launched_vms.is_empty() {
+        let bootstrap_logs: HashMap<&str, &Path> = outcome
+            .bootstraps
+            .iter()
+            .filter_map(|run| {
+                run.log_path
+                    .as_ref()
+                    .map(|path| (run.vm.as_str(), path.as_path()))
+            })
+            .collect();
+        let bootstrap_ssh: HashMap<&str, &BootstrapPlanSsh> = outcome
+            .bootstraps
+            .iter()
+            .filter_map(|run| run.ssh.as_ref().map(|ssh| (run.vm.as_str(), ssh)))
+            .collect();
+
+        println!("Launch summary:");
+        for vm in &outcome.launched_vms {
+            println!("→ {} (pid {}):", vm.name, vm.pid);
+
+            if let Some(ssh) = bootstrap_ssh.get(vm.name.as_str()) {
+                println!("   ssh: {}", ssh.command());
+            } else if let Some(forward) = vm
+                .port_forwards
+                .iter()
+                .find(|forward| forward.protocol == PortProtocol::Tcp && forward.guest == 22)
+            {
+                println!("   ssh: ssh -p {} 127.0.0.1", forward.host);
+                println!("        guest 22/tcp forwarded from host {}.", forward.host);
+            } else {
+                println!("   ssh: not configured (no host forward to guest 22/tcp).");
+            }
+
+            let qemu_log = outcome.log_root.join(format!("{}.log", vm.name));
+            let serial_log = outcome.log_root.join(format!("{}-serial.log", vm.name));
+            let mut log_parts = vec![format!("vm:{}:qemu → {}", vm.name, qemu_log.display())];
+            log_parts.push(format!("vm:{}:serial → {}", vm.name, serial_log.display()));
+            if let Some(path) = bootstrap_logs.get(vm.name.as_str()) {
+                log_parts.push(format!("bootstrap → {}", path.display()));
+            }
+            println!("   logs: {}", log_parts.join("; "));
+        }
+    }
+
+    if let Some(broker) = &outcome.broker {
+        let broker_log = outcome.log_root.join("broker.log");
+        println!("→ broker (pid {}):", broker.pid);
+        println!("   logs: host-broker → {}", broker_log.display());
     }
 }
 

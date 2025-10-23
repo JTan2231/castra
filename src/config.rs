@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
+use std::{env, fs};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -1635,8 +1635,13 @@ impl RawConfig {
 fn resolve_path(base: &Path, input: PathBuf) -> PathBuf {
     if input.is_absolute() {
         input
-    } else {
+    } else if base.is_absolute() {
         base.join(input)
+    } else {
+        match env::current_dir() {
+            Ok(cwd) => cwd.join(base).join(input),
+            Err(_) => base.join(input),
+        }
     }
 }
 
@@ -2577,6 +2582,15 @@ memory = "1 GiB"
             resolve_overlay_path(config_root, state_root, PathBuf::from("relative.qcow2")),
             config_root.join("relative.qcow2")
         );
+    }
+
+    #[test]
+    fn resolve_path_anchors_relative_base_to_cwd() {
+        let cwd = std::env::current_dir().expect("current dir");
+        let base = Path::new("examples/bootstrap-quickstart");
+        let target = PathBuf::from("../minimal-bootstrap/alpine-x86_64.qcow2");
+        let resolved = super::resolve_path(base, target.clone());
+        assert_eq!(resolved, cwd.join(base).join(target));
     }
 
     #[test]
