@@ -1,0 +1,8 @@
+# bootstrap/bootstrap.toml
+# ------------------------
+# Optional metadata consumed by Castra when planning the bootstrap pipeline.
+# The bundled Alpine guest advertises itself as `alpine` during the broker
+# handshake, so we override the expected identity to match what the guest
+# actually reports. Without this, Castra would wait for `quickstart-0` (the
+# expanded VM name) and time out before any SSH work begins.
+handshake_identity = "alpine"

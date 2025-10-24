@@ -784,6 +784,21 @@ if [ "$CASTRA_ENABLE_CUSTOMIZATIONS" = 'yes' ]; then
 
 	[ -e "./etc/init.d/sshd" ] || return 0
 
+	einfo 'Configuring OpenSSH for passwordless access'
+	install -d -m 0755 "./etc/ssh/sshd_config.d"
+	cat >"./etc/ssh/sshd_config.d/00-castra-noauth.conf" <<'EOF'
+PermitRootLogin yes
+PasswordAuthentication yes
+PermitEmptyPasswords yes
+AuthenticationMethods none
+ChallengeResponseAuthentication no
+UsePAM no
+EOF
+
+	if [ -f "./etc/shadow" ]; then
+		sed -i -e 's/^root:[^:]*:/root::/' ./etc/shadow
+	fi
+
 	rm -f "./etc/ssh/ssh_host_"*
 
 	rc_add default sshd

@@ -572,6 +572,8 @@ fn run_for_vm(
     );
     let handshake_duration = handshake_start.elapsed();
 
+    println!("FOUND HANDSHAKE");
+
     match handshake_result {
         Ok(handshake_ts) => {
             steps.push(StepLog::success(
@@ -663,6 +665,7 @@ fn run_for_vm(
         ),
     });
 
+    println!("CHECKING CONNECTIVITY");
     let connect_outcome = check_connectivity(&blueprint);
     let connect_duration = connect_outcome.duration;
     emit_event(Event::BootstrapStep {
@@ -701,11 +704,15 @@ fn run_for_vm(
             vm: vm.name.clone(),
             message: format!("Failed to persist bootstrap log: {io_err}"),
         })?;
+
+        println!("BOOTSTRAP FAILED");
         return Err(Error::BootstrapFailed {
             vm: vm.name.clone(),
             message: failure_detail,
         });
     }
+
+    println!("TRANSFERRING CONTEXT");
 
     let mut transfer_context = Vec::new();
     transfer_context.push(format!(
@@ -780,6 +787,8 @@ fn run_for_vm(
         });
     }
 
+    println!("APPLYING CONTEXT");
+
     let mut apply_context = Vec::new();
     apply_context.push(format!("remote dir {}", blueprint.remote_dir));
     apply_context.push(format!("script {}", blueprint.remote_script));
@@ -846,6 +855,8 @@ fn run_for_vm(
             message: failure_detail,
         });
     }
+
+    println!("VERIFYING CONTEXT");
 
     let mut verify_context = Vec::new();
     if let Some(command) = blueprint.verify.command.as_ref() {
@@ -966,8 +977,11 @@ fn wait_for_handshake(
     let handshake_path = state_root.join("handshakes").join(file_name);
     let deadline = Instant::now() + timeout;
 
+    println!("WAITING FOR HANDSHAKE");
+
     loop {
         if let Some(timestamp) = read_handshake_timestamp(&handshake_path)? {
+            println!("TIMESTAMP: {:?}", timestamp);
             let now = SystemTime::now();
             if now
                 .duration_since(timestamp)
@@ -2055,6 +2069,8 @@ fn execute_remote(blueprint: &BootstrapBlueprint) -> ApplyOutcome {
     let run_id = generate_run_id();
     let apply_script = build_apply_command(blueprint, &run_id);
 
+    println!("APPLY SCRIPT: {}", apply_script);
+
     match run_ssh_shell(&blueprint.ssh, apply_script) {
         Ok(output) => {
             let mut completion = ApplyCompletion::Success;
@@ -2229,7 +2245,14 @@ fn build_verify_command(blueprint: &BootstrapBlueprint, command: &str) -> String
 }
 
 fn run_ssh_shell(ssh: &SshConfig, script: String) -> std::result::Result<ProcessOutput, String> {
-    run_ssh_command_capture(ssh, &[String::from("sh"), String::from("-lc"), script])
+    run_ssh_command_capture(
+        ssh,
+        &[
+            String::from("sh"),
+            String::from("-lc"),
+            format!("\"{}\"", script),
+        ],
+    )
 }
 
 fn run_ssh_command_capture(
@@ -2247,7 +2270,9 @@ fn run_ssh_command_capture(
     }
     args.push(String::from("-p"));
     args.push(ssh.port.to_string());
+    println!("ARGS: {:?}", args);
     args.push(format!("{}@{}", ssh.user, ssh.host));
+    println!("ARGS: {:?}", args);
     args.extend(remote_args.iter().cloned());
 
     run_command("ssh", &args)
@@ -2274,12 +2299,7 @@ fn run_scp_path(
         args.push(String::from("-r"));
     }
     args.push(local.display().to_string());
-    args.push(format!(
-        "{}@{}:{}",
-        ssh.user,
-        ssh.host,
-        escape_scp_destination(remote_destination)
-    ));
+    args.push(format!("{}@{}:{}", ssh.user, ssh.host, remote_destination,));
 
     run_command("scp", &args)
 }
