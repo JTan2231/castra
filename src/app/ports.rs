@@ -5,7 +5,9 @@ use crate::Result;
 use crate::cli::PortsArgs;
 use crate::core::operations;
 use crate::core::options::{PortsOptions, PortsView};
-use crate::core::outcome::{PortForwardStatus, PortInactiveReason, PortsOutcome};
+use crate::core::outcome::{
+    PortForwardStatus, PortInactiveReason, PortsOutcome, ProjectPortsOutcome,
+};
 use crate::core::project::format_config_warnings;
 
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
@@ -19,6 +21,7 @@ pub fn handle_ports(args: PortsArgs, config_override: Option<&PathBuf>) -> Resul
         } else {
             PortsView::Declared
         },
+        workspace: args.workspace.clone(),
     };
 
     let output = operations::ports(options, None)?;
@@ -35,35 +38,66 @@ pub fn handle_ports(args: PortsArgs, config_override: Option<&PathBuf>) -> Resul
 }
 
 fn render_ports(outcome: &PortsOutcome, verbose: bool) {
+    if outcome.projects.is_empty() {
+        println!("No active workspaces detected.");
+        return;
+    }
+
+    let multi = outcome.aggregated || outcome.projects.len() > 1;
+    for (idx, project) in outcome.projects.iter().enumerate() {
+        if idx > 0 {
+            println!();
+        }
+        if multi {
+            let mut header = project.project_name.clone();
+            if let Some(id) = &project.workspace_id {
+                header.push_str(&format!(" ({id})"));
+            }
+            println!("=== {header} ===");
+        }
+        render_project_ports(project, verbose, outcome.view);
+    }
+}
+
+fn render_project_ports(project: &ProjectPortsOutcome, verbose: bool, view: PortsView) {
     println!(
         "Project: {} ({})",
-        outcome.project_name,
-        outcome.project_path.display()
+        project.project_name,
+        project.project_path.display()
     );
-    println!("Config version: {}", outcome.config_version);
-    println!("Broker endpoint: 127.0.0.1:{}", outcome.broker_port);
+    if let Some(config_path) = &project.config_path {
+        println!("Config path: {}", config_path.display());
+    }
+    println!("Config version: {}", project.config_version);
+    if let Some(id) = &project.workspace_id {
+        println!("Workspace ID: {id}");
+    }
+    if let Some(state_root) = &project.state_root {
+        println!("State root: {}", state_root.display());
+    }
+    println!("Broker endpoint: 127.0.0.1:{}", project.broker_port);
     println!("(start the broker via `castra up` once available)");
-    if matches!(outcome.view, PortsView::Active) {
+    if matches!(view, PortsView::Active) {
         println!("STATUS column reflects runtime state; stopped VMs show as inactive.");
     }
     println!();
 
-    if outcome.declared.is_empty() {
+    if project.declared.is_empty() {
         println!(
             "No port forwards declared in {}.",
-            outcome.project_path.display()
+            project.project_path.display()
         );
     } else {
         let vm_width = cmp::max(
             "VM".len(),
-            outcome
+            project
                 .declared
                 .iter()
                 .map(|row| row.vm.len())
                 .max()
                 .unwrap_or(0),
         );
-        let heading = match outcome.view {
+        let heading = match view {
             PortsView::Declared => "Declared forwards:",
             PortsView::Active => "Runtime forwards:",
         };
@@ -77,31 +111,31 @@ fn render_ports(outcome: &PortsOutcome, verbose: bool) {
             vm = "VM",
             width = vm_width
         );
-        for row in &outcome.declared {
+        for row in &project.declared {
             println!(
                 "  {vm:<width$}  {:>5}  {:>5}  {:<5}  {status}",
                 row.forward.host,
                 row.forward.guest,
                 row.forward.protocol,
-                status = status_label(row.status, outcome.view, row.inactive_reason),
+                status = status_label(row.status, view, row.inactive_reason),
                 vm = row.vm,
                 width = vm_width
             );
         }
     }
 
-    if !outcome.without_forwards.is_empty() {
+    if !project.without_forwards.is_empty() {
         println!();
         println!(
             "VMs without host forwards: {}",
-            outcome.without_forwards.join(", ")
+            project.without_forwards.join(", ")
         );
     }
 
     if verbose {
         println!();
         println!("VM details:");
-        for vm in &outcome.vm_details {
+        for vm in &project.vm_details {
             println!("  {}", vm.name);
             if let Some(desc) = &vm.description {
                 println!("    description: {desc}");
@@ -117,14 +151,14 @@ fn render_ports(outcome: &PortsOutcome, verbose: bool) {
                 println!("    port_forwards: (none)");
             }
         }
-        if !outcome.vm_details.is_empty() {
+        if !project.vm_details.is_empty() {
             println!();
         }
     }
 
-    if !outcome.conflicts.is_empty() {
+    if !project.conflicts.is_empty() {
         println!();
-        for conflict in &outcome.conflicts {
+        for conflict in &project.conflicts {
             println!(
                 "Warning: host port {} is declared by multiple VMs: {}.",
                 conflict.port,

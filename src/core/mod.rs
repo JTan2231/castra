@@ -14,6 +14,7 @@ pub mod ports;
 pub mod project;
 pub mod runtime;
 pub mod status;
+pub mod workspace_registry;
 
 pub use diagnostics::{Diagnostic, Severity};
 pub use events::{CleanupKind, Event};
@@ -28,7 +29,7 @@ pub use outcome::{
     BrokerState, BusPublishOutcome, BusTailOutcome, CleanOutcome, CleanupAction, DownOutcome,
     InitOutcome, LogEntry, LogFollower, LogSection, LogSectionState, LogsOutcome, OperationOutput,
     OperationResult, PortConflictRow, PortForwardRow, PortForwardStatus, PortInactiveReason,
-    PortsOutcome, SkipReason, StateRootCleanup, StatusOutcome, UpOutcome, VmLaunchOutcome,
-    VmPortDetail, VmShutdownOutcome,
+    PortsOutcome, ProjectPortsOutcome, SkipReason, StateRootCleanup, StatusOutcome, UpOutcome,
+    VmLaunchOutcome, VmPortDetail, VmShutdownOutcome,
 };
 pub use reporter::Reporter;

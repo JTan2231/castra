@@ -4,7 +4,7 @@ version = "0.2.0"
 name = "bootstrap-quickstart"
 
 [[vms]]
-name = "quickstart"
+name = "alpine"
 base_image = "../minimal-bootstrap/alpine-x86_64.qcow2"
 cpus = 2
 memory = "2 GiB"

@@ -21,7 +21,8 @@ use super::options::{
 use super::outcome::{
     BootstrapRunStatus, BrokerLaunchOutcome, BrokerShutdownOutcome, BusPublishOutcome,
     BusTailOutcome, CleanOutcome, DownOutcome, InitOutcome, LogsOutcome, OperationOutput,
-    OperationResult, PortsOutcome, StatusOutcome, UpOutcome, VmLaunchOutcome, VmShutdownOutcome,
+    OperationResult, PortsOutcome, ProjectPortsOutcome, ProjectStatusOutcome, StatusOutcome,
+    UpOutcome, VmLaunchOutcome, VmShutdownOutcome, VmStatusRow,
 };
 use super::ports as ports_core;
 use super::project::{
@@ -35,6 +36,7 @@ use super::runtime::{
     prepare_runtime_context, shutdown_broker, shutdown_vm, start_broker,
 };
 use super::status as status_core;
+use super::workspace_registry::{WorkspaceHandle, WorkspaceRegistry, persist_workspace_metadata};
 use crate::config::{self, BaseImageProvenance, BaseImageSource, ProjectConfig};
 use crate::error::{Error, Result};
 
@@ -174,7 +176,8 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
     let mut diagnostics = Vec::new();
     let mut events = Vec::new();
 
-    let (mut project, _) = load_project_for_operation(&options.config, &mut diagnostics)?;
+    let (mut project, synthetic_config) =
+        load_project_for_operation(&options.config, &mut diagnostics)?;
     apply_bootstrap_overrides(&mut project, &options.bootstrap)?;
     if let Some(ref qcow) = options.alpine_qcow_override {
         apply_alpine_qcow_override(&mut project, qcow, &mut diagnostics)?;
@@ -255,6 +258,14 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
                 ),
             })?;
 
+            persist_workspace_metadata(
+                &project,
+                synthetic_config,
+                &options,
+                &state_root,
+                &mut diagnostics,
+            )?;
+
             let broker_outcome = reporter
                 .with_event_buffer(|events| {
                     start_broker(&project, &state_root, &log_root, &mut diagnostics, events)
@@ -287,6 +298,14 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
             )?;
 
             let context = prepare_runtime_context(&project)?;
+
+            persist_workspace_metadata(
+                &project,
+                synthetic_config,
+                &options,
+                &context.state_root,
+                &mut diagnostics,
+            )?;
 
             process_check(
                 check_disk_space(&project, &context),
@@ -418,7 +437,285 @@ pub fn down(
     let mut events = Vec::new();
     let mut reporter = ReporterProxy::new(reporter, &mut events);
 
-    let (project, _) = load_project_for_operation(&options.config, &mut diagnostics)?;
+    let target = resolve_project_targets(
+        options.workspace.as_ref(),
+        &options.config,
+        options.config.allow_synthetic,
+        &mut diagnostics,
+    )?;
+
+    let outcome = match target {
+        StatusTarget::Single {
+            project,
+            _synthetic: _,
+        } => down_project(project, &options, &mut reporter, &mut diagnostics)?,
+        StatusTarget::Workspaces(workspaces) => {
+            let multi = workspaces.len() > 1;
+            let mut combined_vm_results = Vec::new();
+            let mut any_broker_changed = false;
+
+            for WorkspaceProject { handle, project } in workspaces {
+                if multi {
+                    let header = match handle.metadata.as_ref() {
+                        Some(meta) => {
+                            format!("=== {} ({}) ===", meta.project.name, handle.workspace_id)
+                        }
+                        None => format!(
+                            "=== {} ({}) ===",
+                            project.project_name.clone(),
+                            handle.workspace_id
+                        ),
+                    };
+                    reporter.emit(Event::Message {
+                        severity: Severity::Info,
+                        text: header,
+                    });
+                }
+
+                let outcome = down_project(project, &options, &mut reporter, &mut diagnostics)?;
+                combined_vm_results.extend(outcome.vm_results);
+                any_broker_changed |= outcome.broker.changed;
+            }
+
+            DownOutcome {
+                vm_results: combined_vm_results,
+                broker: BrokerShutdownOutcome {
+                    changed: any_broker_changed,
+                },
+            }
+        }
+    };
+
+    Ok(OperationOutput::new(outcome)
+        .with_diagnostics(diagnostics)
+        .with_events(events))
+}
+
+pub fn status(
+    options: StatusOptions,
+    _reporter: Option<&mut dyn Reporter>,
+) -> OperationResult<StatusOutcome> {
+    let mut diagnostics = Vec::new();
+    let target = resolve_project_targets(
+        options.workspace.as_ref(),
+        &options.config,
+        options.config.allow_synthetic,
+        &mut diagnostics,
+    )?;
+
+    let outcome = match target {
+        StatusTarget::Single {
+            project,
+            _synthetic: _,
+        } => {
+            let status_core::StatusSnapshot {
+                rows,
+                broker_state: broker_state_raw,
+                diagnostics: mut status_diags,
+                reachable,
+                last_handshake,
+            } = status_core::collect_status(&project);
+            diagnostics.append(&mut status_diags);
+            StatusOutcome {
+                projects: vec![project_status_from_components(
+                    &project,
+                    rows,
+                    broker_state_raw,
+                    reachable,
+                    last_handshake,
+                    None,
+                )],
+                aggregated: false,
+            }
+        }
+        StatusTarget::Workspaces(workspaces) => {
+            let mut projects = Vec::with_capacity(workspaces.len());
+            for WorkspaceProject { handle, project } in workspaces {
+                let status_core::StatusSnapshot {
+                    rows,
+                    broker_state: broker_state_raw,
+                    diagnostics: mut status_diags,
+                    reachable,
+                    last_handshake,
+                } = status_core::collect_status(&project);
+                diagnostics.append(&mut status_diags);
+                projects.push(project_status_from_components(
+                    &project,
+                    rows,
+                    broker_state_raw,
+                    reachable,
+                    last_handshake,
+                    Some(&handle),
+                ));
+            }
+            StatusOutcome {
+                projects,
+                aggregated: true,
+            }
+        }
+    };
+
+    Ok(OperationOutput::new(outcome).with_diagnostics(diagnostics))
+}
+
+enum StatusTarget {
+    Single {
+        project: ProjectConfig,
+        _synthetic: bool,
+    },
+    Workspaces(Vec<WorkspaceProject>),
+}
+
+struct WorkspaceProject {
+    handle: WorkspaceHandle,
+    project: ProjectConfig,
+}
+
+fn project_status_from_components(
+    project: &ProjectConfig,
+    rows: Vec<VmStatusRow>,
+    broker_state_raw: BrokerProcessState,
+    reachable: bool,
+    last_handshake: Option<status_core::BrokerHandshake>,
+    handle: Option<&WorkspaceHandle>,
+) -> ProjectStatusOutcome {
+    let broker_state = match broker_state_raw {
+        BrokerProcessState::Running { pid } => super::outcome::BrokerState::Running { pid },
+        BrokerProcessState::Offline => super::outcome::BrokerState::Offline,
+    };
+
+    let (last_handshake_vm, last_handshake_age_ms) = match last_handshake {
+        Some(handshake) => {
+            let age_ms = handshake.age.as_millis().min(u128::from(u64::MAX)) as u64;
+            (Some(handshake.vm), Some(age_ms))
+        }
+        None => (None, None),
+    };
+
+    let state_root = handle
+        .map(|h| h.state_root.clone())
+        .or_else(|| Some(config_state_root(project)));
+
+    let config_path = Some(project.file_path.clone());
+
+    ProjectStatusOutcome {
+        project_path: project.file_path.clone(),
+        project_name: project.project_name.clone(),
+        config_version: project.version.clone(),
+        broker_port: project.broker.port,
+        broker_state,
+        reachable,
+        last_handshake_vm,
+        last_handshake_age_ms,
+        rows,
+        workspace_id: handle.map(|h| h.workspace_id.clone()),
+        state_root,
+        config_path,
+    }
+}
+
+fn resolve_project_targets(
+    workspace: Option<&String>,
+    config: &ConfigLoadOptions,
+    allow_registry_fallback: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<StatusTarget> {
+    if let Some(target_id) = workspace {
+        let registry = WorkspaceRegistry::discover()?;
+        diagnostics.extend(registry.diagnostics().iter().cloned());
+        let handle = registry
+            .entries()
+            .iter()
+            .find(|handle| handle.workspace_id == *target_id)
+            .cloned()
+            .ok_or_else(|| Error::WorkspaceNotFound {
+                id: target_id.clone(),
+            })?;
+
+        let project = handle.load_project_config()?;
+        return Ok(StatusTarget::Workspaces(vec![WorkspaceProject {
+            handle,
+            project,
+        }]));
+    }
+
+    match load_project_for_operation(config, diagnostics) {
+        Ok((project, synthetic)) if !synthetic => Ok(StatusTarget::Single {
+            project,
+            _synthetic: synthetic,
+        }),
+        Ok((_project, true)) if allow_registry_fallback => {
+            collect_registry_projects(diagnostics, true).map(StatusTarget::Workspaces)
+        }
+        Ok((project, synthetic)) => Ok(StatusTarget::Single {
+            project,
+            _synthetic: synthetic,
+        }),
+        Err(Error::ConfigDiscoveryFailed { .. }) if allow_registry_fallback => {
+            collect_registry_projects(diagnostics, true).map(StatusTarget::Workspaces)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn attach_ports_workspace_metadata(
+    outcome: &mut ProjectPortsOutcome,
+    project: &ProjectConfig,
+    handle: Option<&WorkspaceHandle>,
+) {
+    outcome.config_path = Some(project.file_path.clone());
+    outcome.state_root = handle
+        .map(|h| h.state_root.clone())
+        .or_else(|| Some(config_state_root(project)));
+    outcome.workspace_id = handle.map(|h| h.workspace_id.clone());
+}
+
+fn collect_registry_projects(
+    diagnostics: &mut Vec<Diagnostic>,
+    prefer_active: bool,
+) -> Result<Vec<WorkspaceProject>> {
+    let registry = WorkspaceRegistry::discover()?;
+    diagnostics.extend(registry.diagnostics().iter().cloned());
+
+    let mut active = Vec::new();
+    let mut inactive = Vec::new();
+
+    for handle in registry.entries().iter().cloned() {
+        let is_active = handle.active;
+        let project = handle.load_project_config()?;
+        let workspace = WorkspaceProject { handle, project };
+        if is_active {
+            active.push(workspace);
+        } else {
+            inactive.push(workspace);
+        }
+    }
+
+    if prefer_active {
+        if !active.is_empty() {
+            return Ok(active);
+        }
+        if !inactive.is_empty() {
+            return Ok(inactive);
+        }
+        return Err(Error::NoActiveWorkspaces);
+    }
+
+    if !active.is_empty() {
+        Ok(active)
+    } else if !inactive.is_empty() {
+        Ok(inactive)
+    } else {
+        Err(Error::NoActiveWorkspaces)
+    }
+}
+
+fn down_project(
+    project: ProjectConfig,
+    options: &DownOptions,
+    reporter: &mut ReporterProxy<'_, '_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<DownOutcome> {
     let state_root = config_state_root(&project);
     let shutdown_timeouts = ShutdownTimeouts::new(
         options
@@ -443,12 +740,17 @@ pub fn down(
     let (event_tx, event_rx) = mpsc::channel::<Event>();
     let mut handles = Vec::new();
 
+    let cooperative = shutdown_timeouts.cooperative;
+    let sigterm = shutdown_timeouts.sigterm;
+    let sigkill = shutdown_timeouts.sigkill;
+
     for (index, vm) in project.vms.iter().cloned().enumerate() {
         let tx_clone = event_tx.clone();
         let vm_name = vm.name.clone();
         let vm_state_root = state_root.clone();
         handles.push(thread::spawn(move || -> Result<VmShutdownThreadResult> {
-            let report = shutdown_vm(&vm, &vm_state_root, shutdown_timeouts, Some(&tx_clone))?;
+            let timeouts = ShutdownTimeouts::new(cooperative, sigterm, sigkill);
+            let report = shutdown_vm(&vm, &vm_state_root, timeouts, Some(&tx_clone))?;
 
             Ok(VmShutdownThreadResult {
                 index,
@@ -500,8 +802,8 @@ pub fn down(
         })
         .collect::<Vec<_>>();
 
-    let broker_changed = reporter
-        .with_event_buffer(|events| shutdown_broker(&state_root, events, &mut diagnostics))?;
+    let broker_changed =
+        reporter.with_event_buffer(|events| shutdown_broker(&state_root, events, diagnostics))?;
 
     let outcome = DownOutcome {
         vm_results,
@@ -536,53 +838,7 @@ pub fn down(
         }
     }
 
-    Ok(OperationOutput::new(outcome)
-        .with_diagnostics(diagnostics)
-        .with_events(events))
-}
-
-pub fn status(
-    options: StatusOptions,
-    _reporter: Option<&mut dyn Reporter>,
-) -> OperationResult<StatusOutcome> {
-    let mut diagnostics = Vec::new();
-    let (project, _) = load_project_for_operation(&options.config, &mut diagnostics)?;
-
-    let status_core::StatusSnapshot {
-        rows,
-        broker_state: broker_state_raw,
-        diagnostics: mut status_diags,
-        reachable,
-        last_handshake,
-    } = status_core::collect_status(&project);
-    diagnostics.append(&mut status_diags);
-
-    let broker_state = match broker_state_raw {
-        BrokerProcessState::Running { pid } => super::outcome::BrokerState::Running { pid },
-        BrokerProcessState::Offline => super::outcome::BrokerState::Offline,
-    };
-
-    let (last_handshake_vm, last_handshake_age_ms) = match last_handshake {
-        Some(handshake) => {
-            let age_ms = handshake.age.as_millis().min(u128::from(u64::MAX)) as u64;
-            (Some(handshake.vm), Some(age_ms))
-        }
-        None => (None, None),
-    };
-
-    let outcome = StatusOutcome {
-        project_path: project.file_path.clone(),
-        project_name: project.project_name.clone(),
-        config_version: project.version.clone(),
-        broker_port: project.broker.port,
-        broker_state,
-        reachable,
-        last_handshake_vm,
-        last_handshake_age_ms,
-        rows,
-    };
-
-    Ok(OperationOutput::new(outcome).with_diagnostics(diagnostics))
+    Ok(outcome)
 }
 
 pub fn ports(
@@ -590,10 +846,44 @@ pub fn ports(
     _reporter: Option<&mut dyn Reporter>,
 ) -> OperationResult<PortsOutcome> {
     let mut diagnostics = Vec::new();
-    let (project, _) = load_project_for_operation(&options.config, &mut diagnostics)?;
+    let target = resolve_project_targets(
+        options.workspace.as_ref(),
+        &options.config,
+        options.config.allow_synthetic,
+        &mut diagnostics,
+    )?;
 
-    let (outcome, mut port_diags) = ports_core::summarize(&project, options.view);
-    diagnostics.append(&mut port_diags);
+    let outcome = match target {
+        StatusTarget::Single {
+            project,
+            _synthetic: _,
+        } => {
+            let (mut project_outcome, mut port_diags) =
+                ports_core::summarize(&project, options.view);
+            diagnostics.append(&mut port_diags);
+            attach_ports_workspace_metadata(&mut project_outcome, &project, None);
+            PortsOutcome {
+                projects: vec![project_outcome],
+                view: options.view,
+                aggregated: false,
+            }
+        }
+        StatusTarget::Workspaces(workspaces) => {
+            let mut projects = Vec::with_capacity(workspaces.len());
+            for WorkspaceProject { handle, project } in workspaces {
+                let (mut project_outcome, mut port_diags) =
+                    ports_core::summarize(&project, options.view);
+                diagnostics.append(&mut port_diags);
+                attach_ports_workspace_metadata(&mut project_outcome, &project, Some(&handle));
+                projects.push(project_outcome);
+            }
+            PortsOutcome {
+                projects,
+                view: options.view,
+                aggregated: true,
+            }
+        }
+    };
 
     Ok(OperationOutput::new(outcome).with_diagnostics(diagnostics))
 }

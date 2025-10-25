@@ -25,6 +25,7 @@ pub fn handle_down(args: DownArgs, config_override: Option<&PathBuf>) -> Result<
 
     let options = DownOptions {
         config: config_load_options(config_override, args.skip_discovery, "down")?,
+        workspace: args.workspace.clone(),
         graceful_wait: args.graceful_wait_secs.map(Duration::from_secs),
         sigterm_wait: args.sigterm_wait_secs.map(Duration::from_secs),
         sigkill_wait: args.sigkill_wait_secs.map(Duration::from_secs),

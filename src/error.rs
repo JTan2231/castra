@@ -46,6 +46,16 @@ pub enum Error {
          Run `castra init` first or provide a path with --config."
     )]
     ConfigDiscoveryFailed { search_root: PathBuf },
+    #[error(
+        "No active workspaces detected. Launch VMs with `castra up` or provide --config <PATH>."
+    )]
+    NoActiveWorkspaces,
+    #[error("Workspace `{id}` was not found among known Castra state roots.")]
+    WorkspaceNotFound { id: String },
+    #[error(
+        "Workspace `{id}` does not have a usable castra.toml or configuration snapshot. Rerun `castra up` to refresh metadata."
+    )]
+    WorkspaceConfigUnavailable { id: String },
     #[error("Failed to determine the current working directory: {source}")]
     WorkingDirectoryUnavailable {
         #[source]

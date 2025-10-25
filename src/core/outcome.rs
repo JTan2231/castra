@@ -142,6 +142,12 @@ pub struct BrokerShutdownOutcome {
 /// Outcome of `status`.
 #[derive(Debug, Clone)]
 pub struct StatusOutcome {
+    pub projects: Vec<ProjectStatusOutcome>,
+    pub aggregated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectStatusOutcome {
     pub project_path: PathBuf,
     pub project_name: String,
     pub config_version: String,
@@ -151,6 +157,9 @@ pub struct StatusOutcome {
     pub last_handshake_vm: Option<String>,
     pub last_handshake_age_ms: Option<u64>,
     pub rows: Vec<VmStatusRow>,
+    pub workspace_id: Option<String>,
+    pub state_root: Option<PathBuf>,
+    pub config_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +203,13 @@ impl BrokerReachability {
 /// Outcome of `ports`.
 #[derive(Debug)]
 pub struct PortsOutcome {
+    pub projects: Vec<ProjectPortsOutcome>,
+    pub view: PortsView,
+    pub aggregated: bool,
+}
+
+#[derive(Debug)]
+pub struct ProjectPortsOutcome {
     pub project_path: PathBuf,
     pub project_name: String,
     pub config_version: String,
@@ -202,7 +218,9 @@ pub struct PortsOutcome {
     pub conflicts: Vec<PortConflictRow>,
     pub vm_details: Vec<VmPortDetail>,
     pub without_forwards: Vec<String>,
-    pub view: PortsView,
+    pub workspace_id: Option<String>,
+    pub state_root: Option<PathBuf>,
+    pub config_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]

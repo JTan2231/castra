@@ -7,7 +7,7 @@ use crate::config::{PortForward, PortProtocol, ProjectConfig};
 use super::diagnostics::{Diagnostic, Severity};
 use super::options::PortsView;
 use super::outcome::{
-    PortConflictRow, PortForwardRow, PortForwardStatus, PortInactiveReason, PortsOutcome,
+    PortConflictRow, PortForwardRow, PortForwardStatus, PortInactiveReason, ProjectPortsOutcome,
     VmPortDetail,
 };
 use super::project::config_state_root;
@@ -33,7 +33,10 @@ struct VmInspection {
     forwards: HashMap<ForwardKey, ForwardRuntimeState>,
 }
 
-pub fn summarize(project: &ProjectConfig, view: PortsView) -> (PortsOutcome, Vec<Diagnostic>) {
+pub fn summarize(
+    project: &ProjectConfig,
+    view: PortsView,
+) -> (ProjectPortsOutcome, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let (conflicts, broker_collision) = project.port_conflicts();
     let conflict_ports: HashSet<u16> = conflicts.iter().map(|c| c.port).collect();
@@ -152,7 +155,7 @@ pub fn summarize(project: &ProjectConfig, view: PortsView) -> (PortsOutcome, Vec
 
     let without_forwards = ports_without_forwards(project);
 
-    let outcome = PortsOutcome {
+    let outcome = ProjectPortsOutcome {
         project_path: project.file_path.clone(),
         project_name: project.project_name.clone(),
         config_version: project.version.clone(),
@@ -161,7 +164,9 @@ pub fn summarize(project: &ProjectConfig, view: PortsView) -> (PortsOutcome, Vec
         conflicts: port_conflicts,
         vm_details,
         without_forwards,
-        view,
+        workspace_id: None,
+        state_root: Some(config_state_root(project)),
+        config_path: Some(project.file_path.clone()),
     };
 
     (outcome, diagnostics)
@@ -344,7 +349,6 @@ mod tests {
 
         let (outcome, diagnostics) = summarize(&project, PortsView::Declared);
         assert!(diagnostics.is_empty());
-        assert_eq!(outcome.view, PortsView::Declared);
         assert_eq!(outcome.declared.len(), 1);
         assert!(matches!(
             outcome.declared[0].status,
@@ -360,7 +364,6 @@ mod tests {
 
         let (outcome, diagnostics) = summarize(&project, PortsView::Active);
         assert!(diagnostics.is_empty());
-        assert_eq!(outcome.view, PortsView::Active);
         assert_eq!(outcome.declared.len(), 1);
         assert_eq!(outcome.declared[0].status, PortForwardStatus::Declared);
         assert_eq!(
@@ -373,7 +376,6 @@ mod tests {
 
         let (outcome, diagnostics) = summarize(&project, PortsView::Active);
         assert!(diagnostics.is_empty());
-        assert_eq!(outcome.view, PortsView::Active);
         assert_eq!(outcome.declared.len(), 1);
         assert_eq!(outcome.declared[0].status, PortForwardStatus::Declared);
         assert_eq!(
@@ -385,7 +387,6 @@ mod tests {
 
         let (outcome, diagnostics) = summarize(&project, PortsView::Active);
         assert!(diagnostics.is_empty());
-        assert_eq!(outcome.view, PortsView::Active);
         assert_eq!(outcome.declared.len(), 1);
         assert_eq!(outcome.declared[0].status, PortForwardStatus::Active);
         assert!(outcome.declared[0].inactive_reason.is_none());

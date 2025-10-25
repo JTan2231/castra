@@ -2,6 +2,8 @@
 
 Castra keeps every project’s ephemeral runtime state inside a workspace rooted at a `.castra` directory. The workspace holds broker metadata, cached base images, bootstrap staging areas, and process bookkeeping so that `castra up`, `status`, `down`, and `clean` can coordinate without leaking state across runs. This note documents how the workspace is picked, how `.castra`-prefixed paths resolve, and what lives under the directory during each phase of the lifecycle.
 
+When multiple workspaces are active, `castra status`, `castra ports`, and `castra down` (without `--config`) aggregate across all of them using the metadata recorded under `metadata/workspace.json`. Use `--workspace <id>` to target a single entry; IDs correspond to the `workspace.id` field captured in the metadata and rendered in the CLI headers.
+
 ## Workspace Selection
 - **Default naming.** When a config omits `[project].state_dir`, Castra hashes the configuration’s parent directory and combines it with a slugified project name: `~/.castra/projects/<slug>-<hash>`. (`default_state_root` in `src/config.rs`.)
 - **Global projects root.** The shared prefix `~/.castra/projects` (`default_projects_root` in `src/core/project.rs`) lets multiple checkouts of the same project keep isolated state roots while still allowing global maintenance via `castra clean --global`.
@@ -24,6 +26,8 @@ Every workspace follows the same structure; paths in parentheses are created on 
 
 | Path | Purpose |
 | --- | --- |
+| `metadata/workspace.json` | Registry metadata written by `castra up` capturing project name, workspace ID, config origin, bootstrap policy, and invocation flags for multi-workspace discovery. |
+| `metadata/config_snapshot.toml` | Cached copy of the resolved `castra.toml` used when the original config is unavailable (for example, if the repo moved). |
 | `images/` | Cached base images. The default Alpine qcow2 is downloaded here on demand; additional qcows configured via `base_image` can also live here. |
 | `logs/` | Aggregated host-side logs. Each VM writes `<vm>.log` (QEMU stdout/stderr) and `<vm>-serial.log`; bootstrap runs append JSON to `logs/bootstrap/`; the bus command writes under `logs/bus/`. |
 | `handshakes/` | Broker ⇄ guest handshake JSON files (`runtime::broker_handshake_dir_from_root`). Used by `status` and bootstrap wait logic. |

@@ -32,6 +32,8 @@ const DEFAULT_SSH_USER: &str = "root";
 const DEFAULT_SSH_HOST: &str = "127.0.0.1";
 const DEFAULT_SSH_PORT: u16 = 22;
 const DEFAULT_SSH_OPTIONS: [&str; 2] = ["StrictHostKeyChecking=no", "UserKnownHostsFile=/dev/null"];
+const CONNECTIVITY_ATTEMPTS: usize = 5;
+const CONNECTIVITY_RETRY_DELAY_MS: u64 = 1000;
 const SENTINEL_NOOP: &str = "Castra:noop";
 const SENTINEL_ERROR_PREFIX: &str = "Castra:error:";
 
@@ -1949,35 +1951,66 @@ fn append_command_detail(parts: &mut Vec<String>, label: &str, output: &ProcessO
 fn check_connectivity(blueprint: &BootstrapBlueprint) -> CommandOutcome {
     let start = Instant::now();
     let probe_args = vec![String::from("true")];
-    match run_ssh_command_capture(&blueprint.ssh, &probe_args) {
-        Ok(output) => {
-            let mut detail_parts = vec![format!(
-                "SSH connectivity confirmed ({}@{}:{}) via `{}`.",
-                blueprint.ssh.user, blueprint.ssh.host, blueprint.ssh.port, output.command
-            )];
-            if let Some(identity) = blueprint.ssh.identity.as_ref() {
-                detail_parts.push(format!("identity {}", identity.display()));
+    let mut attempt_errors = Vec::new();
+
+    for attempt in 1..=CONNECTIVITY_ATTEMPTS {
+        println!("SSH connectivity attempt {}", attempt);
+        match run_ssh_command_capture(&blueprint.ssh, &probe_args) {
+            Ok(output) => {
+                let mut detail_parts = vec![format!(
+                    "SSH connectivity confirmed ({}@{}:{}) via `{}`.",
+                    blueprint.ssh.user, blueprint.ssh.host, blueprint.ssh.port, output.command
+                )];
+                if let Some(identity) = blueprint.ssh.identity.as_ref() {
+                    detail_parts.push(format!("identity {}", identity.display()));
+                }
+                if !blueprint.ssh.options.is_empty() {
+                    detail_parts.push(format!("options {}", blueprint.ssh.options.join(", ")));
+                }
+                if attempt > 1 {
+                    detail_parts.push(format!(
+                        "Connectivity confirmed after {} attempts.",
+                        attempt
+                    ));
+                }
+                if let Some(snippet) = summarize_output("stdout", &output.stdout) {
+                    detail_parts.push(snippet);
+                }
+                if let Some(snippet) = summarize_output("stderr", &output.stderr) {
+                    detail_parts.push(snippet);
+                }
+                return CommandOutcome {
+                    status: BootstrapStepStatus::Success,
+                    duration: start.elapsed(),
+                    detail: Some(detail_parts.join(" ")),
+                };
             }
-            if !blueprint.ssh.options.is_empty() {
-                detail_parts.push(format!("options {}", blueprint.ssh.options.join(", ")));
-            }
-            if let Some(snippet) = summarize_output("stdout", &output.stdout) {
-                detail_parts.push(snippet);
-            }
-            if let Some(snippet) = summarize_output("stderr", &output.stderr) {
-                detail_parts.push(snippet);
-            }
-            CommandOutcome {
-                status: BootstrapStepStatus::Success,
-                duration: start.elapsed(),
-                detail: Some(detail_parts.join(" ")),
+            Err(err) => {
+                attempt_errors.push(format!("Attempt {}: {}", attempt, err));
+                if attempt < CONNECTIVITY_ATTEMPTS {
+                    std::thread::sleep(Duration::from_millis(CONNECTIVITY_RETRY_DELAY_MS));
+                }
             }
         }
-        Err(err) => CommandOutcome {
-            status: BootstrapStepStatus::Failed,
-            duration: start.elapsed(),
-            detail: Some(err),
-        },
+    }
+
+    let detail = if attempt_errors.is_empty() {
+        format!(
+            "Failed to establish SSH connectivity after {} attempts.",
+            CONNECTIVITY_ATTEMPTS
+        )
+    } else {
+        format!(
+            "Failed to establish SSH connectivity after {} attempts. {}",
+            CONNECTIVITY_ATTEMPTS,
+            attempt_errors.join("; ")
+        )
+    };
+
+    CommandOutcome {
+        status: BootstrapStepStatus::Failed,
+        duration: start.elapsed(),
+        detail: Some(detail),
     }
 }
 
@@ -2302,10 +2335,6 @@ fn run_scp_path(
     args.push(format!("{}@{}:{}", ssh.user, ssh.host, remote_destination,));
 
     run_command("scp", &args)
-}
-
-fn escape_scp_destination(path: &str) -> String {
-    shell_quote(path)
 }
 
 fn run_command(program: &str, args: &[String]) -> std::result::Result<ProcessOutput, String> {

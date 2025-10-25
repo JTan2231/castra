@@ -53,6 +53,9 @@ pub fn collect_status(project: &ProjectConfig) -> StatusSnapshot {
             .with_help("Handshake records are stored under the castra state root; clear corrupted files and allow guests to reconnect.")
     }));
 
+    let (handshake_identities, mut identity_warnings) = handshake_identity_candidates(project);
+    diagnostics.extend(identity_warnings.drain(..));
+
     let mut reachable = false;
     let mut last_handshake: Option<BrokerHandshake> = None;
     let now = SystemTime::now();
@@ -66,7 +69,16 @@ pub fn collect_status(project: &ProjectConfig) -> StatusSnapshot {
                 .map(|warning| Diagnostic::new(Severity::Warning, warning)),
         );
 
-        let record = handshakes.remove(&vm.name);
+        println!("{}: {}", vm.name, state);
+
+        let record = handshake_identities
+            .get(&vm.name)
+            .and_then(|identities| {
+                identities
+                    .iter()
+                    .find_map(|identity| handshakes.remove(identity))
+            })
+            .or_else(|| handshakes.remove(&vm.name));
 
         let (bus_subscribed, last_publish_age, last_heartbeat_age) =
             bus_state_for_vm(record.as_ref(), now, vm.name.as_str(), &mut diagnostics);
@@ -124,7 +136,7 @@ pub fn collect_status(project: &ProjectConfig) -> StatusSnapshot {
                     record.timestamp
                 ),
             )
-            .with_help("Confirm guest agents use the configured VM name or prune stale handshake files."),
+            .with_help("Confirm guest agents use the configured VM name, declare `handshake_identity` in bootstrap metadata, or prune stale handshake files."),
         );
     }
 
@@ -152,6 +164,80 @@ pub fn format_port_forwards(forwards: &[PortForward]) -> String {
     } else {
         parts.join(", ")
     }
+}
+
+fn handshake_identity_candidates(
+    project: &ProjectConfig,
+) -> (HashMap<String, Vec<String>>, Vec<Diagnostic>) {
+    let mut map = HashMap::new();
+    let mut diagnostics = Vec::new();
+
+    for vm in &project.vms {
+        let mut identities = Vec::with_capacity(2);
+        identities.push(vm.name.clone());
+
+        if let Some(script_path) = vm.bootstrap.script.as_ref() {
+            if let Some(dir) = script_path.parent() {
+                let metadata_path = dir.join("bootstrap.toml");
+                if metadata_path.is_file() {
+                    match read_handshake_identity(&metadata_path) {
+                        Ok(Some(identity)) => {
+                            if identity != vm.name && !identities.contains(&identity) {
+                                identities.push(identity);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(message) => {
+                            diagnostics.push(
+                                Diagnostic::new(Severity::Warning, message).with_help(
+                                    "Fix the bootstrap metadata so `castra status` can correlate handshake aliases.",
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        map.insert(vm.name.clone(), identities);
+    }
+
+    (map, diagnostics)
+}
+
+fn read_handshake_identity(path: &Path) -> Result<Option<String>, String> {
+    let contents = fs::read_to_string(path).map_err(|err| {
+        format!(
+            "Failed to read bootstrap metadata {}: {err}",
+            path.display()
+        )
+    })?;
+
+    #[derive(Default, Deserialize)]
+    struct StatusBootstrapMetadata {
+        #[serde(default)]
+        handshake_identity: Option<String>,
+    }
+
+    let metadata: StatusBootstrapMetadata = toml::from_str(&contents).map_err(|err| {
+        format!(
+            "Failed to parse bootstrap metadata {}: {err}",
+            path.display()
+        )
+    })?;
+
+    if let Some(identity) = metadata.handshake_identity {
+        let trimmed = identity.trim();
+        if trimmed.is_empty() {
+            return Err(format!(
+                "bootstrap metadata {} declares an empty handshake_identity.",
+                path.display()
+            ));
+        }
+        return Ok(Some(trimmed.to_string()));
+    }
+
+    Ok(None)
 }
 
 fn format_protocol(protocol: PortProtocol) -> String {
@@ -769,6 +855,44 @@ mod tests {
             .last_heartbeat_age
             .expect("expected heartbeat age");
         assert!(heartbeat_age.as_secs() >= 1 && heartbeat_age.as_secs() <= 3);
+
+        project.state_root = PathBuf::new();
+    }
+
+    #[test]
+    fn collect_status_matches_handshake_alias_from_metadata() {
+        let dir = tempdir().unwrap();
+        let mut project = sample_project(dir.path());
+        write_broker_pid(dir.path());
+
+        let script_path = project.vms[0]
+            .bootstrap
+            .script
+            .clone()
+            .expect("script path");
+        let script_dir = script_path
+            .parent()
+            .expect("bootstrap script should have a parent directory");
+        fs::create_dir_all(script_dir).unwrap();
+        let metadata_path = script_dir.join("bootstrap.toml");
+        fs::write(&metadata_path, "handshake_identity = \"devbox-agent\"\n").unwrap();
+
+        write_handshake(dir.path(), "devbox-agent", Duration::from_secs(2));
+
+        let snapshot = collect_status(&project);
+        assert!(snapshot.reachable);
+        assert!(matches!(
+            snapshot.rows[0].broker_reachability,
+            BrokerReachability::Reachable
+        ));
+        assert!(
+            !snapshot
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("no VM with that name")),
+            "unexpected diagnostics: {:?}",
+            snapshot.diagnostics
+        );
 
         project.state_root = PathBuf::new();
     }

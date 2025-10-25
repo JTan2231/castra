@@ -114,6 +114,8 @@ pub struct BootstrapOverrides {
 pub struct DownOptions {
     /// Configuration lookup parameters.
     pub config: ConfigLoadOptions,
+    /// Optional workspace identifier resolved via the registry.
+    pub workspace: Option<String>,
     /// Optional override for the cooperative shutdown wait.
     pub graceful_wait: Option<Duration>,
     /// Optional override for the SIGTERM escalation wait.
@@ -126,6 +128,7 @@ impl Default for DownOptions {
     fn default() -> Self {
         Self {
             config: ConfigLoadOptions::discover(true),
+            workspace: None,
             graceful_wait: None,
             sigterm_wait: None,
             sigkill_wait: None,
@@ -138,12 +141,15 @@ impl Default for DownOptions {
 pub struct StatusOptions {
     /// Configuration lookup parameters.
     pub config: ConfigLoadOptions,
+    /// Optional workspace identifier resolved via the registry.
+    pub workspace: Option<String>,
 }
 
 impl Default for StatusOptions {
     fn default() -> Self {
         Self {
             config: ConfigLoadOptions::discover(true),
+            workspace: None,
         }
     }
 }
@@ -157,6 +163,8 @@ pub struct PortsOptions {
     pub verbose: bool,
     /// Which ports view to render.
     pub view: PortsView,
+    /// Optional workspace identifier resolved via the registry.
+    pub workspace: Option<String>,
 }
 
 impl Default for PortsOptions {
@@ -165,6 +173,7 @@ impl Default for PortsOptions {
             config: ConfigLoadOptions::discover(true),
             verbose: false,
             view: PortsView::Declared,
+            workspace: None,
         }
     }
 }

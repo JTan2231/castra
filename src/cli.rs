@@ -232,6 +232,15 @@ pub struct DownArgs {
     )]
     pub skip_discovery: bool,
 
+    /// Operate on a specific workspace discovered via the registry.
+    #[arg(
+        long,
+        value_name = "ID",
+        conflicts_with = "skip_discovery",
+        help = "Select a workspace by ID when shutting down running VMs."
+    )]
+    pub workspace: Option<String>,
+
     /// Override the cooperative shutdown wait (seconds) before escalation, otherwise use [lifecycle].graceful_shutdown_wait_secs.
     #[arg(
         long,
@@ -265,6 +274,15 @@ pub struct StatusArgs {
         help = "Skip config discovery; requires --config <PATH> (e.g. --config ./castra.toml)."
     )]
     pub skip_discovery: bool,
+
+    /// Operate on a specific workspace discovered via the registry.
+    #[arg(
+        long,
+        value_name = "ID",
+        conflicts_with = "skip_discovery",
+        help = "Select a workspace by ID (see `castra status --config` for scoped runs)."
+    )]
+    pub workspace: Option<String>,
 }
 
 #[derive(Debug, Args, Default)]
@@ -275,6 +293,15 @@ pub struct PortsArgs {
         help = "Skip config discovery; requires --config <PATH> (e.g. --config ./castra.toml)."
     )]
     pub skip_discovery: bool,
+
+    /// Operate on a specific workspace discovered via the registry.
+    #[arg(
+        long,
+        value_name = "ID",
+        conflicts_with = "skip_discovery",
+        help = "Select a workspace by ID when inspecting port forwards."
+    )]
+    pub workspace: Option<String>,
 
     /// Verbose output including planned but inactive forwards.
     #[arg(
