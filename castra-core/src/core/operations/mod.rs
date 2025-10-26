@@ -31,9 +31,10 @@ use super::project::{
 };
 use super::reporter::Reporter;
 use super::runtime::{
-    BrokerProcessState, CheckOutcome, ShutdownTimeouts, check_disk_space, check_host_capacity,
-    ensure_broker_port_available, ensure_ports_available, ensure_vm_assets, launch_vm,
-    prepare_runtime_context, shutdown_broker, shutdown_vm, start_broker,
+    BrokerLauncher, BrokerProcessState, CheckOutcome, ProcessBrokerLauncher, ShutdownTimeouts,
+    check_disk_space, check_host_capacity, ensure_broker_port_available, ensure_ports_available,
+    ensure_vm_assets, launch_vm, prepare_runtime_context, shutdown_broker, shutdown_vm,
+    start_broker,
 };
 use super::status as status_core;
 use super::workspace_registry::{WorkspaceHandle, WorkspaceRegistry, persist_workspace_metadata};
@@ -173,6 +174,23 @@ pub fn init(
 }
 
 pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationResult<UpOutcome> {
+    let launcher = ProcessBrokerLauncher::from_env()?;
+    up_internal(options, reporter, &launcher)
+}
+
+pub fn up_with_launcher(
+    options: UpOptions,
+    launcher: &dyn BrokerLauncher,
+    reporter: Option<&mut dyn Reporter>,
+) -> OperationResult<UpOutcome> {
+    up_internal(options, reporter, launcher)
+}
+
+fn up_internal(
+    options: UpOptions,
+    reporter: Option<&mut dyn Reporter>,
+    launcher: &dyn BrokerLauncher,
+) -> OperationResult<UpOutcome> {
     let mut diagnostics = Vec::new();
     let mut events = Vec::new();
 
@@ -268,7 +286,14 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
 
             let broker_outcome = reporter
                 .with_event_buffer(|events| {
-                    start_broker(&project, &state_root, &log_root, &mut diagnostics, events)
+                    start_broker(
+                        &project,
+                        &state_root,
+                        &log_root,
+                        &mut diagnostics,
+                        events,
+                        launcher,
+                    )
                 })?
                 .map(|pid| BrokerLaunchOutcome {
                     pid,
@@ -348,6 +373,7 @@ pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationR
                         &context.log_root,
                         &mut diagnostics,
                         events,
+                        launcher,
                     )
                 })?
                 .map(|pid| BrokerLaunchOutcome {

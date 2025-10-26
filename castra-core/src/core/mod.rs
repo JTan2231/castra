@@ -18,7 +18,9 @@ pub mod workspace_registry;
 
 pub use diagnostics::{Diagnostic, Severity};
 pub use events::{CleanupKind, Event};
-pub use operations::{broker, bus_publish, bus_tail, clean, down, init, logs, ports, status, up};
+pub use operations::{
+    broker, bus_publish, bus_tail, clean, down, init, logs, ports, status, up, up_with_launcher,
+};
 pub use options::{
     BrokerOptions, BusLogTarget, BusPublishOptions, BusTailOptions, CleanOptions, CleanScope,
     ConfigLoadOptions, ConfigSource, DownOptions, InitOptions, LogsOptions, PortsOptions,
@@ -33,3 +35,4 @@ pub use outcome::{
     VmLaunchOutcome, VmPortDetail, VmShutdownOutcome,
 };
 pub use reporter::Reporter;
+pub use runtime::{BrokerLaunchRequest, BrokerLauncher, ProcessBrokerLauncher};

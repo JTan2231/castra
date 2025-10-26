@@ -8,7 +8,7 @@ use std::net::TcpListener;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -41,6 +41,120 @@ pub struct RuntimeContext {
 pub enum BrokerProcessState {
     Running { pid: pid_t },
     Offline,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrokerLaunchRequest<'a> {
+    pub project: &'a ProjectConfig,
+    pub port: u16,
+    pub pidfile: PathBuf,
+    pub logfile: PathBuf,
+    pub handshake_dir: PathBuf,
+}
+
+pub trait BrokerHandle: Send {
+    fn pid(&self) -> Option<u32>;
+    fn abort(&mut self) -> std::io::Result<()>;
+}
+
+pub trait BrokerLauncher: Send + Sync {
+    fn launch(
+        &self,
+        request: &BrokerLaunchRequest<'_>,
+    ) -> crate::error::Result<Box<dyn BrokerHandle>>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessBrokerLauncher {
+    executable: PathBuf,
+}
+
+impl ProcessBrokerLauncher {
+    pub fn new<P: Into<PathBuf>>(executable: P) -> Self {
+        Self {
+            executable: executable.into(),
+        }
+    }
+
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    pub fn from_env() -> crate::error::Result<Self> {
+        const ENV_KEY: &str = "CASTRA_CLI_EXECUTABLE";
+        match std::env::var_os(ENV_KEY) {
+            Some(path) => {
+                let candidate = PathBuf::from(path);
+                if candidate.is_file() {
+                    Ok(Self::new(candidate))
+                } else {
+                    Err(Error::PreflightFailed {
+                        message: format!(
+                            "Environment variable {ENV_KEY} points to missing broker executable at {}.",
+                            candidate.display()
+                        ),
+                    })
+                }
+            }
+            None => Err(Error::PreflightFailed {
+                message: format!(
+                    "Broker launch executable is not configured. Set {ENV_KEY} or call operations::up_with_launcher with a custom launcher."
+                ),
+            }),
+        }
+    }
+}
+
+struct ProcessBrokerHandle {
+    child: Option<Child>,
+}
+
+impl BrokerHandle for ProcessBrokerHandle {
+    fn pid(&self) -> Option<u32> {
+        self.child.as_ref().map(|child| child.id())
+    }
+
+    fn abort(&mut self) -> std::io::Result<()> {
+        if let Some(mut child) = self.child.take() {
+            match child.kill() {
+                Ok(_) => {
+                    let _ = child.wait();
+                }
+                Err(err) if err.kind() == ErrorKind::InvalidInput => {
+                    let _ = child.wait();
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl BrokerLauncher for ProcessBrokerLauncher {
+    fn launch(
+        &self,
+        request: &BrokerLaunchRequest<'_>,
+    ) -> crate::error::Result<Box<dyn BrokerHandle>> {
+        let mut command = Command::new(&self.executable);
+        command
+            .arg("broker")
+            .arg("--port")
+            .arg(request.port.to_string())
+            .arg("--pidfile")
+            .arg(request.pidfile.as_os_str())
+            .arg("--logfile")
+            .arg(request.logfile.as_os_str())
+            .arg("--handshake-dir")
+            .arg(request.handshake_dir.as_os_str())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let child = command.spawn().map_err(|err| Error::PreflightFailed {
+            message: format!("Failed to launch broker subprocess: {err}"),
+        })?;
+
+        Ok(Box::new(ProcessBrokerHandle { child: Some(child) }))
+    }
 }
 
 const DISK_WARN_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
@@ -319,6 +433,7 @@ pub fn start_broker(
     log_root: &Path,
     diagnostics: &mut Vec<Diagnostic>,
     events: &mut Vec<Event>,
+    launcher: &dyn BrokerLauncher,
 ) -> Result<Option<u32>> {
     let pidfile = broker_pid_path_from_root(state_root);
     let (state, mut warnings) = inspect_broker_state(&pidfile);
@@ -343,10 +458,6 @@ pub fn start_broker(
         let _ = fs::remove_file(&pidfile);
     }
 
-    let exe = std::env::current_exe().map_err(|err| Error::PreflightFailed {
-        message: format!("Failed to determine current executable for broker launch: {err}"),
-    })?;
-
     fs::create_dir_all(log_root).map_err(|err| Error::PreflightFailed {
         message: format!(
             "Failed to prepare broker log directory {}: {err}",
@@ -363,32 +474,27 @@ pub fn start_broker(
         ),
     })?;
 
-    let mut command = Command::new(exe);
-    command
-        .arg("broker")
-        .arg("--port")
-        .arg(project.broker.port.to_string())
-        .arg("--pidfile")
-        .arg(pidfile.as_os_str())
-        .arg("--logfile")
-        .arg(log_path.as_os_str())
-        .arg("--handshake-dir")
-        .arg(handshake_dir.as_os_str())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    let request = BrokerLaunchRequest {
+        project,
+        port: project.broker.port,
+        pidfile: pidfile.clone(),
+        logfile: log_path.clone(),
+        handshake_dir: handshake_dir.clone(),
+    };
 
-    let mut child = command.spawn().map_err(|err| Error::PreflightFailed {
-        message: format!("Failed to launch broker subprocess: {err}"),
-    })?;
+    let mut handle = launcher.launch(&request)?;
 
     if let Err(err) = wait_for_pidfile(&pidfile, Duration::from_secs(3)) {
-        let _ = child.kill();
-        return Err(Error::PreflightFailed {
-            message: format!("Broker process did not initialize: {err}"),
-        });
+        let mut message = format!("Broker process did not initialize: {err}");
+        if let Err(kill_err) = handle.abort() {
+            message.push_str(&format!(" (failed to terminate broker: {kill_err})"));
+        }
+        return Err(Error::PreflightFailed { message });
     }
 
-    let pid = child.id();
+    let pid = handle.pid().ok_or_else(|| Error::PreflightFailed {
+        message: "Broker launcher did not return a process identifier.".to_string(),
+    })?;
     events.push(Event::BrokerStarted {
         pid,
         port: project.broker.port,
@@ -2105,17 +2211,130 @@ fn find_executable(candidates: &[&str]) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::config::{
-        BaseImageSource, BootstrapMode, DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, MemorySpec,
-        VmBootstrapConfig, VmDefinition,
+        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig,
+        DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, DEFAULT_BROKER_PORT, LifecycleConfig, MemorySpec,
+        ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
     };
     use crate::error::Error;
     use std::collections::HashMap;
     use std::fs;
     use std::net::TcpListener;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
     use tempfile::tempdir;
+
+    #[derive(Clone, Default)]
+    struct TestBrokerLauncher {
+        pid: u32,
+        requests: Arc<Mutex<Vec<PathBuf>>>,
+        aborts: Arc<Mutex<usize>>,
+    }
+
+    impl TestBrokerLauncher {
+        fn new(pid: u32) -> Self {
+            Self {
+                pid,
+                requests: Arc::new(Mutex::new(Vec::new())),
+                aborts: Arc::new(Mutex::new(0)),
+            }
+        }
+
+        fn request_count(&self) -> usize {
+            self.requests.lock().unwrap().len()
+        }
+
+        fn abort_count(&self) -> usize {
+            *self.aborts.lock().unwrap()
+        }
+    }
+
+    impl BrokerLauncher for TestBrokerLauncher {
+        fn launch(
+            &self,
+            request: &BrokerLaunchRequest<'_>,
+        ) -> crate::error::Result<Box<dyn BrokerHandle>> {
+            let pidfile = request.pidfile.clone();
+            std::fs::File::create(&pidfile).map_err(|err| Error::PreflightFailed {
+                message: format!(
+                    "Test launcher failed to create pidfile {}: {err}",
+                    pidfile.display()
+                ),
+            })?;
+            self.requests.lock().unwrap().push(pidfile);
+            Ok(Box::new(TestBrokerHandle {
+                pid: self.pid,
+                aborts: Arc::clone(&self.aborts),
+            }))
+        }
+    }
+
+    struct TestBrokerHandle {
+        pid: u32,
+        aborts: Arc<Mutex<usize>>,
+    }
+
+    impl BrokerHandle for TestBrokerHandle {
+        fn pid(&self) -> Option<u32> {
+            Some(self.pid)
+        }
+
+        fn abort(&mut self) -> std::io::Result<()> {
+            *self.aborts.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    fn minimal_project(state_root: &Path) -> ProjectConfig {
+        ProjectConfig {
+            file_path: state_root.join("castra.toml"),
+            project_root: state_root.to_path_buf(),
+            version: "0.1.0".to_string(),
+            project_name: "demo".to_string(),
+            vms: Vec::new(),
+            state_root: state_root.to_path_buf(),
+            workflows: Workflows { init: Vec::new() },
+            broker: BrokerConfig {
+                port: DEFAULT_BROKER_PORT,
+            },
+            lifecycle: LifecycleConfig::default(),
+            bootstrap: BootstrapConfig::default(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn start_broker_uses_supplied_launcher() {
+        let dir = tempdir().unwrap();
+        let state_root = dir.path().join("state");
+        let log_root = state_root.join("logs");
+        let project = minimal_project(&state_root);
+        let launcher = TestBrokerLauncher::new(4321);
+        let mut diagnostics = Vec::new();
+        let mut events = Vec::new();
+
+        let result = start_broker(
+            &project,
+            &state_root,
+            &log_root,
+            &mut diagnostics,
+            &mut events,
+            &launcher,
+        )
+        .expect("broker launch");
+
+        assert_eq!(result, Some(4321));
+        assert_eq!(launcher.request_count(), 1);
+        assert_eq!(launcher.abort_count(), 0);
+        assert!(state_root.join("broker.pid").exists());
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::BrokerStarted { pid, .. } if *pid == 4321))
+        );
+        assert!(diagnostics.is_empty());
+    }
 
     #[test]
     fn assess_cache_reports_missing_image() {

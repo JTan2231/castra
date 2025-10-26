@@ -1,7 +1,7 @@
 use chrono::Local;
-use gpui::{div, px, prelude::*, rgb, Styled};
+use gpui::{Styled, div, prelude::*, px, rgb};
 
-pub fn status_footer(active_label: &str) -> gpui::Div {
+pub fn status_footer(active_label: &str, operation_status: &str) -> gpui::Div {
     let status_time = Local::now().format("%H:%M:%S").to_string();
     let (focus_hint, agent_hint, roster_hint) = if cfg!(target_os = "macos") {
         ("Cmd+K focus", "Cmd+1-3 agents", "Cmd+B roster")
@@ -9,8 +9,8 @@ pub fn status_footer(active_label: &str) -> gpui::Div {
         ("Ctrl+L focus", "Ctrl+1-3 agents", "Ctrl+B roster")
     };
     let status_hint = format!(
-        "Enter ↵ to send • {} • {} • {} • ↑/↓ history • /help",
-        focus_hint, agent_hint, roster_hint
+        "{} • Enter ↵ to send • {} • {} • {} • ↑/↓ history • /help",
+        operation_status, focus_hint, agent_hint, roster_hint
     );
 
     div()

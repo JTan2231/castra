@@ -2,11 +2,11 @@ use std::ops::Range;
 
 use crate::app::actions::{Backspace, CancelHistory, HistoryNext, HistoryPrev, SendMessage};
 use gpui::{
-    Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, GlobalElementId, InteractiveElement, IntoElement, LayoutId,
-    MouseButton, MouseDownEvent, PaintQuad, ParentElement, Pixels, Point, Render, ShapedLine,
-    SharedString, Style, Styled, TextRun, UTF16Selection, Window, div, fill, hsla, point, px,
-    relative, rgb, size, white,
+    Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, InteractiveElement,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, PaintQuad, ParentElement, Pixels, Point,
+    Render, ShapedLine, SharedString, Style, Styled, TextRun, UTF16Selection, Window, div, fill,
+    hsla, point, px, relative, rgb, size, white,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -267,7 +267,6 @@ impl PromptInput {
     fn cancel_history(&mut self, _: &CancelHistory, _window: &mut Window, cx: &mut Context<Self>) {
         self.restore_draft(cx);
     }
-
 }
 
 impl Focusable for PromptInput {
@@ -521,6 +520,10 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::cancel_history))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .child(div().text_color(rgb(0x8a8a8a)).child(">"))
-            .child(div().flex_grow().child(PromptTextElement { input: cx.entity() }))
+            .child(
+                div()
+                    .flex_grow()
+                    .child(PromptTextElement { input: cx.entity() }),
+            )
     }
 }

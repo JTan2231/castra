@@ -2,7 +2,7 @@ use crate::{
     input::prompt::PromptInput,
     state::{AppState, RosterState},
 };
-use gpui::{div, px, prelude::*, rgb, Entity, Styled};
+use gpui::{Entity, Styled, div, prelude::*, px, rgb};
 
 use super::{
     message_log::message_log,
@@ -17,15 +17,17 @@ pub fn render(
     prompt: &Entity<PromptInput>,
     roster_rows: Option<Vec<gpui::Div>>,
 ) -> gpui::Div {
+    let operation_status = state.up_status_line();
     let (vm_left_cards, vm_right_cards) = vm_columns(state.vm_fleet());
 
     let log_container = div()
         .flex()
         .flex_col()
         .flex_grow()
+        .min_w(px(0.))
         .child(message_log(state.chat()));
 
-    let mut central_shell = div().flex().flex_grow();
+    let mut central_shell = div().flex().flex_grow().min_w(px(0.));
 
     if let Some(rows) = roster_rows {
         central_shell = central_shell
@@ -63,15 +65,15 @@ pub fn render(
         .font_family("Menlo")
         .child(upper_shell)
         .child(div().h(px(1.)).bg(rgb(0x1e1e1e)))
-        .child(status_footer(&state.active_agent_label()))
+        .child(status_footer(
+            &state.active_agent_label(),
+            &operation_status,
+        ))
         .child(div().h(px(1.)).bg(rgb(0x1e1e1e)))
         .child(prompt_container(prompt))
 }
 
-pub fn roster_rows<H, F>(
-    roster: &RosterState,
-    mut attach_handler: F,
-) -> Vec<gpui::Div>
+pub fn roster_rows<H, F>(roster: &RosterState, mut attach_handler: F) -> Vec<gpui::Div>
 where
     F: FnMut(usize) -> H,
     H: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,

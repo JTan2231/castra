@@ -1,18 +1,19 @@
 use crate::state::ChatState;
-use gpui::{div, px, prelude::*, rgb, Styled};
+use gpui::{Styled, div, prelude::*, px, rgb};
 
 const SPEAKER_COLUMN_WIDTH_PX: f32 = 140.;
 
 pub fn message_log(chat: &ChatState) -> impl IntoElement {
     let rows: Vec<_> = if chat.messages().is_empty() {
-        vec![div()
-            .w_full()
-            .text_sm()
-            .text_color(rgb(0x5c5c5c))
-            .child("[--:--:--] [SYSTEM] Awaiting input...")]
+        vec![
+            div()
+                .w_full()
+                .text_sm()
+                .text_color(rgb(0x5c5c5c))
+                .child("[--:--:--] [SYSTEM] Awaiting input..."),
+        ]
     } else {
-        chat
-            .messages()
+        chat.messages()
             .iter()
             .map(|message| {
                 div()
@@ -34,7 +35,11 @@ pub fn message_log(chat: &ChatState) -> impl IntoElement {
                     )
                     .child(
                         div()
-                            .flex_grow()
+                            .w_full()
+                            .flex_1()
+                            .max_w_full()
+                            .min_w(px(0.))
+                            .whitespace_normal()
                             .text_color(rgb(0xc8c8c8))
                             .child(message.text().clone()),
                     )

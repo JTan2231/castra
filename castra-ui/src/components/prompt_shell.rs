@@ -1,5 +1,5 @@
 use crate::input::prompt::PromptInput;
-use gpui::{div, px, prelude::*, rgb, Entity, Styled};
+use gpui::{Entity, Styled, div, prelude::*, px, rgb};
 
 pub fn prompt_container(prompt: &Entity<PromptInput>) -> gpui::Div {
     div()

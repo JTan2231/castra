@@ -1,13 +1,9 @@
-use crate::state::{VirtualMachine, VmFleetState};
-use gpui::{div, px, prelude::*, rgb, Styled};
+use crate::state::{AttentionLevel, VirtualMachine, VmFleetState};
+use gpui::{Styled, div, prelude::*, px, rgb};
 
 pub fn vm_card(vm: &VirtualMachine) -> gpui::Div {
-    let indicator_color = if vm.is_online() {
-        rgb(0x2f9b4b)
-    } else {
-        rgb(0x9b3f3f)
-    };
-    let status_label = if vm.is_online() { "ONLINE" } else { "OFFLINE" };
+    let indicator_color = attention_color(vm.attention());
+    let status_label = vm.phase().label();
 
     div()
         .flex()
@@ -44,23 +40,13 @@ pub fn vm_card(vm: &VirtualMachine) -> gpui::Div {
         .child(
             div()
                 .text_xs()
-                .text_color(rgb(0x8c8c8c))
-                .child(format!("Project: {}", vm.project())),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(0x707070))
-                .child(format!("Last: {}", vm.last_message())),
+                .text_color(rgb(0x9a9a9a))
+                .child(vm.detail().to_string()),
         )
 }
 
 pub fn vm_columns(vm_fleet: &VmFleetState) -> (Vec<gpui::Div>, Vec<gpui::Div>) {
-    let mut cards: Vec<_> = vm_fleet
-        .virtual_machines()
-        .iter()
-        .map(vm_card)
-        .collect();
+    let mut cards: Vec<_> = vm_fleet.virtual_machines().iter().map(vm_card).collect();
 
     let split_at = (cards.len() + 1) / 2;
     let right_cards = if split_at < cards.len() {
@@ -95,4 +81,13 @@ pub fn vm_column_container(cards: Vec<gpui::Div>) -> gpui::Div {
                 .py(px(12.))
                 .children(cards),
         )
+}
+
+fn attention_color(level: AttentionLevel) -> gpui::Rgba {
+    match level {
+        AttentionLevel::Idle => rgb(0x5c5c5c),
+        AttentionLevel::Progress => rgb(0x3a7bd5),
+        AttentionLevel::Success => rgb(0x2f9b4b),
+        AttentionLevel::Error => rgb(0x9b3f3f),
+    }
 }

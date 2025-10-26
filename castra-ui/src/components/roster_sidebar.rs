@@ -1,5 +1,5 @@
 use crate::state::Agent;
-use gpui::{div, px, prelude::*, rgb, Styled};
+use gpui::{Styled, div, prelude::*, px, rgb};
 
 pub fn agent_row(agent: &Agent, is_active: bool) -> gpui::Div {
     div()
@@ -10,7 +10,11 @@ pub fn agent_row(agent: &Agent, is_active: bool) -> gpui::Div {
         .py(px(8.))
         .gap(px(12.))
         .text_sm()
-        .bg(if is_active { rgb(0x0d0d0d) } else { rgb(0x050505) })
+        .bg(if is_active {
+            rgb(0x0d0d0d)
+        } else {
+            rgb(0x050505)
+        })
         .text_color(if is_active {
             rgb(0xf0f0f0)
         } else {

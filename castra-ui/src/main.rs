@@ -4,8 +4,11 @@ mod controller;
 mod input;
 mod state;
 
-use app::{actions::*, ChatApp};
-use gpui::{App, AppContext, Application, Bounds, KeyBinding, WindowBounds, WindowHandle, WindowOptions, px, size};
+use app::{ChatApp, actions::*};
+use gpui::{
+    App, AppContext, Application, Bounds, KeyBinding, WindowBounds, WindowHandle, WindowOptions,
+    px, size,
+};
 use input::prompt::PromptInput;
 
 fn main() {

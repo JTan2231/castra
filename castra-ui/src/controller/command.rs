@@ -3,6 +3,7 @@ use crate::state::AppState;
 pub enum Command {
     Help,
     Agents,
+    Up,
     Switch { target: Option<String> },
     Empty,
     Unknown(String),
@@ -10,6 +11,7 @@ pub enum Command {
 
 pub enum CommandOutcome {
     None,
+    Up,
 }
 
 impl Default for CommandOutcome {
@@ -21,7 +23,7 @@ impl Default for CommandOutcome {
 pub fn handle(input: &str, state: &mut AppState) -> CommandOutcome {
     match parse_command(input) {
         Command::Help => {
-            state.push_system_message("Commands: /agents • /switch <agent> • /help");
+            state.push_system_message("Commands: /up • /agents • /switch <agent> • /help");
         }
         Command::Agents => {
             let listing = state
@@ -59,6 +61,9 @@ pub fn handle(input: &str, state: &mut AppState) -> CommandOutcome {
                 state.push_system_message(format!("Unknown agent '{}'. Try /agents.", target));
             }
         }
+        Command::Up => {
+            return CommandOutcome::Up;
+        }
         Command::Unknown(other) => {
             if !other.is_empty() {
                 state.push_system_message(format!("Unrecognized command '{}'. Try /help.", other));
@@ -82,6 +87,7 @@ fn parse_command(input: &str) -> Command {
         "" => Command::Empty,
         "help" => Command::Help,
         "agents" => Command::Agents,
+        "up" => Command::Up,
         "switch" => {
             let target = parts.next().map(|value| value.to_string());
             Command::Switch { target }

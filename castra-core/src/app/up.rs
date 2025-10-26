@@ -15,6 +15,8 @@ use crate::core::outcome::{BootstrapRunStatus, UpOutcome};
 use crate::core::project::format_config_warnings;
 use castra::PortProtocol;
 
+use crate::core::runtime::ProcessBrokerLauncher;
+
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
 
 pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> {
@@ -37,7 +39,8 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
         alpine_qcow_override: qcow,
     };
 
-    let output = operations::up(options, None)?;
+    let launcher = ProcessBrokerLauncher::new(resolve_cli_executable()?);
+    let output = operations::up_with_launcher(options, &launcher, None)?;
 
     let (config_warnings, other) = split_config_warnings(&output.diagnostics);
     if let Some(message) = format_config_warnings(&config_warnings) {
@@ -67,6 +70,12 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
     }
 
     Ok(())
+}
+
+fn resolve_cli_executable() -> Result<PathBuf> {
+    std::env::current_exe().map_err(|err| Error::PreflightFailed {
+        message: format!("Unable to resolve castra CLI executable: {err}"),
+    })
 }
 
 fn build_bootstrap_overrides(inputs: &[BootstrapOverrideArg]) -> Result<BootstrapOverrides> {

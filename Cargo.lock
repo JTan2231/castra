@@ -763,6 +763,8 @@ dependencies = [
 name = "castra-ui"
 version = "0.1.0"
 dependencies = [
+ "async-channel 1.9.0",
+ "castra",
  "chrono",
  "gpui",
  "unicode-segmentation",
