@@ -1,54 +1,43 @@
-SNAPSHOT v0.9.9 — Castra (VM orchestration harness)
+SNAPSHOT v0.9.10 — Castra (VM orchestration harness)
 
-Edits since v0.9.8
-- Added Thread 22 (UI onboarding docs): commit to a concise, versioned set of UI tutorials that map components to the Event Contract v1 and the attention model.
+Edits since v0.9.9
+- Strengthened Thread 20 acceptance to require a broker launch abstraction; eliminated reliance on current_exe() for embedding scenarios per CORE.md evidence.
+- Recorded a blocking defect: core re-executes the embedding binary (castra-ui) with `broker`, spawning a duplicate UI window. This must be resolved before the UI vertical slice proceeds.
 
 Active threads (intent + acceptance deltas)
-- Thread 2 — Cooperative shutdown lifecycle: unchanged; remains targeted for surfacing effective timeouts via CLI/config and JSON. UI will display these once available (see Thread 21 mapping for severities/remediation).
+- Thread 2 — Cooperative shutdown lifecycle: unchanged.
 
-- Thread 12 — Post-boot bootstrap pipeline: unchanged; JSON BootstrapSummary remains the contract the UI will consume for completion banners and logs.
+- Thread 12 — Post-boot bootstrap pipeline: unchanged.
 
-- Thread 13 — Stateless runs (ephemeral-only): unchanged; UI will surface ephemerality reminders inline on Up/Down views.
+- Thread 13 — Stateless runs (ephemeral-only): unchanged.
 
 - Thread 20 — UI ↔ Core integration (Composable first):
-  Intent: Connect castra-ui to castra-core via the existing JSON event stream (process boundary OK) while ensuring castra-core remains a usable library independently of the UI.
-  Acceptance:
-  - There is a documented, semver-governed "Event Contract v1" that the UI consumes (no reliance on private structs).
-  - castra-core exposes a public library surface that can run operations (up/down/status/clean/bootstrap) and emit the same events to an external subscriber; examples demonstrate library use without the UI.
-  - castra-ui can launch an Up operation and render live per-VM progress using only the contract (no private imports).
-  Anchors: castra-core/src/core/events.rs; castra-core/src/app/*; castra-ui/src/controller/*; castra-ui/src/components/*; docs/AGENTS.md; castra-ui/AGENTS.md.
+  Intent: Connect castra-ui to castra-core via the JSON event stream and ensure castra-core remains a fully embeddable library.
+  Acceptance (updated):
+  - Event Contract v1 is documented and versioned.
+  - castra-core exposes a public library surface to run operations and emit events to an external subscriber.
+  - Broker (and any helper) launch is injectable/configurable; no use of std::env::current_exe() that binds to the embedding process. Default path remains deterministic for CLI usage.
+  - UI can initiate Up and render live per-VM progress without spawning additional UI/CLI windows.
+  Verification additions: demo must show no second `castra-ui` process during Up; example proves library Up with a no-op broker runner.
+  Anchors: CORE.md; castra-core/src/core/runtime.rs; castra-core/src/core/broker.rs; castra-core/src/core/operations/bus.rs; castra-core/src/core/events.rs; castra-ui/src/controller/*; castra-ui/src/components/*.
 
-- Thread 21 — Operational clarity (Attention model):
-  Intent: Maximize signal while reducing noise. Create a severity + attention model mapping to visuals/components (roster badges, status footer, message log). Support grouping and rate-limited bursts.
-  Acceptance:
-  - A design doc enumerates event classes → attention levels (info/progress/warn/error/blocker) with remediation hints where available.
-  - UI renders: roster with per-VM status badges; status footer with aggregate health and active operations; message log with grouping and collapse of repetitive events.
-  - Visual style trends toward "video‑game" clarity: critical items pulse/highlight; resolved issues de-emphasize; nothing is hidden by default.
-  Anchors: castra-ui/src/components/{roster_sidebar.rs,status_footer.rs,message_log.rs,vm_fleet.rs}; castra-ui/src/controller/command.rs; castra-core/src/core/events.rs.
+- Thread 21 — Operational clarity (Attention model): unchanged.
 
-- Thread 22 — UI onboarding docs (tutorial set):
-  Intent: Provide a small, versioned set of markdown tutorials that introduce the UI components and how they map to core events so new users/devs can become productive quickly.
-  Acceptance:
-  - Discoverable from castra-ui/README.md, with docs housed under castra-ui/docs/.
-  - Pages include: overview layout; component guides for roster, vm fleet, message log, status footer, prompt; a "first Up" tutorial; a developer note on consuming the Event Contract v1.
-  - Each doc cross-links to Event Contract v1 (T20) and the attention model (T21) and states assumed versions.
-  Anchors: castra-ui/src/components/*, castra-ui/src/controller/*, castra-core/src/core/events.rs, examples/minimal-bootstrap.
+- Thread 22 — UI onboarding docs (tutorial set): unchanged.
 
 Current code state (observable surfaces)
-- Core already emits structured JSON events usable by automation; TTY is separate. CLI/library split exists.
-- UI skeleton exists (castra-ui) with components for roster, message log, shell, status footer, and a controller; not yet wired to core event stream.
-- No dedicated UI tutorials exist yet; README files are minimal.
+- Core emits structured JSON events; CLI/library split exists, but broker launch currently assumes current_exe() equals CLI, which breaks embedding (spawns a second castra-ui window per CORE.md).
+- UI skeleton present; vertical slice blocked on broker decoupling.
 
 Narrative themes
-1) Robust lifecycle; 10) Trustworthy bootstrap; 12) Day‑1 productivity; 13) Ephemeral-only policy; 20) Composability-first UI integration; 21) Operational clarity with high-contrast visuals; 22) Frictionless onboarding via tutorials.
+1) Robust lifecycle; 10) Trustworthy bootstrap; 12) Day‑1 productivity; 13) Ephemeral-only policy; 20) Composability-first UI integration (now with explicit broker abstraction); 21) Operational clarity; 22) Onboarding via tutorials.
 
 Direction of travel
-- Thread 20: publish Event Contract v1; expose/confirm library emission of events; implement UI vertical slice for Up using process-boundary JSON; document semver policy.
-- Thread 21: codify attention model; map core events → UI affordances; implement grouping/throttling to reduce log spam without losing detail.
-- Thread 22: author the initial tutorial set; keep scope tight and versioned; wire discoverability from castra-ui/README.md.
+- Thread 20: implement broker launch abstraction, audit other subprocess spawns, publish Event Contract v1, then deliver UI Up vertical slice using process-boundary JSON.
+- Threads 21/22: proceed after T20 unblock.
 
 Cross-links
-- UI tutorials (T22) explain how the UI consumes outputs from Threads 2/12/13 and Contract v1 (T20) using attention model (T21).
+- CORE.md documents the defect motivating T20 acceptance changes; tests and examples under T20 will assert no duplicate UI processes during Up.
 
 Editorial housekeeping
-- Snapshot now tracks the UI docs effort as a first-class thread with acceptance criteria aligned to integration and clarity tracks.
+- Snapshot incremented to reflect composability defect and the required abstraction for broker/helpers.
