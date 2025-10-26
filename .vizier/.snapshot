@@ -2,7 +2,7 @@ SNAPSHOT v0.9.10 — Castra (VM orchestration harness)
 
 Edits since v0.9.9
 - Strengthened Thread 20 acceptance to require a broker launch abstraction; eliminated reliance on current_exe() for embedding scenarios per CORE.md evidence.
-- Recorded a blocking defect: core re-executes the embedding binary (castra-ui) with `broker`, spawning a duplicate UI window. This must be resolved before the UI vertical slice proceeds.
+- Recorded a blocking defect T20-1: core re-executes the embedding binary (castra-ui) with `broker`, spawning a duplicate UI window. This must be resolved before the UI vertical slice proceeds.
 
 Active threads (intent + acceptance deltas)
 - Thread 2 — Cooperative shutdown lifecycle: unchanged.
