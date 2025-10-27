@@ -1,8 +1,8 @@
-SNAPSHOT v0.9.10 — Castra (VM orchestration harness)
+SNAPSHOT v0.9.11 — Castra (VM orchestration harness)
 
-Edits since v0.9.9
-- Strengthened Thread 20 acceptance to require a broker launch abstraction; eliminated reliance on current_exe() for embedding scenarios per CORE.md evidence.
-- Recorded a blocking defect T20-1: core re-executes the embedding binary (castra-ui) with `broker`, spawning a duplicate UI window. This must be resolved before the UI vertical slice proceeds.
+Edits since v0.9.10
+- Thread 20: Resolved defect T20-1 by introducing an injectable BrokerLauncher in castra-core; removed reliance on current_exe() for broker launch in the library path. CLI continues to launch via ProcessBrokerLauncher using its own executable, preserving deterministic behavior.
+- Verification evidence: castra-core/src/core/runtime.rs now defines BrokerLauncher/Handle and ProcessBrokerLauncher; start_broker() accepts a launcher and tests assert the supplied launcher is used (no implicit re-exec).
 
 Active threads (intent + acceptance deltas)
 - Thread 2 — Cooperative shutdown lifecycle: unchanged.
@@ -13,31 +13,30 @@ Active threads (intent + acceptance deltas)
 
 - Thread 20 — UI ↔ Core integration (Composable first):
   Intent: Connect castra-ui to castra-core via the JSON event stream and ensure castra-core remains a fully embeddable library.
-  Acceptance (updated):
-  - Event Contract v1 is documented and versioned.
-  - castra-core exposes a public library surface to run operations and emit events to an external subscriber.
-  - Broker (and any helper) launch is injectable/configurable; no use of std::env::current_exe() that binds to the embedding process. Default path remains deterministic for CLI usage.
-  - UI can initiate Up and render live per-VM progress without spawning additional UI/CLI windows.
-  Verification additions: demo must show no second `castra-ui` process during Up; example proves library Up with a no-op broker runner.
-  Anchors: CORE.md; castra-core/src/core/runtime.rs; castra-core/src/core/broker.rs; castra-core/src/core/operations/bus.rs; castra-core/src/core/events.rs; castra-ui/src/controller/*; castra-ui/src/components/*.
+  Acceptance (partially satisfied):
+  - Event Contract v1 is documented and versioned. [OPEN]
+  - castra-core exposes a public library surface to run operations and emit events to an external subscriber. [DONE]
+  - Broker (and any helper) launch is injectable/configurable; no use of std::env::current_exe() that binds to the embedding process. Default path remains deterministic for CLI usage. [DONE]
+  - UI can initiate Up and render live per-VM progress without spawning additional UI/CLI windows. [NEXT]
+  Verification updates: Library callers use operations::up_with_launcher with a custom launcher; tests in runtime.rs confirm injected launcher usage. UI should either inject ProcessBrokerLauncher::from_env (via CASTRA_CLI_EXECUTABLE) or a custom no-op for demos.
+  Anchors: CORE.md; castra-core/src/core/runtime.rs; castra-core/src/app/up.rs; castra-core/src/core/events.rs; castra-ui/src/controller/*; castra-ui/src/components/*.
 
 - Thread 21 — Operational clarity (Attention model): unchanged.
 
 - Thread 22 — UI onboarding docs (tutorial set): unchanged.
 
 Current code state (observable surfaces)
-- Core emits structured JSON events; CLI/library split exists, but broker launch currently assumes current_exe() equals CLI, which breaks embedding (spawns a second castra-ui window per CORE.md).
-- UI skeleton present; vertical slice blocked on broker decoupling.
+- Core emits structured JSON events; operations::up_with_launcher accepts an external BrokerLauncher; CLI path uses ProcessBrokerLauncher with its own executable; env-based launcher available for embedders (CASTRA_CLI_EXECUTABLE).
+- UI skeleton present; vertical slice no longer blocked by broker coupling; remaining blocker is Event Contract v1 docs/tests and UI wiring to operations::up_with_launcher.
 
 Narrative themes
-1) Robust lifecycle; 10) Trustworthy bootstrap; 12) Day‑1 productivity; 13) Ephemeral-only policy; 20) Composability-first UI integration (now with explicit broker abstraction); 21) Operational clarity; 22) Onboarding via tutorials.
+1) Robust lifecycle; 10) Trustworthy bootstrap; 12) Day‑1 productivity; 13) Ephemeral-only policy; 20) Composability-first UI integration (broker abstraction landed); 21) Operational clarity; 22) Onboarding via tutorials.
 
 Direction of travel
-- Thread 20: implement broker launch abstraction, audit other subprocess spawns, publish Event Contract v1, then deliver UI Up vertical slice using process-boundary JSON.
-- Threads 21/22: proceed after T20 unblock.
+- Finalize Event Contract v1 docs/tests; wire castra-ui to use the contract and call core via operations::up_with_launcher with an injected launcher. Deliver the Up vertical slice with live status and no duplicate windows.
 
 Cross-links
-- CORE.md documents the defect motivating T20 acceptance changes; tests and examples under T20 will assert no duplicate UI processes during Up.
+- runtime.rs tests (start_broker_uses_supplied_launcher) back the T20 resolution. CLI-specific current_exe() is confined to app/up.rs; library usage remains decoupled.
 
 Editorial housekeeping
-- Snapshot incremented to reflect composability defect and the required abstraction for broker/helpers.
+- Cleaned duplicate TODOs; converged on single sources for UI integration, vertical slice, and core composability.

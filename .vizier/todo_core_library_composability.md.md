@@ -7,3 +7,12 @@ Update — Injectable broker/helper runner
 
 ---
 
+Update — Landed in core
+
+- Status: Public API now accepts a BrokerLauncher; ProcessBrokerLauncher provided. Library no longer hard-binds to current_exe(); CLI path keeps deterministic spawn.
+- Example follow-up: Ensure examples/library_up.rs showcases injecting a no-op/custom launcher and still receiving events. Add a brief note about CASTRA_CLI_EXECUTABLE.
+- Acceptance: Mark composability criterion as met; track only example/docs work.
+
+
+---
+

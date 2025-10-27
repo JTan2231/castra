@@ -8,3 +8,14 @@ Update — Broker launch abstraction and embedding safety
 
 ---
 
+Update — Abstraction landed; UI wiring next
+
+- Status: BrokerLauncher abstraction is implemented in core (runtime.rs). start_broker() requires a launcher; tests verify injected usage.
+- Next acceptance slice: castra-ui initiates Up by calling operations::up_with_launcher with an injected launcher.
+- UX constraint (unchanged): No duplicate UI/CLI window when launching Up from the UI.
+- Integration notes: For embedding, prefer ProcessBrokerLauncher::from_env or a custom launcher. Document and respect CASTRA_CLI_EXECUTABLE when present.
+- Evidence: runtime.rs (ProcessBrokerLauncher, BrokerLauncher), app/up.rs (CLI-specific resolve_cli_executable isolated).
+
+
+---
+
