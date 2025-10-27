@@ -11,6 +11,7 @@ At a high level, Castra layers the following subsystems:
 - **Core Operations API** – `src/core/` exposes pure library functions (init/up/down/status/etc.) that accept typed `Options`, emit structured `Event`s via a `Reporter`, accumulate `Diagnostic`s, and return typed `Outcome`s.
 - **Configuration & Project Model** – `src/config.rs` and `src/core/project.rs` discover, parse, validate, and synthesize `ProjectConfig` structures that describe VMs, lifecycle policy, bootstrap behaviour, and broker settings.
 - **Runtime Layer** – `src/core/runtime.rs` resolves base image paths (downloading the default Alpine qcow2 on demand), prepares overlays, ensures host headroom, and spawns/tears down QEMU processes with cooperative shutdown semantics.
+  The runtime is parameterised by `VmLaunchMode`, allowing callers to choose the legacy `-daemonize` launch or an attached spawn where QEMU remains a child of the embedding process. Attached runs rely on the runtime to synthesise pidfiles from the spawned child when QEMU is slow to flush them, ensuring shutdown continues to function via the existing pidfile path.
 - **Bootstrap & Post-Boot Automation** – `src/core/bootstrap.rs` runs per-VM bootstrap pipelines (e.g. Nix flakes) once broker handshakes prove connectivity.
 - **Broker & Bus** – `src/core/broker.rs` plus `src/core/operations/bus.rs` implement a lightweight TCP broker that mediates host/guest JSON frames, logs handshakes, and provides CLI helpers.
 - **Observability & Maintenance** – Event stream definitions (`src/core/events.rs`), diagnostics (`src/core/diagnostics.rs`), reporter plumbing, status/log collectors, and the clean workflow tie the lifecycle together.
@@ -22,6 +23,7 @@ The sections below dive into each layer and call out the principal modules, data
 - `src/main.rs` boots Clap's `Cli`, ensures a subcommand is present, and dispatches to `src/app` handlers. Errors are normalized to `ExitCode`s via `app::error::exit_code`.
 - `src/cli.rs` defines the CLI contract: top-level flags (e.g. `--config`) and subcommand enums. It also performs light parsing such as bootstrap override parsing into `BootstrapOverrideArg`.
 - `src/lib.rs` re-exports the `core` module plus config/error APIs for embedding. The crate can be built without the CLI feature, allowing Castra to be consumed as a library.
+- `castra-ui` consumes the library surface with `VmLaunchMode::Attached`, caches the `UpOutcome` state/log roots, and registers shutdown hooks (window close, Quit, process signals) that run `operations::down` before exiting so orphaned QEMU processes are cleaned up automatically.
 
 ## Application Layer (`src/app`)
 

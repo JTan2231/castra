@@ -1,16 +1,17 @@
 pub mod actions;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::{
     components::shell::{render as render_shell, roster_rows},
     controller::command,
     input::prompt::{PromptEvent, PromptInput},
+    ssh::{HANDSHAKE_BANNER, SshEvent, SshManager, SshStream},
     state::AppState,
 };
-use async_channel::{Sender, unbounded};
+use async_channel::{Receiver, Sender, unbounded};
 use castra::{
     Error as CastraError,
     core::{
@@ -18,8 +19,8 @@ use castra::{
         diagnostics::{Diagnostic, Severity as DiagnosticSeverity},
         events::Event,
         operations,
-        options::{BrokerOptions, ConfigLoadOptions, UpOptions},
-        outcome::{OperationOutput, UpOutcome},
+        options::{BrokerOptions, ConfigLoadOptions, DownOptions, UpOptions, VmLaunchMode},
+        outcome::{DownOutcome, OperationOutput, UpOutcome},
         reporter::Reporter,
         runtime::{BrokerHandle, BrokerLaunchRequest, BrokerLauncher},
     },
@@ -29,16 +30,96 @@ use gpui::{
     Render, Task, WeakEntity, Window,
 };
 
+#[derive(Default)]
+pub struct ShutdownState {
+    inner: Mutex<ShutdownStateInner>,
+}
+
+#[derive(Default)]
+struct ShutdownStateInner {
+    config_path: Option<PathBuf>,
+    cleanup_in_progress: bool,
+    cleanup_completed: bool,
+}
+
+impl ShutdownState {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(ShutdownStateInner::default()),
+        }
+    }
+
+    pub fn record_config(&self, path: PathBuf) {
+        let mut inner = self.inner.lock().expect("shutdown state poisoned");
+        inner.config_path = Some(path);
+        inner.cleanup_completed = false;
+    }
+
+    pub fn prepare_cleanup(&self) -> Option<DownOptions> {
+        let mut inner = self.inner.lock().expect("shutdown state poisoned");
+        if inner.cleanup_in_progress || inner.cleanup_completed {
+            return None;
+        }
+        let path = inner.config_path.clone()?;
+        inner.cleanup_in_progress = true;
+        Some(DownOptions {
+            config: ConfigLoadOptions::explicit(path),
+            ..DownOptions::default()
+        })
+    }
+
+    pub fn mark_cleanup_complete(&self) {
+        let mut inner = self.inner.lock().expect("shutdown state poisoned");
+        inner.cleanup_in_progress = false;
+        inner.cleanup_completed = true;
+    }
+
+    pub fn cleanup_in_progress(&self) -> bool {
+        let inner = self.inner.lock().expect("shutdown state poisoned");
+        inner.cleanup_in_progress
+    }
+
+    pub fn run_cleanup_blocking(&self) -> bool {
+        if let Some(options) = self.prepare_cleanup() {
+            let result = operations::down(options, None);
+            if let Err(err) = result {
+                eprintln!("castra-ui: shutdown via signal failed: {err}");
+            }
+            self.mark_cleanup_complete();
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub struct ChatApp {
     state: AppState,
     prompt: Entity<PromptInput>,
+    ssh_manager: SshManager,
+    ssh_events: Option<Receiver<SshEvent>>,
+    shutdown: Arc<ShutdownState>,
 }
 
 impl ChatApp {
-    pub fn new(prompt: Entity<PromptInput>) -> Self {
+    pub fn new(prompt: Entity<PromptInput>, shutdown: Arc<ShutdownState>) -> Self {
+        let (ssh_tx, ssh_rx) = unbounded();
         Self {
             state: AppState::new(),
             prompt,
+            ssh_manager: SshManager::new(ssh_tx),
+            ssh_events: Some(ssh_rx),
+            shutdown,
+        }
+    }
+
+    pub fn initialize(&mut self, cx: &mut Context<Self>) {
+        if let Some(receiver) = self.ssh_events.take() {
+            let async_app = cx.to_async();
+            let weak = cx.entity().downgrade();
+            async_app
+                .spawn(move |app: &mut AsyncApp| pump_ssh(receiver, weak, app.clone()))
+                .detach();
         }
     }
 
@@ -117,6 +198,8 @@ impl ChatApp {
             return;
         }
 
+        self.ssh_manager.reset();
+
         let config_path = match default_quickstart_config_path() {
             Ok(path) => path,
             Err(message) => {
@@ -126,6 +209,16 @@ impl ChatApp {
                 return;
             }
         };
+
+        self.state.set_config_path(config_path.clone());
+        self.shutdown.record_config(config_path.clone());
+
+        if let Err(message) = self.preflight_cleanup(&config_path) {
+            self.state.complete_up_failure(&message);
+            self.state.push_system_message(message);
+            cx.notify();
+            return;
+        }
 
         self.state.push_system_message(format!(
             "Launching quickstart workspace from {}...",
@@ -166,9 +259,97 @@ impl ChatApp {
         }
     }
 
+    fn preflight_cleanup(&mut self, config_path: &Path) -> Result<(), String> {
+        let mut options = DownOptions::default();
+        options.config = ConfigLoadOptions::explicit(config_path.to_path_buf());
+
+        match operations::down(options, None) {
+            Ok(output) => {
+                self.log_diagnostics(&output.diagnostics);
+                let vm_changes = output
+                    .value
+                    .vm_results
+                    .iter()
+                    .filter(|vm| vm.changed)
+                    .count();
+                let broker_changed = output.value.broker.changed;
+                if vm_changes > 0 || broker_changed {
+                    let mut components = Vec::new();
+                    if vm_changes > 0 {
+                        components.push(format!("{vm_changes} VM(s)"));
+                    }
+                    if broker_changed {
+                        components.push("broker".to_string());
+                    }
+                    self.state.push_system_message(format!(
+                        "Recovered stale {} before launching.",
+                        components.join(" and ")
+                    ));
+                }
+                Ok(())
+            }
+            Err(CastraError::NoActiveWorkspaces) => Ok(()),
+            Err(CastraError::WorkspaceConfigUnavailable { .. }) => Ok(()),
+            Err(err) => Err(format!("Pre-flight cleanup failed: {err}")),
+        }
+    }
+
     fn handle_up_event(&mut self, event: Event, cx: &mut Context<Self>) {
+        match &event {
+            Event::BootstrapPlanned {
+                vm, ssh: Some(ssh), ..
+            } => {
+                self.ssh_manager.register_plan(vm, ssh);
+            }
+            Event::BootstrapCompleted { vm, .. } => {
+                let _ = self.ssh_manager.ensure_connection(vm);
+            }
+            _ => {}
+        }
+
         if let Some(message) = self.state.handle_up_event(&event) {
             self.state.push_system_message(message);
+        }
+        cx.notify();
+    }
+
+    fn handle_ssh_event(&mut self, event: SshEvent, cx: &mut Context<Self>) {
+        match event {
+            SshEvent::Connecting { vm, command } => {
+                let label = vm.to_uppercase();
+                self.state
+                    .push_system_message(format!("{label}: establishing SSH bridge ({command})"));
+            }
+            SshEvent::Connected { vm } => {
+                let label = vm.to_uppercase();
+                self.state
+                    .push_system_message(format!("{label}: SSH bridge established."));
+            }
+            SshEvent::Output { vm, stream, line } => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed == HANDSHAKE_BANNER {
+                    return;
+                }
+                let speaker = match stream {
+                    SshStream::Stdout => format!("SSH→{}", vm.to_uppercase()),
+                    SshStream::Stderr => format!("SSH!→{}", vm.to_uppercase()),
+                };
+                self.state.push_message(speaker, line);
+            }
+            SshEvent::ConnectionFailed { vm, error } => {
+                let label = vm.to_uppercase();
+                self.state
+                    .push_system_message(format!("{label}: SSH bridge error — {error}"));
+            }
+            SshEvent::Disconnected { vm, exit_status } => {
+                let label = vm.to_uppercase();
+                let status_text = match exit_status {
+                    Some(code) => format!("exit status {code}"),
+                    None => "terminated".to_string(),
+                };
+                self.state
+                    .push_system_message(format!("{label}: SSH bridge closed ({status_text})."));
+            }
         }
         cx.notify();
     }
@@ -182,6 +363,10 @@ impl ChatApp {
             Ok(output) => {
                 self.state.complete_up_success();
                 self.log_diagnostics(&output.diagnostics);
+                self.state.record_runtime_paths(
+                    output.value.state_root.clone(),
+                    output.value.log_root.clone(),
+                );
                 let summary = summarize_up(&output.value);
                 self.state.push_system_message(summary);
             }
@@ -192,6 +377,81 @@ impl ChatApp {
             }
         }
         cx.notify();
+    }
+
+    pub(crate) fn initiate_shutdown(&mut self, cx: &mut Context<Self>) {
+        if self.state.shutdown_in_progress() {
+            self.state
+                .push_system_message("Shutdown already in progress.");
+            cx.notify();
+            return;
+        }
+
+        match self.shutdown.prepare_cleanup() {
+            Some(options) => {
+                self.state.mark_shutdown_started();
+                self.state.push_system_message("Shutting down workspace...");
+                cx.notify();
+
+                let async_app = cx.to_async();
+                let weak = cx.entity().downgrade();
+                let shutdown = Arc::clone(&self.shutdown);
+                let background =
+                    cx.background_spawn(async move { operations::down(options, None) });
+                async_app
+                    .spawn(move |app: &mut AsyncApp| {
+                        await_shutdown(background, weak, shutdown, app.clone())
+                    })
+                    .detach();
+            }
+            None => {
+                cx.quit();
+            }
+        }
+    }
+
+    fn finish_shutdown(
+        &mut self,
+        outcome: Result<OperationOutput<DownOutcome>, CastraError>,
+        cx: &mut Context<Self>,
+    ) {
+        match outcome {
+            Ok(output) => {
+                self.log_diagnostics(&output.diagnostics);
+                let vm_changes = output
+                    .value
+                    .vm_results
+                    .iter()
+                    .filter(|vm| vm.changed)
+                    .count();
+                let broker_changed = output.value.broker.changed;
+                if vm_changes > 0 || broker_changed {
+                    let mut parts = Vec::new();
+                    if vm_changes > 0 {
+                        parts.push(format!("{vm_changes} VM(s)"));
+                    }
+                    if broker_changed {
+                        parts.push("broker".to_string());
+                    }
+                    self.state.push_system_message(format!(
+                        "Shutdown complete: {} terminated.",
+                        parts.join(" and ")
+                    ));
+                } else {
+                    self.state
+                        .push_system_message("Shutdown complete: nothing was running.");
+                }
+            }
+            Err(error) => {
+                let message = format!("Shutdown encountered an error: {error}");
+                self.state.push_system_message(message);
+            }
+        }
+
+        self.state.mark_shutdown_complete();
+        self.shutdown.mark_cleanup_complete();
+        cx.notify();
+        cx.quit();
     }
 
     fn log_diagnostics(&mut self, diagnostics: &[Diagnostic]) {
@@ -241,6 +501,23 @@ async fn pump_events(
     }
 }
 
+async fn pump_ssh(
+    receiver: async_channel::Receiver<SshEvent>,
+    weak: WeakEntity<ChatApp>,
+    mut app: AsyncApp,
+) {
+    while let Ok(event) = receiver.recv().await {
+        if weak
+            .update(&mut app, |chat, cx| {
+                chat.handle_ssh_event(event.clone(), cx)
+            })
+            .is_err()
+        {
+            break;
+        }
+    }
+}
+
 async fn await_completion(
     background: Task<Result<OperationOutput<UpOutcome>, CastraError>>,
     weak: WeakEntity<ChatApp>,
@@ -248,6 +525,22 @@ async fn await_completion(
 ) {
     let outcome = background.await;
     let _ = weak.update(&mut app, |chat, cx| chat.finish_up(outcome, cx));
+}
+
+async fn await_shutdown(
+    background: Task<Result<OperationOutput<DownOutcome>, CastraError>>,
+    weak: WeakEntity<ChatApp>,
+    shutdown: Arc<ShutdownState>,
+    mut app: AsyncApp,
+) {
+    let outcome = background.await;
+    if weak
+        .update(&mut app, |chat, cx| chat.finish_shutdown(outcome, cx))
+        .is_err()
+    {
+        shutdown.mark_cleanup_complete();
+        let _ = app.update(|cx| cx.quit());
+    }
 }
 
 fn default_quickstart_config_path() -> Result<PathBuf, String> {
@@ -264,6 +557,7 @@ fn default_quickstart_config_path() -> Result<PathBuf, String> {
 fn build_up_options(config_path: &Path) -> UpOptions {
     let mut options = UpOptions::default();
     options.config = ConfigLoadOptions::explicit(config_path.to_path_buf());
+    options.launch_mode = VmLaunchMode::Attached;
     options
 }
 
@@ -318,6 +612,19 @@ fn format_diagnostic(diagnostic: &Diagnostic) -> String {
         text.push_str(help);
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn build_up_options_configures_attached_launch_mode() {
+        let path = PathBuf::from("castra.toml");
+        let options = build_up_options(&path);
+        assert_eq!(options.launch_mode, VmLaunchMode::Attached);
+    }
 }
 
 struct UiEventReporter {

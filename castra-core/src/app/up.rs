@@ -10,7 +10,7 @@ use crate::core::events::{
     BootstrapTrigger, Event,
 };
 use crate::core::operations;
-use crate::core::options::{BootstrapOverrides, UpOptions};
+use crate::core::options::{BootstrapOverrides, UpOptions, VmLaunchMode};
 use crate::core::outcome::{BootstrapRunStatus, UpOutcome};
 use crate::core::project::format_config_warnings;
 use castra::PortProtocol;
@@ -35,6 +35,7 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
         force,
         bootstrap: bootstrap_overrides,
         broker_only,
+        launch_mode: VmLaunchMode::Daemonize,
         plan,
         alpine_qcow_override: qcow,
     };
@@ -486,6 +487,7 @@ fn format_step_status(status: &BootstrapStepStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::options::VmLaunchMode;
     use castra::BootstrapMode;
 
     #[test]
@@ -545,5 +547,10 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn up_options_default_launch_mode_is_daemonize() {
+        assert_eq!(UpOptions::default().launch_mode, VmLaunchMode::Daemonize);
     }
 }

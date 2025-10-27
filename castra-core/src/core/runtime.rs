@@ -28,6 +28,7 @@ use super::events::{
     CooperativeMethod, CooperativeTimeoutReason, EphemeralCleanupReason, Event, ShutdownOutcome,
     ShutdownSignal,
 };
+use super::options::VmLaunchMode;
 
 pub struct RuntimeContext {
     pub state_root: PathBuf,
@@ -35,6 +36,7 @@ pub struct RuntimeContext {
     pub qemu_system: PathBuf,
     pub qemu_img: Option<PathBuf>,
     pub accelerators: Vec<String>,
+    pub launch_mode: VmLaunchMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +196,10 @@ pub struct CheckOutcome {
     pub failures: Vec<String>,
 }
 
-pub fn prepare_runtime_context(project: &ProjectConfig) -> Result<RuntimeContext> {
+pub fn prepare_runtime_context(
+    project: &ProjectConfig,
+    launch_mode: VmLaunchMode,
+) -> Result<RuntimeContext> {
     let state_root = super::project::config_state_root(project);
     fs::create_dir_all(&state_root).map_err(|err| Error::PreflightFailed {
         message: format!(
@@ -240,6 +245,7 @@ pub fn prepare_runtime_context(project: &ProjectConfig) -> Result<RuntimeContext
         qemu_system,
         qemu_img,
         accelerators,
+        launch_mode,
     })
 }
 
@@ -861,10 +867,13 @@ pub fn launch_vm(
     );
 
     let mut command = Command::new(&context.qemu_system);
+    command.arg("-name").arg(&vm.name);
+
+    if matches!(context.launch_mode, VmLaunchMode::Daemonize) {
+        command.arg("-daemonize");
+    }
+
     command
-        .arg("-name")
-        .arg(&vm.name)
-        .arg("-daemonize")
         .arg("-pidfile")
         .arg(&pidfile)
         .arg("-smp")
@@ -930,47 +939,97 @@ pub fn launch_vm(
         command.arg("-cpu").arg("host");
     }
 
-    let status = command.status().map_err(|err| Error::LaunchFailed {
-        vm: vm.name.clone(),
-        message: format!("Failed to spawn {}: {err}", context.qemu_system.display()),
-    })?;
-
-    if !status.success() {
-        return Err(Error::LaunchFailed {
+    let read_pidfile = || -> Result<u32> {
+        let pid_contents = fs::read_to_string(&pidfile).map_err(|err| Error::LaunchFailed {
             vm: vm.name.clone(),
             message: format!(
-                "{} exited with status {}.",
-                context.qemu_system.display(),
-                status.code().unwrap_or(-1)
+                "Unable to read pidfile {} for VM `{}`: {err}",
+                pidfile.display(),
+                vm.name
             ),
-        });
-    }
+        })?;
+        let pid_trimmed = pid_contents.trim();
+        let pid: u32 = pid_trimmed.parse().map_err(|_| Error::LaunchFailed {
+            vm: vm.name.clone(),
+            message: format!(
+                "Pidfile {} for VM `{}` contained invalid pid `{pid_trimmed}`.",
+                pidfile.display(),
+                vm.name
+            ),
+        })?;
+        Ok(pid)
+    };
 
-    wait_for_pidfile(&pidfile, Duration::from_secs(5)).map_err(|err| Error::LaunchFailed {
-        vm: vm.name.clone(),
-        message: format!(
-            "QEMU did not write pidfile {} within timeout: {err}",
-            pidfile.display()
-        ),
-    })?;
+    let pid = match context.launch_mode {
+        VmLaunchMode::Daemonize => {
+            let status = command.status().map_err(|err| Error::LaunchFailed {
+                vm: vm.name.clone(),
+                message: format!("Failed to spawn {}: {err}", context.qemu_system.display()),
+            })?;
 
-    let pid_contents = fs::read_to_string(&pidfile).map_err(|err| Error::LaunchFailed {
-        vm: vm.name.clone(),
-        message: format!(
-            "Unable to read pidfile {} for VM `{}`: {err}",
-            pidfile.display(),
-            vm.name
-        ),
-    })?;
-    let pid_trimmed = pid_contents.trim();
-    let pid: u32 = pid_trimmed.parse().map_err(|_| Error::LaunchFailed {
-        vm: vm.name.clone(),
-        message: format!(
-            "Pidfile {} for VM `{}` contained invalid pid `{pid_trimmed}`.",
-            pidfile.display(),
-            vm.name
-        ),
-    })?;
+            if !status.success() {
+                return Err(Error::LaunchFailed {
+                    vm: vm.name.clone(),
+                    message: format!(
+                        "{} exited with status {}.",
+                        context.qemu_system.display(),
+                        status.code().unwrap_or(-1)
+                    ),
+                });
+            }
+
+            wait_for_pidfile(&pidfile, Duration::from_secs(5)).map_err(|err| {
+                Error::LaunchFailed {
+                    vm: vm.name.clone(),
+                    message: format!(
+                        "QEMU did not write pidfile {} within timeout: {err}",
+                        pidfile.display()
+                    ),
+                }
+            })?;
+
+            read_pidfile()?
+        }
+        VmLaunchMode::Attached => {
+            let child = command.spawn().map_err(|err| Error::LaunchFailed {
+                vm: vm.name.clone(),
+                message: format!("Failed to spawn {}: {err}", context.qemu_system.display()),
+            })?;
+            let fallback_pid = child.id();
+
+            let _ = wait_for_pidfile(&pidfile, Duration::from_secs(5));
+            let mut fallback_used = false;
+            let pid = match read_pidfile() {
+                Ok(pid) => pid,
+                Err(_) => {
+                    fallback_used = true;
+                    let contents = format!("{fallback_pid}\n");
+                    fs::write(&pidfile, contents).map_err(|err| Error::LaunchFailed {
+                        vm: vm.name.clone(),
+                        message: format!(
+                            "Attached launch for VM `{}` could not persist pidfile {}: {err}",
+                            vm.name,
+                            pidfile.display()
+                        ),
+                    })?;
+                    fallback_pid
+                }
+            };
+
+            if fallback_used {
+                events.push(Event::Message {
+                    severity: Severity::Warning,
+                    text: format!(
+                        "VM `{}` pidfile was not available after attached launch; using pid {} from child handle.",
+                        vm.name, pid
+                    ),
+                });
+            }
+
+            drop(child);
+            pid
+        }
+    };
 
     events.push(Event::VmLaunched {
         vm: vm.name.clone(),
@@ -2459,6 +2518,102 @@ mod tests {
                 verify: None,
             },
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launch_vm_attached_mode_waits_for_pidfile_and_shutdown_succeeds()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempdir()?;
+        let state_root = temp.path().join("state");
+        fs::create_dir_all(&state_root)?;
+        let log_root = state_root.join("logs");
+        fs::create_dir_all(&log_root)?;
+
+        let script = temp.path().join("fake-qemu.sh");
+        fs::write(
+            &script,
+            r#"#!/usr/bin/env python3
+import os
+import signal
+import sys
+import time
+
+pidfile = None
+daemon = False
+args = iter(sys.argv[1:])
+for arg in args:
+    if arg == "-pidfile":
+        pidfile = next(args, None)
+    elif arg == "-daemonize":
+        daemon = True
+
+if pidfile:
+    with open(pidfile, "w", encoding="utf-8") as handle:
+        handle.write(str(os.getpid()))
+
+if daemon:
+    sys.exit(0)
+
+def _terminate(_signum, _frame):
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, _terminate)
+signal.signal(signal.SIGINT, _terminate)
+
+while True:
+    time.sleep(1)
+"#,
+        )?;
+        let mut perms = fs::metadata(&script)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms)?;
+
+        let vm = sample_vm(&state_root);
+        let context = RuntimeContext {
+            state_root: state_root.clone(),
+            log_root,
+            qemu_system: script,
+            qemu_img: None,
+            accelerators: Vec::new(),
+            launch_mode: VmLaunchMode::Attached,
+        };
+
+        let assets = ResolvedVmAssets { boot: None };
+        let mut events = Vec::new();
+
+        let pid = launch_vm(&vm, &assets, &context, &mut events)?;
+        assert!(events.iter().any(|event| matches!(event, Event::VmLaunched { vm: name, pid: event_pid } if name == &vm.name && *event_pid == pid)));
+
+        let pidfile = context.state_root.join(format!("{}.pid", vm.name));
+        let stored_pid: u32 = fs::read_to_string(&pidfile)?.trim().parse()?;
+        assert_eq!(stored_pid, pid);
+
+        let alive_check = unsafe { libc::kill(pid as i32, 0) };
+        assert_eq!(alive_check, 0, "expected child process to be running");
+
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let mut status = 0;
+        for _ in 0..20 {
+            let res = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
+            if res == pid as i32 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let after = unsafe { libc::kill(pid as i32, 0) };
+        assert_eq!(after, -1, "expected child process to be terminated");
+
+        Ok(())
     }
 
     #[cfg(unix)]

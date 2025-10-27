@@ -24,7 +24,7 @@ pub use operations::{
 pub use options::{
     BrokerOptions, BusLogTarget, BusPublishOptions, BusTailOptions, CleanOptions, CleanScope,
     ConfigLoadOptions, ConfigSource, DownOptions, InitOptions, LogsOptions, PortsOptions,
-    PortsView, ProjectSelector, StatusOptions, UpOptions,
+    PortsView, ProjectSelector, StatusOptions, UpOptions, VmLaunchMode,
 };
 pub use outcome::{
     BootstrapRunOutcome, BootstrapRunStatus, BrokerLaunchOutcome, BrokerShutdownOutcome,

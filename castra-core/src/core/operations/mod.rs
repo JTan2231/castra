@@ -322,7 +322,7 @@ fn up_internal(
                 "Rerun with `castra up --force` to override.",
             )?;
 
-            let context = prepare_runtime_context(&project)?;
+            let context = prepare_runtime_context(&project, options.launch_mode)?;
 
             persist_workspace_metadata(
                 &project,

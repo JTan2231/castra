@@ -6,6 +6,31 @@ use serde_json::Value;
 
 use crate::config::BootstrapMode;
 
+/// Controls how VMs are launched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmLaunchMode {
+    /// Spawn QEMU with `-daemonize` so it detaches immediately.
+    Daemonize,
+    /// Launch QEMU in the foreground and keep the parent attached.
+    Attached,
+}
+
+impl Default for VmLaunchMode {
+    fn default() -> Self {
+        Self::Daemonize
+    }
+}
+
+impl VmLaunchMode {
+    /// String representation used in diagnostics and metadata.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VmLaunchMode::Daemonize => "daemonize",
+            VmLaunchMode::Attached => "attached",
+        }
+    }
+}
+
 /// Source used when resolving a Castra configuration.
 #[derive(Debug, Clone)]
 pub enum ConfigSource {
@@ -79,6 +104,8 @@ pub struct UpOptions {
     pub force: bool,
     /// Launch only the broker and skip VM launch/bootstrap.
     pub broker_only: bool,
+    /// How QEMU instances should be launched.
+    pub launch_mode: VmLaunchMode,
     /// Per-invocation overrides for bootstrap behavior.
     pub bootstrap: BootstrapOverrides,
     /// Plan mode renders bootstrap intent without side effects.
@@ -93,6 +120,7 @@ impl Default for UpOptions {
             config: ConfigLoadOptions::discover(true),
             force: false,
             broker_only: false,
+            launch_mode: VmLaunchMode::default(),
             bootstrap: BootstrapOverrides::default(),
             plan: false,
             alpine_qcow_override: None,

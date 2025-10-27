@@ -16,6 +16,8 @@ use crate::core::events::{
     BootstrapPlanAction, BootstrapPlanSsh, BootstrapPlanVerify, BootstrapStatus, BootstrapStepKind,
     BootstrapStepStatus, BootstrapTrigger, Event,
 };
+#[cfg(test)]
+use crate::core::options::VmLaunchMode;
 use crate::core::outcome::{BootstrapPlanOutcome, BootstrapRunOutcome, BootstrapRunStatus};
 use crate::core::reporter::Reporter;
 use crate::core::runtime::{AssetPreparation, RuntimeContext};
@@ -2686,6 +2688,7 @@ mod tests {
             qemu_system: PathBuf::from("/usr/bin/false"),
             qemu_img: None,
             accelerators: Vec::new(),
+            launch_mode: VmLaunchMode::Daemonize,
         };
 
         let vm = VmDefinition {
@@ -2986,6 +2989,7 @@ mod tests {
             qemu_system: bin_dir.join("qemu-system-x86_64"),
             qemu_img: None,
             accelerators: Vec::new(),
+            launch_mode: VmLaunchMode::Daemonize,
         };
 
         let vm = VmDefinition {

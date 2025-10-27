@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 
 use castra::core::{
     diagnostics::Severity,
@@ -284,6 +285,24 @@ impl VmCounts {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Clone)]
+pub struct RuntimePaths {
+    state_root: PathBuf,
+    log_root: PathBuf,
+}
+
+#[allow(dead_code)]
+impl RuntimePaths {
+    pub fn state_root(&self) -> &PathBuf {
+        &self.state_root
+    }
+
+    pub fn log_root(&self) -> &PathBuf {
+        &self.log_root
+    }
+}
+
 #[derive(Clone)]
 pub enum UpLifecycle {
     Idle,
@@ -311,6 +330,8 @@ pub struct UpState {
     vm_fleet: VmFleetState,
     broker_port: Option<u16>,
     last_error: Option<String>,
+    runtime_paths: Option<RuntimePaths>,
+    shutdown_in_progress: bool,
 }
 
 impl Default for UpState {
@@ -320,6 +341,8 @@ impl Default for UpState {
             vm_fleet: VmFleetState::default(),
             broker_port: None,
             last_error: None,
+            runtime_paths: None,
+            shutdown_in_progress: false,
         }
     }
 }
@@ -339,6 +362,8 @@ impl UpState {
         self.vm_fleet.reset();
         self.broker_port = None;
         self.last_error = None;
+        self.runtime_paths = None;
+        self.shutdown_in_progress = false;
         true
     }
 
@@ -393,6 +418,35 @@ impl UpState {
 
     pub fn counts(&self) -> VmCounts {
         self.vm_fleet.counts()
+    }
+
+    pub fn set_runtime_paths(&mut self, state_root: PathBuf, log_root: PathBuf) {
+        self.runtime_paths = Some(RuntimePaths {
+            state_root,
+            log_root,
+        });
+    }
+
+    pub fn clear_runtime_paths(&mut self) {
+        self.runtime_paths = None;
+    }
+
+    #[allow(dead_code)]
+    pub fn runtime_paths(&self) -> Option<&RuntimePaths> {
+        self.runtime_paths.as_ref()
+    }
+
+    pub fn mark_shutdown_started(&mut self) {
+        self.shutdown_in_progress = true;
+    }
+
+    pub fn mark_shutdown_complete(&mut self) {
+        self.shutdown_in_progress = false;
+        self.clear_runtime_paths();
+    }
+
+    pub fn shutdown_in_progress(&self) -> bool {
+        self.shutdown_in_progress
     }
 
     pub fn status_line(&self) -> String {
@@ -460,6 +514,7 @@ pub struct AppState {
     roster: RosterState,
     up: UpState,
     ui: UiState,
+    config_path: Option<PathBuf>,
 }
 
 impl AppState {
@@ -469,6 +524,7 @@ impl AppState {
             roster: RosterState::default(),
             up: UpState::default(),
             ui: UiState::default(),
+            config_path: None,
         };
         state.push_system_message("Welcome to Castra. Type /help to discover commands.");
         state.push_system_message("Run /up to launch the bootstrap-quickstart workspace.");
@@ -540,6 +596,9 @@ impl AppState {
     }
 
     pub fn begin_up_operation(&mut self) -> Result<(), &'static str> {
+        if self.up.shutdown_in_progress() {
+            return Err("Shutdown is in progress; wait for cleanup to finish.");
+        }
         if !self.up.start() {
             return Err("An /up operation is already in progress.");
         }
@@ -555,6 +614,42 @@ impl AppState {
     pub fn complete_up_failure<T: Into<String>>(&mut self, reason: T) {
         self.up.mark_failure(reason.into());
         self.roster.set_active_status("ERROR");
+    }
+
+    pub fn record_runtime_paths(&mut self, state_root: PathBuf, log_root: PathBuf) {
+        self.up.set_runtime_paths(state_root, log_root);
+    }
+
+    #[allow(dead_code)]
+    pub fn runtime_paths(&self) -> Option<&RuntimePaths> {
+        self.up.runtime_paths()
+    }
+
+    pub fn mark_shutdown_started(&mut self) {
+        self.up.mark_shutdown_started();
+    }
+
+    pub fn mark_shutdown_complete(&mut self) {
+        self.up.mark_shutdown_complete();
+        self.roster.set_active_status("ONLINE");
+    }
+
+    pub fn shutdown_in_progress(&self) -> bool {
+        self.up.shutdown_in_progress()
+    }
+
+    pub fn set_config_path(&mut self, path: PathBuf) {
+        self.config_path = Some(path);
+    }
+
+    #[allow(dead_code)]
+    pub fn clear_config_path(&mut self) {
+        self.config_path = None;
+    }
+
+    #[allow(dead_code)]
+    pub fn config_path(&self) -> Option<&PathBuf> {
+        self.config_path.as_ref()
     }
 
     pub fn handle_up_event(&mut self, event: &Event) -> Option<String> {

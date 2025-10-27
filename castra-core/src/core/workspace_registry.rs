@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{self, ProjectConfig};
 use crate::core::diagnostics::{Diagnostic, Severity};
-use crate::core::options::{ConfigLoadOptions, ConfigSource, UpOptions};
+use crate::core::options::{ConfigLoadOptions, ConfigSource, UpOptions, VmLaunchMode};
 use crate::core::project::default_projects_root;
 use crate::core::runtime::{BrokerProcessState, inspect_broker_state, inspect_vm_state};
 use crate::error::{Error, Result};
@@ -210,6 +210,12 @@ pub struct InvocationMetadata {
     #[serde(default)]
     pub alpine_qcow_override: Option<PathBuf>,
     pub bootstrap_overrides_applied: bool,
+    #[serde(default = "default_vm_launch_mode_descriptor")]
+    pub vm_launch_mode: String,
+}
+
+fn default_vm_launch_mode_descriptor() -> String {
+    VmLaunchMode::Daemonize.as_str().to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,6 +453,7 @@ fn build_workspace_metadata(
             alpine_qcow_override: options.alpine_qcow_override.clone(),
             bootstrap_overrides_applied: options.bootstrap.global.is_some()
                 || !options.bootstrap.per_vm.is_empty(),
+            vm_launch_mode: options.launch_mode.as_str().to_string(),
         },
         vms: vm_entries,
         notes,
