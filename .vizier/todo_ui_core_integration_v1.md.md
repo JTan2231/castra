@@ -1,21 +1,18 @@
-Update — Broker launch abstraction and embedding safety
+Status update (2025-10-30):
+- Broker launcher is now injectable in castra-core; UI no longer needs to rely on current_exe(). Use operations::up_with_launcher and provide a launcher sourced from CASTRA_CLI_EXECUTABLE or an in-process implementation.
 
-- Add acceptance: Broker/helper launch is injectable/configurable; must not rely on std::env::current_exe() that binds to the embedding process. Default remains deterministic for CLI usage.
-- Verification: During UI-initiated Up, no additional castra-ui (or duplicate window) is spawned. Capture a process list sample in the demo notes and assert in an automated smoke where feasible.
-- Anchors: castra-core/src/core/broker.rs; castra-core/src/core/operations/bus.rs; castra-core/src/core/runtime.rs; CORE.md (defect described).
-- Risk notes: Audit any other subprocess invocations for similar assumptions.
+Next steps (product-level, acceptance-driven):
+- Controller wiring: castra-ui/src/controller/command.rs triggers Up via castra-core library surface, passing an event subscriber that forwards JSON events into UI state.
+- Live rendering: components/message_log.rs, components/vm_fleet.rs, components/status_footer.rs reflect incoming events in near-real time; no additional CLI/terminal windows are spawned.
+- Error path: if broker launch fails (launcher returns error), surface a single, actionable error in the message log with remediation hint; UI remains responsive.
+- Workspace selection: respect the current UI model for selecting a workspace; Up uses that context.
 
+Acceptance criteria (observable):
+- From the UI: initiating Up shows VM entries appearing with phase/progress updates, footer shows aggregate status, and message log streams events. On completion, a clear success/summary banner appears.
+- No duplicate windows/process UIs are opened during the run.
+- Disconnected mode: when the contract stream ends, UI shows a finished state; on error, shows a recoverable error and allows retry.
 
----
-
-Update — Abstraction landed; UI wiring next
-
-- Status: BrokerLauncher abstraction is implemented in core (runtime.rs). start_broker() requires a launcher; tests verify injected usage.
-- Next acceptance slice: castra-ui initiates Up by calling operations::up_with_launcher with an injected launcher.
-- UX constraint (unchanged): No duplicate UI/CLI window when launching Up from the UI.
-- Integration notes: For embedding, prefer ProcessBrokerLauncher::from_env or a custom launcher. Document and respect CASTRA_CLI_EXECUTABLE when present.
-- Evidence: runtime.rs (ProcessBrokerLauncher, BrokerLauncher), app/up.rs (CLI-specific resolve_cli_executable isolated).
-
+Anchors refined: castra-core/src/core/runtime.rs (BrokerLauncher), castra-core/src/app/up.rs (operations::up_with_launcher), castra-ui/src/controller/command.rs, castra-ui/src/components/*, env var CASTRA_CLI_EXECUTABLE.
 
 ---
 
