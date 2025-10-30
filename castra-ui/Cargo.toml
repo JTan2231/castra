@@ -10,3 +10,4 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 castra = { path = "../castra-core", default-features = false }
 async-channel = "1.9"
 ctrlc = "3"
+castra-harness = { path = "../castra-harness" }

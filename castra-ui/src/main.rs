@@ -1,4 +1,5 @@
 mod app;
+mod codex;
 mod components;
 mod controller;
 mod input;

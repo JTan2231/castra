@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
 members = [
-"castra-core",
+"castra-core", "castra-harness",
 "castra-ui",
 ]

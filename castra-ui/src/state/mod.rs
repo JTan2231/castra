@@ -6,6 +6,7 @@ use castra::core::{
     diagnostics::Severity,
     events::{BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger, Event},
 };
+use castra_harness::{CommandStatus, FileDiff, FileDiffKind, HarnessEvent, PatchStatus, TodoEntry};
 use chrono::{DateTime, Local};
 use gpui::SharedString;
 
@@ -634,6 +635,7 @@ pub struct AppState {
     roster: RosterState,
     up: UpState,
     ui: UiState,
+    codex_thread_id: Option<String>,
     config_path: Option<PathBuf>,
 }
 
@@ -644,6 +646,7 @@ impl AppState {
             roster: RosterState::default(),
             up: UpState::default(),
             ui: UiState::default(),
+            codex_thread_id: None,
             config_path: None,
         };
         state.push_system_message("Welcome to Castra. Type /help to discover commands.");
@@ -766,6 +769,69 @@ impl AppState {
     pub fn push_agent_echo(&mut self, text: &str) {
         let label = self.roster.active_agent().label();
         self.push_message(label, format!("You said: {}", text));
+    }
+
+    pub fn codex_thread_id(&self) -> Option<String> {
+        self.codex_thread_id.clone()
+    }
+
+    pub fn apply_harness_event(&mut self, event: &HarnessEvent) {
+        match event {
+            HarnessEvent::ThreadStarted { thread_id } => {
+                self.codex_thread_id = Some(thread_id.clone());
+                self.push_system_message(format!("Codex thread ready ({thread_id})"));
+            }
+            HarnessEvent::AgentMessage { text } => {
+                self.push_message("CODEX", text.clone());
+            }
+            HarnessEvent::Reasoning { text } => {
+                self.push_message("CODEX⋯", text.clone());
+            }
+            HarnessEvent::CommandProgress {
+                command,
+                output,
+                status,
+                exit_code,
+            } => {
+                let status_label = match status {
+                    CommandStatus::InProgress => "running",
+                    CommandStatus::Completed => "completed",
+                    CommandStatus::Failed => "failed",
+                };
+                let mut message = format!("Codex command {status_label}: {command}");
+                if let Some(code) = exit_code {
+                    message.push_str(&format!(" (exit {code})"));
+                }
+                self.push_system_message(message);
+                if !output.is_empty() {
+                    self.push_message("CODEX·CMD", output.clone());
+                }
+            }
+            HarnessEvent::FileChange { changes, status } => {
+                let status_label = match status {
+                    PatchStatus::Completed => "applied",
+                    PatchStatus::Failed => "failed",
+                };
+                let summary = render_file_changes(changes);
+                self.push_system_message(format!("Codex file changes {status_label}: {summary}"));
+            }
+            HarnessEvent::TodoList { items } => {
+                let summary = render_todo_list(items);
+                self.push_system_message(format!("Codex TODO: {summary}"));
+            }
+            HarnessEvent::Usage {
+                prompt_tokens,
+                cached_tokens,
+                completion_tokens,
+            } => {
+                self.push_system_message(format!(
+                    "Codex usage — prompt: {prompt_tokens}, cached: {cached_tokens}, completion: {completion_tokens}"
+                ));
+            }
+            HarnessEvent::Failure { message } => {
+                self.push_system_message(format!("Codex failure: {message}"));
+            }
+        }
     }
 
     pub fn agent_index_by_id(&self, id: &str) -> Option<usize> {
@@ -986,4 +1052,39 @@ fn format_trigger(trigger: &BootstrapTrigger) -> String {
         BootstrapTrigger::Always => "always".to_string(),
         BootstrapTrigger::Auto => "auto".to_string(),
     }
+}
+
+fn render_file_changes(changes: &[FileDiff]) -> String {
+    if changes.is_empty() {
+        return "none".to_string();
+    }
+
+    changes
+        .iter()
+        .map(|diff| format!("{} {}", describe_diff_kind(&diff.kind), diff.path))
+        .collect::<Vec<_>>()
+        .join(" • ")
+}
+
+fn describe_diff_kind(kind: &FileDiffKind) -> &'static str {
+    match kind {
+        FileDiffKind::Add => "added",
+        FileDiffKind::Delete => "removed",
+        FileDiffKind::Update => "updated",
+    }
+}
+
+fn render_todo_list(items: &[TodoEntry]) -> String {
+    if items.is_empty() {
+        return "none".to_string();
+    }
+
+    items
+        .iter()
+        .map(|item| {
+            let status = if item.completed { 'x' } else { ' ' };
+            format!("[{status}] {}", item.text)
+        })
+        .collect::<Vec<_>>()
+        .join(" • ")
 }

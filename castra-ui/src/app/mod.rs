@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::{
+    codex::{HarnessJob, HarnessRunner},
     components::shell::{render as render_shell, roster_rows},
     controller::command,
     input::prompt::{PromptEvent, PromptInput},
@@ -25,6 +26,7 @@ use castra::{
         runtime::{BrokerHandle, BrokerLaunchRequest, BrokerLauncher},
     },
 };
+use castra_harness::{HarnessEvent, TurnRequest};
 use gpui::{
     AppContext, AsyncApp, Context, Entity, FocusHandle, Focusable, IntoElement, MouseDownEvent,
     Render, Task, WeakEntity, Window,
@@ -98,6 +100,7 @@ pub struct ChatApp {
     prompt: Entity<PromptInput>,
     ssh_manager: SshManager,
     ssh_events: Option<Receiver<SshEvent>>,
+    codex_runner: HarnessRunner,
     shutdown: Arc<ShutdownState>,
 }
 
@@ -109,6 +112,7 @@ impl ChatApp {
             prompt,
             ssh_manager: SshManager::new(ssh_tx),
             ssh_events: Some(ssh_rx),
+            codex_runner: HarnessRunner::new(),
             shutdown,
         }
     }
@@ -164,15 +168,24 @@ impl ChatApp {
         self.state
             .push_message(format!("USER→{}", label), payload.clone());
 
-        match self.ssh_manager.ensure_connection(&vm) {
-            Ok(_) => {
-                if let Err(err) = self.ssh_manager.send_line(&vm, &payload) {
-                    self.state
-                        .push_system_message(format!("{label}: failed to send command - {err}"));
-                }
+        let mut request = TurnRequest::new(payload.clone());
+        if let Some(thread_id) = self.state.codex_thread_id() {
+            request = request.with_resume_thread(thread_id);
+        }
+
+        match self.codex_runner.run(request) {
+            Ok(job) => {
+                self.state
+                    .push_system_message(format!("Codex engaged for {label}"));
+                let async_app = cx.to_async();
+                let weak = cx.entity().downgrade();
+                async_app
+                    .spawn(move |app: &mut AsyncApp| pump_codex(job, weak, app.clone()))
+                    .detach();
             }
             Err(err) => {
-                self.state.push_system_message(format!("{label}: {err}"));
+                self.state
+                    .push_system_message(format!("Codex launch failed: {err}"));
             }
         }
 
@@ -401,6 +414,11 @@ impl ChatApp {
         cx.notify();
     }
 
+    fn handle_codex_event(&mut self, event: HarnessEvent, cx: &mut Context<Self>) {
+        self.state.apply_harness_event(&event);
+        cx.notify();
+    }
+
     fn finish_up(
         &mut self,
         outcome: Result<OperationOutput<UpOutcome>, CastraError>,
@@ -559,6 +577,22 @@ async fn pump_ssh(
         if weak
             .update(&mut app, |chat, cx| {
                 chat.handle_ssh_event(event.clone(), cx)
+            })
+            .is_err()
+        {
+            break;
+        }
+    }
+}
+
+async fn pump_codex(job: HarnessJob, weak: WeakEntity<ChatApp>, mut app: AsyncApp) {
+    let (receiver, handle) = job.into_parts();
+    let _handle = handle;
+
+    while let Ok(event) = receiver.recv().await {
+        if weak
+            .update(&mut app, |chat, cx| {
+                chat.handle_codex_event(event.clone(), cx)
             })
             .is_err()
         {
