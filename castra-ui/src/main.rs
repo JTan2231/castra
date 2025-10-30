@@ -54,6 +54,8 @@ fn main() {
                 KeyBinding::new("escape", CancelHistory, None),
                 KeyBinding::new("cmd-k", FocusPrompt, None),
                 KeyBinding::new("ctrl-l", FocusPrompt, None),
+                KeyBinding::new("tab", FocusNextVm, None),
+                KeyBinding::new("shift-tab", FocusPrevVm, None),
                 KeyBinding::new("cmd-b", ToggleSidebar, None),
                 KeyBinding::new("ctrl-b", ToggleSidebar, None),
                 KeyBinding::new("cmd-1", SwitchAgent1, None),
@@ -137,6 +139,28 @@ fn main() {
                     window_handle
                         .update(cx, |chat, window, cx| {
                             chat.focus_prompt(window, cx);
+                        })
+                        .ok();
+                });
+            }
+
+            {
+                let window_handle = window.clone();
+                cx.on_action(move |_: &FocusNextVm, cx| {
+                    window_handle
+                        .update(cx, |chat, window, cx| {
+                            chat.focus_next_vm(window, cx);
+                        })
+                        .ok();
+                });
+            }
+
+            {
+                let window_handle = window.clone();
+                cx.on_action(move |_: &FocusPrevVm, cx| {
+                    window_handle
+                        .update(cx, |chat, window, cx| {
+                            chat.focus_prev_vm(window, cx);
                         })
                         .ok();
                 });

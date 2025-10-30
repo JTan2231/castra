@@ -4,7 +4,13 @@ pub enum Command {
     Help,
     Agents,
     Up,
-    Switch { target: Option<String> },
+    Switch {
+        target: Option<String>,
+    },
+    Codex {
+        target: Option<String>,
+        payload: String,
+    },
     Empty,
     Unknown(String),
 }
@@ -12,6 +18,7 @@ pub enum Command {
 pub enum CommandOutcome {
     None,
     Up,
+    Codex { vm: String, payload: String },
 }
 
 impl Default for CommandOutcome {
@@ -61,6 +68,41 @@ pub fn handle(input: &str, state: &mut AppState) -> CommandOutcome {
                 state.push_system_message(format!("Unknown agent '{}'. Try /agents.", target));
             }
         }
+        Command::Codex { target, payload } => {
+            let payload = payload.trim();
+            if payload.is_empty() {
+                state.push_system_message("Usage: /codex [@vm] <payload>");
+                return CommandOutcome::None;
+            }
+
+            let vm_name = if let Some(target) = target {
+                let trimmed = target.trim();
+                if trimmed.is_empty() {
+                    state.push_system_message("Usage: /codex [@vm] <payload>");
+                    return CommandOutcome::None;
+                }
+                match state.resolve_vm_name(trimmed) {
+                    Some(name) => name,
+                    None => {
+                        state.push_system_message(format!(
+                            "Unknown VM '{}'. Try /codex @vm <payload>.",
+                            trimmed
+                        ));
+                        return CommandOutcome::None;
+                    }
+                }
+            } else if let Some(focused) = state.focused_vm_name() {
+                focused
+            } else {
+                state.push_system_message("No VM focused; press Tab or use /codex @vm ...");
+                return CommandOutcome::None;
+            };
+
+            return CommandOutcome::Codex {
+                vm: vm_name,
+                payload: payload.to_string(),
+            };
+        }
         Command::Up => {
             return CommandOutcome::Up;
         }
@@ -91,6 +133,21 @@ fn parse_command(input: &str) -> Command {
         "switch" => {
             let target = parts.next().map(|value| value.to_string());
             Command::Switch { target }
+        }
+        "codex" => {
+            let mut tokens: Vec<_> = parts.map(|value| value.to_string()).collect();
+            let mut target = None;
+
+            if let Some(first) = tokens.first() {
+                if first.starts_with('@') {
+                    let name = first.trim_start_matches('@').to_string();
+                    target = Some(name);
+                    tokens.remove(0);
+                }
+            }
+
+            let payload = tokens.join(" ");
+            Command::Codex { target, payload }
         }
         other => Command::Unknown(other.to_string()),
     }

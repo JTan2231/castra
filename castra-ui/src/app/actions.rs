@@ -10,6 +10,8 @@ actions!(
         HistoryPrev,
         HistoryNext,
         CancelHistory,
+        FocusNextVm,
+        FocusPrevVm,
         ToggleSidebar,
         SwitchAgent1,
         SwitchAgent2,

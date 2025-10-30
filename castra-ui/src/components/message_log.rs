@@ -52,6 +52,7 @@ pub fn message_log(chat: &ChatState) -> impl IntoElement {
         .flex()
         .flex_col()
         .flex_grow()
+        .min_h(px(0.))
         .overflow_y_scroll()
         .px(px(18.))
         .py(px(16.))

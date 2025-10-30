@@ -469,6 +469,49 @@ fn run_for_vm(
         );
     }
 
+    let plan = plan_for_vm(vm);
+    emit_event(Event::BootstrapPlanned {
+        vm: plan.vm.clone(),
+        mode: plan.mode,
+        action: plan.action,
+        reason: plan.reason.clone(),
+        trigger: plan.trigger,
+        script_path: plan.script_path.clone(),
+        payload_path: plan.payload_path.clone(),
+        payload_bytes: plan.payload_bytes,
+        handshake_timeout_secs: plan.handshake_timeout_secs,
+        remote_dir: plan.remote_dir.clone(),
+        ssh: plan.ssh.clone(),
+        env_keys: plan.env_keys.clone(),
+        verify: plan.verify.clone(),
+        artifact_hash: plan.artifact_hash.clone(),
+        metadata_path: plan.metadata_path.clone(),
+        warnings: plan.warnings.clone(),
+    });
+
+    match plan.action {
+        BootstrapPlanAction::WouldRun => {}
+        BootstrapPlanAction::WouldSkip => {
+            diagnostics.push(Diagnostic::new(
+                Severity::Info,
+                format!("Bootstrap skipped for VM `{}`: {}.", vm.name, plan.reason),
+            ));
+            return Ok(BootstrapRunOutcome {
+                vm: vm.name.clone(),
+                status: BootstrapRunStatus::Skipped,
+                stamp: None,
+                log_path: None,
+                ssh: None,
+            });
+        }
+        BootstrapPlanAction::Error => {
+            return Err(Error::BootstrapFailed {
+                vm: vm.name.clone(),
+                message: plan.reason,
+            });
+        }
+    }
+
     let handshake_path = state_root.join("handshakes").join(format!(
         "{}.json",
         sanitize_handshake_identity(&blueprint.handshake_identity)

@@ -24,14 +24,16 @@ Rules:
 
 The runtime exposes bootstrap progress through the `Event` stream shared by CLI output, reporters, and the JSON API. Events are emitted in a stable order per VM:
 
-1. `BootstrapStarted { vm, base_hash, artifact_hash, trigger }`
-2. `BootstrapStep { vm, step, status, duration_ms, detail? }` for each logical stage
-3. `BootstrapCompleted { vm, status, duration_ms, stamp? }` *or* `BootstrapFailed { vm, duration_ms, error }`
+1. `BootstrapPlanned { vm, mode, action, reason, trigger?, script_path?, payload_path?, payload_bytes?, handshake_timeout_secs?, remote_dir?, ssh?, env_keys, verify?, artifact_hash?, metadata_path?, warnings[] }`
+2. `BootstrapStarted { vm, base_hash, artifact_hash, trigger }`
+3. `BootstrapStep { vm, step, status, duration_ms, detail? }` for each logical stage
+4. `BootstrapCompleted { vm, status, duration_ms, stamp? }` *or* `BootstrapFailed { vm, duration_ms, error }`
 
 Field reference:
 
 | Event | Fields | Notes |
 | --- | --- | --- |
+| `BootstrapPlanned` | `vm: String`, `mode: BootstrapMode`, `action: BootstrapPlanAction`, `reason: String`, `trigger: Option<BootstrapTrigger>`, `script_path: Option<PathBuf>`, `payload_path: Option<PathBuf>`, `payload_bytes: Option<u64>`, `handshake_timeout_secs: Option<u64>`, `remote_dir: Option<String>`, `ssh: Option<BootstrapPlanSsh>`, `env_keys: Vec<String>`, `verify: Option<BootstrapPlanVerify>`, `artifact_hash: Option<String>`, `metadata_path: Option<PathBuf>`, `warnings: Vec<String>` | Dry-run summary emitted immediately before execution. `ssh` carries the resolved `ssh` command (user, host, port, options, identity) that the UI uses to form bridges. |
 | `BootstrapStarted` | `vm: String`, `base_hash: String`, `artifact_hash: String`, `trigger: BootstrapTrigger` | `trigger` is `auto` or `always`, mirroring mode resolution after overrides. |
 | `BootstrapStep` | `vm: String`, `step: BootstrapStepKind`, `status: BootstrapStepStatus`, `duration_ms: u64`, `detail: Option<String>` | `step` values: `wait-handshake`, `connect`, `transfer`, `apply`, `verify`. `status` is `success`, `skipped`, or `failed`. |
 | `BootstrapCompleted` | `vm: String`, `status: BootstrapStatus`, `duration_ms: u64`, `stamp: Option<String>` | `status` is `Success` when work executed, `NoOp` when the bootstrap runner declares no changes. `stamp` is retained for schema stability and is currently always `null`. |

@@ -135,6 +135,50 @@ impl ChatApp {
         cx.notify();
     }
 
+    fn ensure_prompt_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus_handle = self.prompt_focus_handle(cx);
+        window.focus(&focus_handle);
+    }
+
+    pub fn focus_next_vm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(vm) = self.state.focus_next_vm() {
+            self.handle_focus_change(vm, window, cx);
+        }
+    }
+
+    pub fn focus_prev_vm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(vm) = self.state.focus_prev_vm() {
+            self.handle_focus_change(vm, window, cx);
+        }
+    }
+
+    fn handle_focus_change(&mut self, vm: String, window: &mut Window, cx: &mut Context<Self>) {
+        let label = vm.to_uppercase();
+        self.state.push_toast(format!("Focused VM: {}", label));
+        self.ensure_prompt_focus(window, cx);
+        cx.notify();
+    }
+
+    fn dispatch_codex(&mut self, vm: String, payload: String, cx: &mut Context<Self>) {
+        let label = vm.to_uppercase();
+        self.state
+            .push_message(format!("USER→{}", label), payload.clone());
+
+        match self.ssh_manager.ensure_connection(&vm) {
+            Ok(_) => {
+                if let Err(err) = self.ssh_manager.send_line(&vm, &payload) {
+                    self.state
+                        .push_system_message(format!("{label}: failed to send command - {err}"));
+                }
+            }
+            Err(err) => {
+                self.state.push_system_message(format!("{label}: {err}"));
+            }
+        }
+
+        cx.notify();
+    }
+
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.state.toggle_sidebar();
         cx.notify();
@@ -187,6 +231,9 @@ impl ChatApp {
         self.state.push_user_command(text);
         match command::handle(text, &mut self.state) {
             command::CommandOutcome::Up => self.start_up(cx),
+            command::CommandOutcome::Codex { vm, payload } => {
+                self.dispatch_codex(vm, payload, cx);
+            }
             command::CommandOutcome::None => cx.notify(),
         }
     }
@@ -482,7 +529,9 @@ impl Render for ChatApp {
             None
         };
 
-        render_shell(&self.state, &self.prompt, roster_rows)
+        let toasts = self.state.collect_active_toasts();
+
+        render_shell(&self.state, &self.prompt, roster_rows, &toasts)
     }
 }
 

@@ -1,5 +1,6 @@
 use std::fmt;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use castra::core::{
     diagnostics::Severity,
@@ -218,9 +219,18 @@ impl VirtualMachine {
     }
 }
 
-#[derive(Default)]
 pub struct VmFleetState {
     vms: Vec<VirtualMachine>,
+    focused: Option<usize>,
+}
+
+impl Default for VmFleetState {
+    fn default() -> Self {
+        Self {
+            vms: Vec::new(),
+            focused: None,
+        }
+    }
 }
 
 impl VmFleetState {
@@ -228,8 +238,17 @@ impl VmFleetState {
         &self.vms
     }
 
+    pub fn focused_index(&self) -> Option<usize> {
+        self.focused
+    }
+
+    pub fn focused_vm(&self) -> Option<&VirtualMachine> {
+        self.focused.and_then(|index| self.vms.get(index))
+    }
+
     pub fn reset(&mut self) {
         self.vms.clear();
+        self.focused = None;
     }
 
     pub fn ensure_vm(&mut self, name: &str) -> &mut VirtualMachine {
@@ -237,6 +256,10 @@ impl VmFleetState {
             &mut self.vms[index]
         } else {
             self.vms.push(VirtualMachine::new(name));
+            let index = self.vms.len() - 1;
+            if self.focused.is_none() {
+                self.focused = Some(index);
+            }
             self.vms.last_mut().expect("new VM inserted")
         }
     }
@@ -250,6 +273,64 @@ impl VmFleetState {
     ) {
         let vm = self.ensure_vm(name);
         vm.set_state(phase, attention, detail);
+    }
+
+    #[allow(dead_code)]
+    pub fn focus_first(&mut self) -> Option<usize> {
+        if self.vms.is_empty() {
+            self.focused = None;
+            return None;
+        }
+        if self.focused.is_some() {
+            return None;
+        }
+        self.focused = Some(0);
+        Some(0)
+    }
+
+    #[allow(dead_code)]
+    pub fn focus_vm_at(&mut self, index: usize) -> Option<usize> {
+        if index >= self.vms.len() {
+            return None;
+        }
+        if self.focused == Some(index) {
+            return None;
+        }
+        self.focused = Some(index);
+        Some(index)
+    }
+
+    pub fn focus_next(&mut self) -> Option<usize> {
+        if self.vms.is_empty() {
+            self.focused = None;
+            return None;
+        }
+        let next = match self.focused {
+            Some(current) => (current + 1) % self.vms.len(),
+            None => 0,
+        };
+        if self.focused == Some(next) {
+            return None;
+        }
+        self.focused = Some(next);
+        Some(next)
+    }
+
+    pub fn focus_prev(&mut self) -> Option<usize> {
+        if self.vms.is_empty() {
+            self.focused = None;
+            return None;
+        }
+        let len = self.vms.len();
+        let prev = match self.focused {
+            Some(current) => (current + len - 1) % len,
+            None => len - 1,
+        };
+        if self.focused == Some(prev) {
+            return None;
+        }
+        self.focused = Some(prev);
+        Some(prev)
     }
 
     pub fn counts(&self) -> VmCounts {
@@ -497,6 +578,7 @@ impl UpState {
 #[derive(Default)]
 pub struct UiState {
     sidebar_visible: bool,
+    toasts: Vec<Toast>,
 }
 
 impl UiState {
@@ -506,6 +588,44 @@ impl UiState {
 
     pub fn toggle_sidebar(&mut self) {
         self.sidebar_visible = !self.sidebar_visible;
+    }
+
+    pub fn push_toast<T: Into<String>>(&mut self, message: T) {
+        self.prune_toasts();
+        self.toasts.push(Toast::new(message));
+    }
+
+    pub fn collect_active_toasts(&mut self) -> Vec<String> {
+        self.prune_toasts();
+        self.toasts
+            .iter()
+            .map(|toast| toast.message.clone())
+            .collect()
+    }
+
+    fn prune_toasts(&mut self) {
+        let now = Instant::now();
+        self.toasts.retain(|toast| !toast.is_expired(now));
+    }
+}
+
+const TOAST_TTL: Duration = Duration::from_secs(3);
+
+struct Toast {
+    message: String,
+    created_at: Instant,
+}
+
+impl Toast {
+    fn new<T: Into<String>>(message: T) -> Self {
+        Self {
+            message: message.into(),
+            created_at: Instant::now(),
+        }
+    }
+
+    fn is_expired(&self, now: Instant) -> bool {
+        now.duration_since(self.created_at) > TOAST_TTL
     }
 }
 
@@ -541,6 +661,66 @@ impl AppState {
 
     pub fn vm_fleet(&self) -> &VmFleetState {
         self.up.vm_fleet()
+    }
+
+    pub fn focused_vm_name(&self) -> Option<String> {
+        self.up
+            .vm_fleet()
+            .focused_vm()
+            .map(|vm| vm.name().to_string())
+    }
+
+    pub fn focused_vm_label(&self) -> Option<String> {
+        self.focused_vm_name().map(|name| name.to_uppercase())
+    }
+
+    #[allow(dead_code)]
+    pub fn focus_vm_at(&mut self, index: usize) -> Option<String> {
+        let new_index = self.up.vm_fleet_mut().focus_vm_at(index)?;
+        self.up
+            .vm_fleet()
+            .virtual_machines()
+            .get(new_index)
+            .map(|vm| vm.name().to_string())
+    }
+
+    pub fn focus_next_vm(&mut self) -> Option<String> {
+        let new_index = self.up.vm_fleet_mut().focus_next()?;
+        self.up
+            .vm_fleet()
+            .virtual_machines()
+            .get(new_index)
+            .map(|vm| vm.name().to_string())
+    }
+
+    pub fn focus_prev_vm(&mut self) -> Option<String> {
+        let new_index = self.up.vm_fleet_mut().focus_prev()?;
+        self.up
+            .vm_fleet()
+            .virtual_machines()
+            .get(new_index)
+            .map(|vm| vm.name().to_string())
+    }
+
+    pub fn resolve_vm_name(&self, candidate: &str) -> Option<String> {
+        let needle = candidate.trim();
+        if needle.is_empty() {
+            return None;
+        }
+        self.up
+            .vm_fleet()
+            .virtual_machines()
+            .iter()
+            .find(|vm| vm.name().eq_ignore_ascii_case(needle))
+            .map(|vm| vm.name().to_string())
+    }
+
+    pub fn push_toast<T: Into<String>>(&mut self, message: T) {
+        self.ui.push_toast(message);
+    }
+
+    pub fn collect_active_toasts(&mut self) -> Vec<String> {
+        self.ui.collect_active_toasts()
     }
 
     pub fn toggle_sidebar(&mut self) {
