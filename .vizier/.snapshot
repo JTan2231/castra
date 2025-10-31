@@ -18,7 +18,9 @@ Active threads (intent + acceptance deltas)
   - A harness session can initiate Up and receive a unified stream: core operation events + vizier.ssh events per VM. [NEXT]
   - No broker/bus launch occurs during any operation; legacy bus surfaces are non-functional with clear guidance. [BLOCKER]
   - UI integration (if present) subscribes to the harness stream instead of embedding core directly. [FOLLOW-ON]
-  Anchors: castra-harness/src/{runner,session,stream,events}.rs; castra-core/src/app/{up,down,status,clean}.rs; castra-ui/src/ssh/mod.rs (prior art for SSH streaming semantics).
+  Progress since last snapshot:
+  - Added PromptBuilder and VmEndpoint in castra-harness (prompt.rs), exposing a harness-side vizier operational context string via public re-exports in castra-harness/src/lib.rs. This scaffolds the “version preamble + operational context” portion of sessions. Unified event stream wiring remains pending. [EVIDENCE]
+  Anchors: castra-harness/src/{runner,session,stream,events}.rs; castra-core/src/app/{up,down,status,clean}.rs; castra-ui/src/ssh/mod.rs (prior art for SSH streaming semantics); castra-harness/src/prompt.rs (vizier prompt scaffolding).
 
 - Thread 21 — Operational clarity (Attention model): unchanged.
 
@@ -35,6 +37,7 @@ Active threads (intent + acceptance deltas)
 
 Current code state (observable surfaces)
 - Core currently emits structured JSON for operations and still contains a broker/bus implementation (TCP broker with JSON frames and file-backed logs). operations::up_with_launcher accepts an injectable BrokerLauncher for embedding.
+- Harness now exposes PromptBuilder and VmEndpoint, rendering a vizier-oriented operational context preamble; this is a non-invasive addition and does not yet establish SSH sessions or event merging.
 - UI scaffolding exists; there is an SSH manager implementation in castra-ui (SshManager) that demonstrates per-VM SSH streaming. The harness crate provides a session/runner/event pipeline but is not yet the exclusive front door.
 
 Narrative themes
@@ -45,7 +48,7 @@ Direction of travel
 
 Cross-links
 - Bus surfaces to retire: castra-core/src/core/operations/bus.rs; castra-core/src/core/broker.rs; castra-core/src/app/broker.rs; castra-core/tests/broker_contract.rs; scripts/castra-bus-*.sh.
-- Vizier prior art: castra-ui/src/ssh/mod.rs; Harness integration points: castra-harness/src/{session,stream,events}.rs.
+- Vizier prior art: castra-ui/src/ssh/mod.rs; Harness integration points: castra-harness/src/{session,stream,events}.rs; New prompt scaffolding: castra-harness/src/prompt.rs.
 
 Editorial housekeeping
 - Several TODOs reference UI↔core embedding; these are being pivoted to harness-first. Duplicate TODO files remain and will be cleaned as part of the cutover.
