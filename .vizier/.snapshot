@@ -1,54 +1,57 @@
-SNAPSHOT v0.10.0-pre — Castra (VM orchestration harness) — Busless vizier pivot
+SNAPSHOT v0.10.0-pre — Castra (Agent-centric orchestration) — Busless vizier pivot
 
-Edits since v0.9.12
-- Thread 30 introduced: Busless architecture pivot — retire the broker/bus from castra-core; move user interaction to the Codex harness with a vizier agent managing VMs over SSH. Added cutover acceptance and cross-links.
-- Thread 20 pivoted: UI ↔ Core integration becomes Harness ↔ Core integration (vizier-first). UI may subscribe to the harness stream; direct UI→core wiring is de-scoped for now.
-- Event Contract v1 scope updated: remove broker/bus families; add vizier.ssh* event family and version preamble requirement. Golden tests shift to reflect busless runtime.
+Edits since previous snapshot
+- Introduced Thread 31: Agent-first interaction model — de-emphasize multi-VM fleet selection; prioritize multiple agents coordinating work. Runtime VM-choicing is being removed in favor of agent addressing. Updated acceptance across UI/CLI/Core and Event Contract touchpoints.
+- Updated Thread 20 (Harness ↔ Core integration) to note agent-addressed streams rather than per-VM selection.
+- Direction clarified: simplify surfaces by removing VM selection UX/flags; shift roster views and event semantics to agents.
 
 Active threads (intent + acceptance deltas)
 - Thread 2 — Cooperative shutdown lifecycle: unchanged.
 
-- Thread 12 — Post-boot bootstrap pipeline: unchanged (but will consume SSH channel via vizier where relevant).
+- Thread 12 — Post-boot bootstrap pipeline: unchanged (agent-executed tasks via vizier when SSH is used).
 
 - Thread 13 — Stateless runs (ephemeral-only): unchanged.
 
-- Thread 20 — Harness ↔ Core integration (Vizier-first) [PIVOT from UI ↔ Core]:
-  Intent: The Codex harness is the front door for human interaction. It invokes castra-core operations and merges their events with vizier SSH observations into a single stream for consumers (UI/tests/automation).
+- Thread 20 — Harness ↔ Core integration (Vizier-first):
+  Intent: The Codex harness is the front door for human interaction. It invokes castra-core operations and merges their events with agent (vizier) observations into a single, agent-addressed stream for consumers (UI/tests/automation).
   Acceptance (updated):
-  - A harness session can initiate Up and receive a unified stream: core operation events + vizier.ssh events per VM. [NEXT]
+  - A harness session can initiate Up and receive a unified stream addressed by agent identity. [NEXT]
   - No broker/bus launch occurs during any operation; legacy bus surfaces are non-functional with clear guidance. [BLOCKER]
   - UI integration (if present) subscribes to the harness stream instead of embedding core directly. [FOLLOW-ON]
-  Progress since last snapshot:
-  - Added PromptBuilder and VmEndpoint in castra-harness (prompt.rs), exposing a harness-side vizier operational context string via public re-exports in castra-harness/src/lib.rs. This scaffolds the “version preamble + operational context” portion of sessions. Unified event stream wiring remains pending. [EVIDENCE]
-  Anchors: castra-harness/src/{runner,session,stream,events}.rs; castra-core/src/app/{up,down,status,clean}.rs; castra-ui/src/ssh/mod.rs (prior art for SSH streaming semantics); castra-harness/src/prompt.rs (vizier prompt scaffolding).
+  Anchors: castra-harness/src/{runner,session,stream,events}.rs; castra-core/src/app/{up,down,status,clean}.rs; castra-ui/src/ssh/mod.rs (prior art for streaming semantics); castra-harness/src/prompt.rs (prompt scaffolding).
 
-- Thread 21 — Operational clarity (Attention model): unchanged.
+- Thread 21 — Operational clarity (Attention model): pivoting from VM-focus to agent-focus. The attention selector addresses agents and groups, not VMs. [UPDATED]
 
-- Thread 22 — UI onboarding docs (tutorial set): pending reframe to harness-centric flows.
+- Thread 22 — UI onboarding docs (tutorial set): pending reframe to harness/agent-centric flows.
 
-- Thread 30 — Busless architecture cutover (Core) [NEW]:
-  Intent: Remove the broker/bus from castra-core; eliminate the common comms substrate in favor of per-VM SSH mediated by the vizier in the harness.
-  Acceptance:
-  - Core operations Up/Down/Status/Clean/Bootstrap run without starting or depending on a broker; no bus logs or handshake directories are created. [BLOCKER]
-  - CLI bus commands (broker/bus publish/tail) are retired or emit deprecation guidance without side effects; help/manpages/docs reflect the removal. [NEXT]
-  - Tests referencing broker/bus are removed or replaced; CI green without broker artifacts. [NEXT]
-  - Event Contract v1 has no broker/bus events; vizier.ssh events cover per-VM observations. [COORDINATED with Thread 20]
+- Thread 30 — Busless architecture cutover (Core):
+  Intent: Remove the broker/bus from castra-core; eliminate the common comms substrate in favor of agent-mediated operations via the harness.
+  Acceptance: unchanged; coordinated with Thread 31 for surface pruning.
   Anchors: castra-core/src/core/operations/bus.rs; castra-core/src/core/broker.rs; castra-core/src/app/broker.rs; castra-core/tests/broker_contract.rs; scripts/castra-bus-*.sh.
 
+- Thread 31 — Agent-first interaction model [NEW]:
+  Intent: Simplify by prioritizing multiple agents over multiple VMs. Remove runtime VM choice UI/flags; expose agent identities/groups as the addressing surface for operations and events.
+  Acceptance:
+  - UI contains no VM selection controls; the roster presents agents. Any targeting UI operates on agents or agent groups. [BLOCKER]
+  - CLI/core options that previously selected VMs are removed or deprecated with clear guidance; defaults operate against agent-defined scope. [NEXT]
+  - Event Contract v1 expresses agent-addressed events (e.g., agent.id, agent.role) and does not require per-VM selection semantics. [COORDINATED]
+  - Tutorials/docs use agent terminology; VM-specific choice flows are removed. [FOLLOW-ON]
+  Anchors: castra-ui/src/components/{vm_fleet.rs,roster_sidebar.rs}; castra-ui/docs/components/vm_fleet.md; castra-core/src/core/options.rs; castra-core/src/app/common.rs; castra-ui/src/state; castra-harness/src/events.rs.
+
 Current code state (observable surfaces)
-- Core currently emits structured JSON for operations and still contains a broker/bus implementation (TCP broker with JSON frames and file-backed logs). operations::up_with_launcher accepts an injectable BrokerLauncher for embedding.
-- Harness now exposes PromptBuilder and VmEndpoint, rendering a vizier-oriented operational context preamble; this is a non-invasive addition and does not yet establish SSH sessions or event merging.
-- UI scaffolding exists; there is an SSH manager implementation in castra-ui (SshManager) that demonstrates per-VM SSH streaming. The harness crate provides a session/runner/event pipeline but is not yet the exclusive front door.
+- Core still exposes options and internal surfaces that assume VM identities in some flows; broker/bus code persists pending Thread 30 resolution.
+- Harness exposes PromptBuilder and VmEndpoint; streams are not yet unified nor agent-addressed.
+- UI contains VM-oriented components (vm_fleet.rs, roster_sidebar.rs) and docs that teach VM selection; SSH manager exists but is VM-centric.
 
 Narrative themes
-1) Robust lifecycle; 10) Trustworthy bootstrap; 12) Day‑1 productivity; 13) Ephemeral-only policy; 20) Harness-first integration; 21) Operational clarity; 22) Onboarding via tutorials; 30) Architectural simplicity (busless vizier).
+1) Robust lifecycle; 10) Trustworthy bootstrap; 12) Day‑1 productivity; 13) Ephemeral-only policy; 20) Harness-first integration; 21) Operational clarity; 22) Onboarding via tutorials; 30) Architectural simplicity (busless vizier); 31) Agent-first simplicity.
 
 Direction of travel
-- Remove broker/bus from the core (Thread 30) and pivot integration to the Codex harness. Freeze Event Contract v1 sans broker/bus and add vizier.ssh events with a version preamble. Then deliver a harness-driven Up vertical slice that merges core + SSH events, with UI subscribing as a consumer if needed.
+- Remove broker/bus (Thread 30). In parallel, pivot surfaces to agent-first (Thread 31): retire VM selection UX/flags; adopt agent-addressed eventing and attention. Deliver a harness-driven Up vertical slice with an agent roster and unified stream. Update docs/tutorials accordingly.
 
 Cross-links
-- Bus surfaces to retire: castra-core/src/core/operations/bus.rs; castra-core/src/core/broker.rs; castra-core/src/app/broker.rs; castra-core/tests/broker_contract.rs; scripts/castra-bus-*.sh.
-- Vizier prior art: castra-ui/src/ssh/mod.rs; Harness integration points: castra-harness/src/{session,stream,events}.rs; New prompt scaffolding: castra-harness/src/prompt.rs.
+- Surfaces to retire/rename: UI vm_fleet/roster to agent roster; CLI/core VM selectors in options.rs/common.rs; docs/components/vm_fleet.md.
+- Event Contract v1: align with agent.* addressing; de-scope per-VM choice semantics.
 
 Editorial housekeeping
-- Several TODOs reference UI↔core embedding; these are being pivoted to harness-first. Duplicate TODO files remain and will be cleaned as part of the cutover.
+- Prior UI↔core TODOs are being reconciled under harness/agent-first; duplicates will be removed as threads land.
