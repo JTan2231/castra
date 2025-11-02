@@ -1,17 +1,69 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use castra::core::{
     diagnostics::Severity,
-    events::{BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger, Event},
+    events::{
+        BootstrapPlanSsh, BootstrapStatus, BootstrapStepKind, BootstrapStepStatus,
+        BootstrapTrigger, Event,
+    },
 };
-use castra_harness::{CommandStatus, FileDiff, FileDiffKind, HarnessEvent, PatchStatus, TodoEntry};
+use castra_harness::{
+    CommandStatus, FileDiff, FileDiffKind, HarnessEvent, PatchStatus, TodoEntry, VmEndpoint,
+};
 use chrono::{DateTime, Local};
-use gpui::SharedString;
+use gpui::{ScrollHandle, SharedString};
+
+const VIZIER_AGENT_ID: &str = "vizier";
 
 fn current_timestamp() -> SharedString {
     Local::now().format("%H:%M:%S").to_string().into()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageKind {
+    System,
+    Reasoning,
+    Tool,
+    User,
+    Agent,
+    Other,
+}
+
+impl MessageKind {
+    fn from_speaker(speaker: &str) -> Self {
+        let normalized = speaker.trim();
+        if normalized.eq_ignore_ascii_case("SYSTEM") {
+            MessageKind::System
+        } else if normalized.contains('⋯') {
+            MessageKind::Reasoning
+        } else if normalized.contains("·CMD") {
+            MessageKind::Tool
+        } else if normalized.starts_with("USER") {
+            MessageKind::User
+        } else if normalized.contains("CODEX") || normalized.contains("VIZIER") {
+            MessageKind::Agent
+        } else {
+            MessageKind::Other
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            MessageKind::System => "System",
+            MessageKind::Reasoning => "Reasoning",
+            MessageKind::Tool => "Tool Output",
+            MessageKind::User => "User",
+            MessageKind::Agent => "Agent",
+            MessageKind::Other => "Message",
+        }
+    }
+
+    pub fn is_collapsible(&self) -> bool {
+        matches!(self, MessageKind::Reasoning | MessageKind::Tool)
+    }
 }
 
 #[derive(Clone)]
@@ -19,14 +71,22 @@ pub struct ChatMessage {
     timestamp: SharedString,
     speaker: SharedString,
     text: SharedString,
+    kind: MessageKind,
+    expanded: bool,
 }
 
 impl ChatMessage {
-    pub fn new<S: Into<SharedString>, T: Into<SharedString>>(speaker: S, text: T) -> Self {
+    pub fn new<S: Into<String>, T: Into<String>>(speaker: S, text: T) -> Self {
+        let speaker_string = speaker.into();
+        let text_string = text.into();
+        let kind = MessageKind::from_speaker(&speaker_string);
+        let expanded = !kind.is_collapsible();
         Self {
             timestamp: current_timestamp(),
-            speaker: speaker.into(),
-            text: text.into(),
+            speaker: speaker_string.into(),
+            text: text_string.into(),
+            kind,
+            expanded,
         }
     }
 
@@ -40,6 +100,30 @@ impl ChatMessage {
 
     pub fn text(&self) -> &SharedString {
         &self.text
+    }
+
+    pub fn kind(&self) -> MessageKind {
+        self.kind
+    }
+
+    pub fn is_collapsible(&self) -> bool {
+        self.kind.is_collapsible()
+    }
+
+    pub fn is_expanded(&self) -> bool {
+        self.expanded
+    }
+
+    pub fn toggle_expanded(&mut self) {
+        if self.is_collapsible() {
+            self.expanded = !self.expanded;
+        }
+    }
+
+    pub fn set_expanded(&mut self, expanded: bool) {
+        if self.is_collapsible() {
+            self.expanded = expanded;
+        }
     }
 }
 
@@ -74,18 +158,44 @@ impl Agent {
     }
 }
 
-#[derive(Default)]
 pub struct ChatState {
     messages: Vec<ChatMessage>,
+    scroll_handle: ScrollHandle,
+    stick_to_bottom: bool,
 }
 
 impl ChatState {
+    pub fn new() -> Self {
+        Self {
+            messages: Vec::new(),
+            scroll_handle: ScrollHandle::new(),
+            stick_to_bottom: true,
+        }
+    }
+
     pub fn push_message(&mut self, message: ChatMessage) {
         self.messages.push(message);
+        if self.stick_to_bottom {
+            self.scroll_handle.scroll_to_bottom();
+        }
     }
 
     pub fn messages(&self) -> &[ChatMessage] {
         &self.messages
+    }
+
+    pub fn scroll_handle(&self) -> &ScrollHandle {
+        &self.scroll_handle
+    }
+
+    pub fn set_stick_to_bottom(&mut self, stick: bool) {
+        self.stick_to_bottom = stick;
+    }
+}
+
+impl Default for ChatState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -115,10 +225,33 @@ impl RosterState {
         true
     }
 
-    pub fn set_active_status<T: Into<String>>(&mut self, status: T) {
-        if let Some(agent) = self.agents.get_mut(self.active_agent) {
-            agent.set_status(status);
+    fn agent_index(&self, id: &str) -> Option<usize> {
+        self.agents
+            .iter()
+            .position(|agent| agent.id().eq_ignore_ascii_case(id))
+    }
+
+    fn ensure_agent_with_status(&mut self, id: &str, default_status: &str) -> usize {
+        if let Some(index) = self.agent_index(id) {
+            index
+        } else {
+            self.agents.push(Agent::new(id, default_status));
+            self.agents.len() - 1
         }
+    }
+
+    pub fn ensure_vizier_agent(&mut self) -> usize {
+        self.ensure_agent_with_status(VIZIER_AGENT_ID, "STANDBY")
+    }
+
+    pub fn set_agent_status_by_id<T: Into<String>>(&mut self, id: &str, status: T) -> bool {
+        if let Some(index) = self.agent_index(id) {
+            if let Some(agent) = self.agents.get_mut(index) {
+                agent.set_status(status);
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -410,6 +543,8 @@ impl Default for UpLifecycle {
 pub struct UpState {
     lifecycle: UpLifecycle,
     vm_fleet: VmFleetState,
+    ssh_plans: BTreeMap<String, BootstrapPlanSsh>,
+    steward_vms: BTreeSet<String>,
     broker_port: Option<u16>,
     last_error: Option<String>,
     runtime_paths: Option<RuntimePaths>,
@@ -421,6 +556,8 @@ impl Default for UpState {
         Self {
             lifecycle: UpLifecycle::Idle,
             vm_fleet: VmFleetState::default(),
+            ssh_plans: BTreeMap::new(),
+            steward_vms: BTreeSet::new(),
             broker_port: None,
             last_error: None,
             runtime_paths: None,
@@ -442,6 +579,8 @@ impl UpState {
             started_at: Local::now(),
         };
         self.vm_fleet.reset();
+        self.ssh_plans.clear();
+        self.steward_vms.clear();
         self.broker_port = None;
         self.last_error = None;
         self.runtime_paths = None;
@@ -513,6 +652,88 @@ impl UpState {
         self.runtime_paths = None;
     }
 
+    pub fn record_ssh_plan(&mut self, vm: &str, ssh: &BootstrapPlanSsh) {
+        self.ssh_plans.insert(vm.to_string(), ssh.clone());
+    }
+
+    pub fn ssh_plan_snapshot(&self) -> Vec<(String, BootstrapPlanSsh)> {
+        self.ssh_plans
+            .iter()
+            .map(|(vm, plan)| (vm.clone(), plan.clone()))
+            .collect()
+    }
+
+    pub fn vizier_script_root(&self) -> Option<PathBuf> {
+        self.runtime_paths
+            .as_ref()
+            .map(|paths| paths.state_root().join("vizier"))
+    }
+
+    pub fn vizier_endpoints(&self) -> Vec<VmEndpoint> {
+        let mut endpoints = Vec::new();
+        let script_root = self.vizier_script_root();
+
+        for (vm, plan) in &self.ssh_plans {
+            let mut endpoint = VmEndpoint::new(vm.clone(), plan.user.clone(), plan.host.clone())
+                .with_port(plan.port);
+
+            if let Some(identity) = plan.identity.as_ref() {
+                endpoint = endpoint.with_auth_hint(format!("-i {}", identity.display()));
+            }
+
+            if let Some(status) = self.vm_status_label(vm) {
+                endpoint = endpoint.with_status(status);
+            }
+
+            if let Some(root) = script_root.as_ref() {
+                let script_path = root.join(format!("{vm}.sh"));
+                if script_path.exists() {
+                    let canonical = script_path
+                        .canonicalize()
+                        .unwrap_or_else(|_| script_path.clone());
+                    endpoint =
+                        endpoint.with_wrapper_script(canonical.display().to_string());
+                }
+            }
+
+            endpoints.push(endpoint);
+        }
+        endpoints
+    }
+
+    fn vm_status_label(&self, vm: &str) -> Option<String> {
+        self.vm_fleet
+            .virtual_machines()
+            .iter()
+            .find(|machine| machine.name().eq_ignore_ascii_case(vm))
+            .map(|machine| machine.phase().label().to_string())
+    }
+
+    pub fn note_steward_vm(&mut self, vm: &str) {
+        self.steward_vms.insert(vm.to_string());
+    }
+
+    pub fn steward_status(&self) -> Option<String> {
+        if self.steward_vms.is_empty() {
+            return None;
+        }
+
+        let mut names: Vec<String> = self
+            .steward_vms
+            .iter()
+            .map(|vm| vm.to_uppercase())
+            .collect();
+        names.sort();
+
+        let prefix = if names.len() == 1 {
+            "STEWARD"
+        } else {
+            "STEWARDS"
+        };
+
+        Some(format!("{prefix} {}", names.join(", ")))
+    }
+
     #[allow(dead_code)]
     pub fn runtime_paths(&self) -> Option<&RuntimePaths> {
         self.runtime_paths.as_ref()
@@ -525,6 +746,8 @@ impl UpState {
     pub fn mark_shutdown_complete(&mut self) {
         self.shutdown_in_progress = false;
         self.clear_runtime_paths();
+        self.ssh_plans.clear();
+        self.steward_vms.clear();
     }
 
     pub fn shutdown_in_progress(&self) -> bool {
@@ -635,6 +858,8 @@ pub struct AppState {
     roster: RosterState,
     up: UpState,
     ui: UiState,
+    vizier_thread_id: Option<String>,
+    vizier_activity_status: Option<String>,
     codex_thread_id: Option<String>,
     config_path: Option<PathBuf>,
 }
@@ -646,6 +871,8 @@ impl AppState {
             roster: RosterState::default(),
             up: UpState::default(),
             ui: UiState::default(),
+            vizier_thread_id: None,
+            vizier_activity_status: None,
             codex_thread_id: None,
             config_path: None,
         };
@@ -656,6 +883,10 @@ impl AppState {
 
     pub fn chat(&self) -> &ChatState {
         &self.chat
+    }
+
+    pub fn chat_mut(&mut self) -> &mut ChatState {
+        &mut self.chat
     }
 
     pub fn roster(&self) -> &RosterState {
@@ -746,6 +977,68 @@ impl AppState {
         self.roster.switch_to(index)
     }
 
+    pub fn ensure_vizier_agent(&mut self) -> usize {
+        let existed = self.agent_index_by_id(VIZIER_AGENT_ID).is_some();
+        let index = self.roster.ensure_vizier_agent();
+        if !existed {
+            let _ = self.roster.switch_to(index);
+        }
+        index
+    }
+
+    fn refresh_vizier_status(&mut self) {
+        let _ = self.ensure_vizier_agent();
+        let mut parts = Vec::new();
+
+        if let Some(steward) = self.up.steward_status() {
+            parts.push(steward);
+        }
+
+        if let Some(activity) = self.vizier_activity_status.clone() {
+            if !activity.eq_ignore_ascii_case("ONLINE") || parts.is_empty() {
+                parts.push(activity);
+            }
+        }
+
+        if parts.is_empty() {
+            parts.push("ONLINE".to_string());
+        }
+
+        let status = parts.join(" • ");
+        let _ = self.roster.set_agent_status_by_id(VIZIER_AGENT_ID, status);
+    }
+
+    pub fn set_vizier_activity_status<S: Into<String>>(&mut self, status: S) {
+        self.vizier_activity_status = Some(status.into());
+        self.refresh_vizier_status();
+    }
+
+    pub fn clear_vizier_activity_status(&mut self) {
+        self.vizier_activity_status = None;
+        self.refresh_vizier_status();
+    }
+
+    pub fn vizier_endpoints(&self) -> Vec<VmEndpoint> {
+        self.up.vizier_endpoints()
+    }
+
+    pub fn vizier_ssh_plans(&self) -> Vec<(String, BootstrapPlanSsh)> {
+        self.up.ssh_plan_snapshot()
+    }
+
+    pub fn vizier_thread_id(&self) -> Option<String> {
+        self.vizier_thread_id.clone()
+    }
+
+    pub fn set_vizier_thread_id<S: Into<String>>(&mut self, id: S) {
+        self.vizier_thread_id = Some(id.into());
+        self.refresh_vizier_status();
+    }
+
+    pub fn clear_vizier_thread(&mut self) {
+        self.vizier_thread_id = None;
+    }
+
     pub fn push_message<S: Into<String>, T: Into<String>>(&mut self, speaker: S, text: T) {
         let speaker = speaker.into();
         let text = text.into();
@@ -761,14 +1054,14 @@ impl AppState {
     }
 
     pub fn push_user_entry(&mut self, text: &str) {
-        let target = self.roster.active_agent().label();
+        let vizier_index = self.ensure_vizier_agent();
+        if self.roster.active_index() != vizier_index {
+            let _ = self.roster.switch_to(vizier_index);
+        }
+        self.refresh_vizier_status();
+        let target = self.roster.agents()[vizier_index].label();
         let speaker = format!("USER→{}", target);
         self.push_message(speaker, text.to_string());
-    }
-
-    pub fn push_agent_echo(&mut self, text: &str) {
-        let label = self.roster.active_agent().label();
-        self.push_message(label, format!("You said: {}", text));
     }
 
     pub fn codex_thread_id(&self) -> Option<String> {
@@ -834,6 +1127,80 @@ impl AppState {
         }
     }
 
+    pub fn apply_vizier_event(&mut self, event: &HarnessEvent) {
+        match event {
+            HarnessEvent::ThreadStarted { thread_id } => {
+                self.set_vizier_thread_id(thread_id.clone());
+                self.set_vizier_activity_status("COORDINATING");
+                self.push_system_message(format!("Vizier steward ready ({thread_id})"));
+            }
+            HarnessEvent::AgentMessage { text } => {
+                self.push_message("VIZIER", text.clone());
+                self.set_vizier_activity_status("ONLINE");
+            }
+            HarnessEvent::Reasoning { text } => {
+                self.push_message("VIZIER⋯", text.clone());
+                self.set_vizier_activity_status("COORDINATING");
+            }
+            HarnessEvent::CommandProgress {
+                command,
+                output,
+                status,
+                exit_code,
+            } => {
+                let status_label = match status {
+                    CommandStatus::InProgress => {
+                        self.set_vizier_activity_status("EXECUTING");
+                        "running"
+                    }
+                    CommandStatus::Completed => {
+                        self.set_vizier_activity_status("ONLINE");
+                        "completed"
+                    }
+                    CommandStatus::Failed => {
+                        self.set_vizier_activity_status("ERROR");
+                        "failed"
+                    }
+                };
+                let mut message = format!("Vizier command {status_label}: {command}");
+                if let Some(code) = exit_code {
+                    message.push_str(&format!(" (exit {code})"));
+                }
+                self.push_system_message(message);
+                if !output.is_empty() {
+                    self.push_message("VIZIER·CMD", output.clone());
+                }
+            }
+            HarnessEvent::FileChange { changes, status } => {
+                let status_label = match status {
+                    PatchStatus::Completed => "applied",
+                    PatchStatus::Failed => "failed",
+                };
+                let summary = render_file_changes(changes);
+                self.push_system_message(format!("Vizier file changes {status_label}: {summary}"));
+                self.set_vizier_activity_status("COORDINATING");
+            }
+            HarnessEvent::TodoList { items } => {
+                let summary = render_todo_list(items);
+                self.push_system_message(format!("Vizier TODO: {summary}"));
+                self.set_vizier_activity_status("COORDINATING");
+            }
+            HarnessEvent::Usage {
+                prompt_tokens,
+                cached_tokens,
+                completion_tokens,
+            } => {
+                self.push_system_message(format!(
+                    "Vizier usage — prompt: {prompt_tokens}, cached: {cached_tokens}, completion: {completion_tokens}"
+                ));
+            }
+            HarnessEvent::Failure { message } => {
+                self.push_system_message(format!("Vizier failure: {message}"));
+                self.set_vizier_activity_status("ERROR");
+            }
+        }
+    }
+
     pub fn agent_index_by_id(&self, id: &str) -> Option<usize> {
         self.roster
             .agents()
@@ -848,18 +1215,23 @@ impl AppState {
         if !self.up.start() {
             return Err("An /up operation is already in progress.");
         }
-        self.roster.set_active_status("RUNNING");
+        let vizier_index = self.ensure_vizier_agent();
+        if self.roster.active_index() != vizier_index {
+            let _ = self.roster.switch_to(vizier_index);
+        }
+        self.clear_vizier_thread();
+        self.set_vizier_activity_status("RUNNING");
         Ok(())
     }
 
     pub fn complete_up_success(&mut self) {
         self.up.mark_success();
-        self.roster.set_active_status("ONLINE");
+        self.set_vizier_activity_status("ONLINE");
     }
 
     pub fn complete_up_failure<T: Into<String>>(&mut self, reason: T) {
         self.up.mark_failure(reason.into());
-        self.roster.set_active_status("ERROR");
+        self.set_vizier_activity_status("ERROR");
     }
 
     pub fn record_runtime_paths(&mut self, state_root: PathBuf, log_root: PathBuf) {
@@ -877,7 +1249,7 @@ impl AppState {
 
     pub fn mark_shutdown_complete(&mut self) {
         self.up.mark_shutdown_complete();
-        self.roster.set_active_status("ONLINE");
+        self.clear_vizier_activity_status();
     }
 
     pub fn shutdown_in_progress(&self) -> bool {
@@ -915,13 +1287,22 @@ impl AppState {
                 Some(format!("[{tag}] {text}"))
             }
             Event::BootstrapPlanned {
-                vm, action, reason, ..
+                vm,
+                action,
+                reason,
+                ssh,
+                ..
             } => {
                 let attention = if action.is_error() { Error } else { Progress };
                 let detail = format!("Plan {} ({reason})", action.describe());
+                if let Some(ssh) = ssh {
+                    self.up.record_ssh_plan(vm, ssh);
+                }
+                self.up.note_steward_vm(vm);
                 self.up
                     .vm_fleet_mut()
                     .update_vm(vm, Planned, attention, detail.clone());
+                self.refresh_vizier_status();
                 if action.is_error() {
                     self.up.note_error(detail.clone());
                 }
@@ -934,6 +1315,7 @@ impl AppState {
                     Progress,
                     format!("Overlay ready at {}", overlay_path.display()),
                 );
+                self.refresh_vizier_status();
                 Some(format!("{vm}: overlay prepared"))
             }
             Event::VmLaunched { vm, pid } => {
@@ -943,6 +1325,7 @@ impl AppState {
                     Progress,
                     format!("VM launched (pid {pid})"),
                 );
+                self.refresh_vizier_status();
                 Some(format!("{vm}: VM launched (pid {pid})"))
             }
             Event::BootstrapStarted { vm, trigger, .. } => {
@@ -953,6 +1336,7 @@ impl AppState {
                     Progress,
                     format!("Bootstrap started ({trigger_text})"),
                 );
+                self.refresh_vizier_status();
                 Some(format!("{vm}: bootstrap started ({trigger_text})"))
             }
             Event::BootstrapStep {
@@ -972,6 +1356,7 @@ impl AppState {
                 self.up
                     .vm_fleet_mut()
                     .update_vm(vm, Bootstrapping, attention, text.clone());
+                self.refresh_vizier_status();
                 Some(format!("{vm}: {text}"))
             }
             Event::BootstrapCompleted {
@@ -991,6 +1376,7 @@ impl AppState {
                 self.up
                     .vm_fleet_mut()
                     .update_vm(vm, Ready, Success, text.clone());
+                self.refresh_vizier_status();
                 Some(format!("{vm}: {text}"))
             }
             Event::BootstrapFailed {
@@ -1002,6 +1388,7 @@ impl AppState {
                 self.up
                     .vm_fleet_mut()
                     .update_vm(vm, Failed, Error, text.clone());
+                self.refresh_vizier_status();
                 self.up.note_error(format!("{vm}: {error}"));
                 Some(format!("{vm}: {text}"))
             }
@@ -1087,4 +1474,53 @@ fn render_todo_list(items: &[TodoEntry]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" • ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_entries_route_through_vizier() {
+        let mut state = AppState::new();
+        state.push_user_entry("Hello vizier");
+
+        let last_message = state
+            .chat()
+            .messages()
+            .last()
+            .expect("user entry should append message");
+        assert_eq!(last_message.speaker().as_ref(), "USER→VIZIER");
+        assert_eq!(state.roster().active_agent().id(), VIZIER_AGENT_ID);
+    }
+
+    #[test]
+    fn up_operation_spawns_vizier_steward() {
+        let mut state = AppState::new();
+        state.begin_up_operation().expect("up should start");
+
+        let vizier = state
+            .roster()
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == VIZIER_AGENT_ID)
+            .expect("vizier agent should be present");
+        assert_eq!(vizier.status(), "RUNNING");
+        assert_eq!(state.roster().active_agent().id(), VIZIER_AGENT_ID);
+    }
+
+    #[test]
+    fn vizier_status_updates_on_up_completion() {
+        let mut state = AppState::new();
+        state.begin_up_operation().expect("up should start");
+        state.complete_up_success();
+
+        let vizier = state
+            .roster()
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == VIZIER_AGENT_ID)
+            .expect("vizier agent should exist");
+        assert_eq!(vizier.status(), "ONLINE");
+    }
 }

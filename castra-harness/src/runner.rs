@@ -25,6 +25,7 @@ impl CodexSession {
         let mut command = Command::new(binary);
         command.arg("exec");
         command.arg("--json");
+        command.arg("--dangerously-bypass-approvals-and-sandbox");
 
         let effective_model = request
             .model()

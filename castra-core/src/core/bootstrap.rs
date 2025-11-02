@@ -2348,9 +2348,7 @@ fn run_ssh_command_capture(
     }
     args.push(String::from("-p"));
     args.push(ssh.port.to_string());
-    println!("ARGS: {:?}", args);
     args.push(format!("{}@{}", ssh.user, ssh.host));
-    println!("ARGS: {:?}", args);
     args.extend(remote_args.iter().cloned());
 
     run_command("ssh", &args)

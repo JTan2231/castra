@@ -1,5 +1,8 @@
 pub mod actions;
 
+use std::env;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -18,7 +21,7 @@ use castra::{
     core::{
         broker,
         diagnostics::{Diagnostic, Severity as DiagnosticSeverity},
-        events::Event,
+        events::{BootstrapPlanSsh, Event},
         operations,
         options::{BrokerOptions, ConfigLoadOptions, DownOptions, UpOptions, VmLaunchMode},
         outcome::{DownOutcome, OperationOutput, UpOutcome},
@@ -26,7 +29,7 @@ use castra::{
         runtime::{BrokerHandle, BrokerLaunchRequest, BrokerLauncher},
     },
 };
-use castra_harness::{HarnessEvent, TurnRequest};
+use castra_harness::{HarnessEvent, PromptBuilder, TurnRequest};
 use gpui::{
     AppContext, AsyncApp, Context, Entity, FocusHandle, Focusable, IntoElement, MouseDownEvent,
     Render, Task, WeakEntity, Window,
@@ -100,20 +103,23 @@ pub struct ChatApp {
     prompt: Entity<PromptInput>,
     ssh_manager: SshManager,
     ssh_events: Option<Receiver<SshEvent>>,
-    codex_runner: HarnessRunner,
+    harness_runner: HarnessRunner,
     shutdown: Arc<ShutdownState>,
+    workspace_root: PathBuf,
 }
 
 impl ChatApp {
     pub fn new(prompt: Entity<PromptInput>, shutdown: Arc<ShutdownState>) -> Self {
         let (ssh_tx, ssh_rx) = unbounded();
+        let workspace_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             state: AppState::new(),
             prompt,
             ssh_manager: SshManager::new(ssh_tx),
             ssh_events: Some(ssh_rx),
-            codex_runner: HarnessRunner::new(),
+            harness_runner: HarnessRunner::new(),
             shutdown,
+            workspace_root,
         }
     }
 
@@ -163,6 +169,115 @@ impl ChatApp {
         cx.notify();
     }
 
+    fn dispatch_vizier(&mut self, message: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+
+        let plans = self.state.vizier_ssh_plans();
+        if let Err(err) = self.ensure_vizier_wrappers(&plans) {
+            self.state
+                .push_system_message(format!("Failed to stage vizier wrapper scripts: {err}"));
+        }
+
+        let endpoints = self.state.vizier_endpoints();
+        let prompt_full = PromptBuilder::new()
+            .with_operational_context(endpoints)
+            .build();
+
+        let request = if let Some(thread_id) = self.state.vizier_thread_id() {
+            let mut context = operational_context_section(&prompt_full);
+            if !context.ends_with('\n') {
+                context.push('\n');
+            }
+            context.push_str("# Mission Update\n");
+            context.push_str(trimmed);
+            context.push('\n');
+            TurnRequest::new(context).with_resume_thread(thread_id)
+        } else {
+            let mut composed = prompt_full;
+            composed.push_str("\n# Mission\n");
+            composed.push_str(trimmed);
+            composed.push('\n');
+            TurnRequest::new(composed)
+        };
+
+        match self.harness_runner.run(request) {
+            Ok(job) => {
+                self.state.set_vizier_activity_status("COORDINATING");
+                cx.notify();
+                let async_app = cx.to_async();
+                let weak = cx.entity().downgrade();
+                async_app
+                    .spawn(move |app: &mut AsyncApp| pump_vizier(job, weak, app.clone()))
+                    .detach();
+                Ok(())
+            }
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
+    fn ensure_vizier_wrappers(
+        &self,
+        plans: &[(String, BootstrapPlanSsh)],
+    ) -> Result<(), String> {
+        if plans.is_empty() {
+            return Ok(());
+        }
+
+        let runtime = match self.state.runtime_paths() {
+            Some(paths) => paths.clone(),
+            None => return Ok(()),
+        };
+
+        let scripts_root = runtime.state_root().join("vizier");
+        fs::create_dir_all(&scripts_root).map_err(|err| {
+            format!(
+                "unable to create vizier script directory {}: {err}",
+                scripts_root.display()
+            )
+        })?;
+
+        let vm_commands_src = self.workspace_root.join("vm_commands.sh");
+        if !vm_commands_src.is_file() {
+            return Err(format!(
+                "vm_commands.sh not found at {}",
+                vm_commands_src.display()
+            ));
+        }
+
+        let vm_commands_dst = scripts_root.join("vm_commands.sh");
+        fs::copy(&vm_commands_src, &vm_commands_dst).map_err(|err| {
+            format!(
+                "failed to stage vm_commands.sh into {}: {err}",
+                vm_commands_dst.display()
+            )
+        })?;
+        set_executable(&vm_commands_dst).map_err(|err| {
+            format!(
+                "failed to set executable bit on {}: {err}",
+                vm_commands_dst.display()
+            )
+        })?;
+
+        for (vm, plan) in plans {
+            let script_path = scripts_root.join(format!("{vm}.sh"));
+            let script_contents = build_wrapper_script(plan);
+            write_if_changed(&script_path, &script_contents).map_err(|err| {
+                format!("failed to write {}: {err}", script_path.display())
+            })?;
+            set_executable(&script_path).map_err(|err| {
+                format!(
+                    "failed to set executable bit on {}: {err}",
+                    script_path.display()
+                )
+            })?;
+        }
+
+        Ok(())
+    }
+
     fn dispatch_codex(&mut self, vm: String, payload: String, cx: &mut Context<Self>) {
         let label = vm.to_uppercase();
         self.state
@@ -173,7 +288,7 @@ impl ChatApp {
             request = request.with_resume_thread(thread_id);
         }
 
-        match self.codex_runner.run(request) {
+        match self.harness_runner.run(request) {
             Ok(job) => {
                 self.state
                     .push_system_message(format!("Codex engaged for {label}"));
@@ -230,14 +345,24 @@ impl ChatApp {
         if text.starts_with('/') {
             self.handle_command(text, cx);
         } else {
-            self.handle_plain_text(text);
-            cx.notify();
+            self.handle_plain_text(text, cx);
         }
     }
 
-    fn handle_plain_text(&mut self, text: &str) {
+    fn handle_plain_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
         self.state.push_user_entry(text);
-        self.state.push_agent_echo(text);
+        cx.notify();
+
+        if let Err(message) = self.dispatch_vizier(trimmed, cx) {
+            self.state
+                .push_system_message(format!("Vizier dispatch failed: {message}"));
+            self.state.set_vizier_activity_status("ERROR");
+            cx.notify();
+        }
     }
 
     fn handle_command(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -419,6 +544,11 @@ impl ChatApp {
         cx.notify();
     }
 
+    fn handle_vizier_event(&mut self, event: HarnessEvent, cx: &mut Context<Self>) {
+        self.state.apply_vizier_event(&event);
+        cx.notify();
+    }
+
     fn finish_up(
         &mut self,
         outcome: Result<OperationOutput<UpOutcome>, CastraError>,
@@ -527,8 +657,139 @@ impl ChatApp {
     }
 }
 
+fn write_if_changed(path: &Path, contents: &str) -> io::Result<()> {
+    if let Ok(existing) = fs::read(path) {
+        if existing == contents.as_bytes() {
+            return Ok(());
+        }
+    }
+    fs::write(path, contents)
+}
+
+#[cfg(unix)]
+fn set_executable(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path)?;
+    let mut perms = metadata.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(path, perms)
+}
+
+#[cfg(not(unix))]
+fn set_executable(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+fn build_wrapper_script(plan: &BootstrapPlanSsh) -> String {
+    let mut script = String::new();
+    script.push_str("#!/usr/bin/env bash\n");
+    script.push_str("set -euo pipefail\n\n");
+    script.push_str("SCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n");
+
+    let target = format!("{}@{}", plan.user, plan.host);
+    script.push_str(&format!("export SSH_TARGET={}\n", shell_quote(&target)));
+    script.push_str(&format!("export SSH_PORT={}\n", plan.port));
+
+    if let Some(extra) = format_extra_opts(plan) {
+        script.push_str("export SSH_STRICT=1\n");
+        script.push_str(&format!("export SSH_EXTRA_OPTS={}\n", shell_quote(&extra)));
+    } else {
+        script.push_str("export SSH_STRICT=0\n");
+        script.push_str("unset SSH_EXTRA_OPTS\n");
+    }
+
+    script.push_str("\nexec \"${SCRIPT_DIR}/vm_commands.sh\" \"$@\"\n");
+    script
+}
+
+fn format_extra_opts(plan: &BootstrapPlanSsh) -> Option<String> {
+    let mut tokens = Vec::new();
+
+    if let Some(identity) = plan.identity.as_ref() {
+        tokens.push("-i".to_string());
+        tokens.push(format_shell_token(identity.to_string_lossy().as_ref()));
+    }
+
+    for opt in &plan.options {
+        tokens.push("-o".to_string());
+        tokens.push(format_shell_token(opt));
+    }
+
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens.join(" "))
+    }
+}
+
+fn format_shell_token(token: &str) -> String {
+    if token.is_empty() {
+        return "\"\"".to_string();
+    }
+
+    if token
+        .chars()
+        .all(|ch| matches!(ch, '0'..='9' | 'a'..='z' | 'A'..='Z' | '_' | '-' | '.' | '/' | ':' | '@' | '='))
+    {
+        return token.to_string();
+    }
+
+    let mut escaped = String::from("\"");
+    for ch in token.chars() {
+        match ch {
+            '\\' | '"' | '$' | '`' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
 impl Render for ChatApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        const SCROLLABLE_THRESHOLD_PX: f32 = 0.5;
+        const SCROLL_BOTTOM_TOLERANCE_PX: f32 = 4.0;
+
+        let near_bottom = {
+            let chat = self.state.chat();
+            let handle = chat.scroll_handle();
+            let offset = handle.offset();
+            let max_offset = handle.max_offset();
+            let offset_y = f32::from(offset.y);
+            let max_height = f32::from(max_offset.height);
+            if max_height <= SCROLLABLE_THRESHOLD_PX {
+                true
+            } else {
+                (offset_y + max_height).abs() <= SCROLL_BOTTOM_TOLERANCE_PX
+            }
+        };
+        self.state.chat_mut().set_stick_to_bottom(near_bottom);
+
         let roster_rows = if self.state.sidebar_visible() {
             Some(roster_rows(self.state.roster(), |index| {
                 cx.listener(
@@ -593,6 +854,22 @@ async fn pump_codex(job: HarnessJob, weak: WeakEntity<ChatApp>, mut app: AsyncAp
         if weak
             .update(&mut app, |chat, cx| {
                 chat.handle_codex_event(event.clone(), cx)
+            })
+            .is_err()
+        {
+            break;
+        }
+    }
+}
+
+async fn pump_vizier(job: HarnessJob, weak: WeakEntity<ChatApp>, mut app: AsyncApp) {
+    let (receiver, handle) = job.into_parts();
+    let _handle = handle;
+
+    while let Ok(event) = receiver.recv().await {
+        if weak
+            .update(&mut app, |chat, cx| {
+                chat.handle_vizier_event(event.clone(), cx)
             })
             .is_err()
         {
@@ -695,6 +972,16 @@ fn format_diagnostic(diagnostic: &Diagnostic) -> String {
         text.push_str(help);
     }
     text
+}
+
+fn operational_context_section(prompt: &str) -> String {
+    if let Some((_, rest)) = prompt.split_once("\n\n# Operational Context\n") {
+        format!("# Operational Context\n{rest}")
+    } else if let Some(index) = prompt.find("# Operational Context\n") {
+        prompt[index..].to_string()
+    } else {
+        "# Operational Context\n- No active VMs reported\n".to_string()
+    }
 }
 
 #[cfg(test)]
