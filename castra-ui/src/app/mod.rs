@@ -14,6 +14,7 @@ use crate::{
     input::prompt::{PromptEvent, PromptInput},
     ssh::{HANDSHAKE_BANNER, SshEvent, SshManager, SshStream},
     state::AppState,
+    transcript::TranscriptWriter,
 };
 use async_channel::{Receiver, Sender, unbounded};
 use castra::{
@@ -29,10 +30,11 @@ use castra::{
         runtime::{BrokerHandle, BrokerLaunchRequest, BrokerLauncher},
     },
 };
+use castra_harness::TurnHandle;
 use castra_harness::{HarnessEvent, PromptBuilder, TurnRequest};
 use gpui::{
     AppContext, AsyncApp, Context, Entity, FocusHandle, Focusable, IntoElement, MouseDownEvent,
-    Render, Task, WeakEntity, Window,
+    Render, ScrollWheelEvent, Task, WeakEntity, Window,
 };
 
 #[derive(Default)]
@@ -106,20 +108,43 @@ pub struct ChatApp {
     harness_runner: HarnessRunner,
     shutdown: Arc<ShutdownState>,
     workspace_root: PathBuf,
+    codex_handle: Option<Arc<TurnHandle>>,
 }
 
 impl ChatApp {
     pub fn new(prompt: Entity<PromptInput>, shutdown: Arc<ShutdownState>) -> Self {
         let (ssh_tx, ssh_rx) = unbounded();
         let workspace_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (transcript_writer, transcript_status) = match TranscriptWriter::new(&workspace_root) {
+            Ok(writer) => {
+                let path = writer.path().to_path_buf();
+                let session = writer.session_id().to_string();
+                (Some(Arc::new(writer)), Ok((session, path)))
+            }
+            Err(err) => {
+                eprintln!("castra-ui: failed to initialize transcript writer: {err}");
+                (None, Err(err.to_string()))
+            }
+        };
+        let mut state = AppState::with_transcript(transcript_writer);
+        match transcript_status {
+            Ok((session_id, path)) => {
+                state.push_system_message(format!(
+                    "Recording chat transcript (session {session_id}) to {}",
+                    path.display()
+                ));
+            }
+            Err(reason) => state.push_system_message(format!("Transcripts unavailable: {reason}")),
+        }
         Self {
-            state: AppState::new(),
+            state,
             prompt,
             ssh_manager: SshManager::new(ssh_tx),
             ssh_events: Some(ssh_rx),
             harness_runner: HarnessRunner::new(),
             shutdown,
             workspace_root,
+            codex_handle: None,
         }
     }
 
@@ -286,12 +311,18 @@ impl ChatApp {
 
         match self.harness_runner.run(request) {
             Ok(job) => {
+                let (receiver, handle) = job.into_parts();
+                let handle = Arc::new(handle);
+                self.codex_handle = Some(handle.clone());
+                self.state.set_codex_turn_active(true);
                 self.state
                     .push_system_message(format!("Codex engaged for {label}"));
                 let async_app = cx.to_async();
                 let weak = cx.entity().downgrade();
                 async_app
-                    .spawn(move |app: &mut AsyncApp| pump_codex(job, weak, app.clone()))
+                    .spawn(move |app: &mut AsyncApp| {
+                        pump_codex(receiver, handle.clone(), weak, app.clone())
+                    })
                     .detach();
             }
             Err(err) => {
@@ -301,6 +332,37 @@ impl ChatApp {
         }
 
         cx.notify();
+    }
+
+    fn request_codex_stop(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.codex_handle.as_ref() {
+            match handle.cancel() {
+                Ok(()) => {
+                    if self.state.codex_turn_active() {
+                        self.state
+                            .push_system_message("Codex stop requested. Waiting for exit…");
+                    }
+                    self.state.set_codex_turn_active(false);
+                }
+                Err(err) => {
+                    self.state
+                        .push_system_message(format!("Codex stop failed: {err}"));
+                }
+            }
+        } else {
+            self.state
+                .push_system_message("Codex is not running. Nothing to stop.");
+        }
+        cx.notify();
+    }
+
+    fn finish_codex_turn(&mut self, cx: &mut Context<Self>) {
+        let had_handle = self.codex_handle.take().is_some();
+        let was_active = self.state.codex_turn_active();
+        self.state.mark_codex_turn_finished();
+        if had_handle || was_active {
+            cx.notify();
+        }
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -775,20 +837,9 @@ impl Render for ChatApp {
         const SCROLLABLE_THRESHOLD_PX: f32 = 0.5;
         const SCROLL_BOTTOM_TOLERANCE_PX: f32 = 4.0;
 
-        let near_bottom = {
-            let chat = self.state.chat();
-            let handle = chat.scroll_handle();
-            let offset = handle.offset();
-            let max_offset = handle.max_offset();
-            let offset_y = f32::from(offset.y);
-            let max_height = f32::from(max_offset.height);
-            if max_height <= SCROLLABLE_THRESHOLD_PX {
-                true
-            } else {
-                (offset_y + max_height).abs() <= SCROLL_BOTTOM_TOLERANCE_PX
-            }
-        };
-        self.state.chat_mut().set_stick_to_bottom(near_bottom);
+        self.state
+            .chat_mut()
+            .refresh_stick_to_bottom(SCROLLABLE_THRESHOLD_PX, SCROLL_BOTTOM_TOLERANCE_PX);
 
         let roster_rows = if self.state.sidebar_visible() {
             Some(roster_rows(self.state.roster(), |index| {
@@ -810,18 +861,48 @@ impl Render for ChatApp {
 
         let toasts = self.state.collect_active_toasts();
 
-        render_shell(&self.state, &self.prompt, roster_rows, &toasts, |index| {
+        let scroll_listener = Some(cx.listener(
+            |chat: &mut ChatApp,
+             _: &ScrollWheelEvent,
+             _window: &mut Window,
+             _cx: &mut Context<ChatApp>| {
+                chat.state.chat_mut().mark_scroll_dirty();
+            },
+        ));
+
+        let stop_handler = if self.state.codex_turn_active() {
             Some(cx.listener(
-                move |chat: &mut ChatApp,
-                      _: &MouseDownEvent,
-                      _window: &mut Window,
-                      cx: &mut Context<ChatApp>| {
-                    if chat.toggle_message(index) {
-                        cx.notify();
-                    }
+                |chat: &mut ChatApp,
+                 _: &MouseDownEvent,
+                 _window: &mut Window,
+                 cx: &mut Context<ChatApp>| {
+                    chat.request_codex_stop(cx);
                 },
             ))
-        })
+        } else {
+            None
+        };
+
+        render_shell(
+            &self.state,
+            &self.prompt,
+            roster_rows,
+            &toasts,
+            stop_handler,
+            |index| {
+                Some(cx.listener(
+                    move |chat: &mut ChatApp,
+                          _: &MouseDownEvent,
+                          _window: &mut Window,
+                          cx: &mut Context<ChatApp>| {
+                        if chat.toggle_message(index) {
+                            cx.notify();
+                        }
+                    },
+                ))
+            },
+            scroll_listener,
+        )
     }
 }
 
@@ -857,8 +938,12 @@ async fn pump_ssh(
     }
 }
 
-async fn pump_codex(job: HarnessJob, weak: WeakEntity<ChatApp>, mut app: AsyncApp) {
-    let (receiver, handle) = job.into_parts();
+async fn pump_codex(
+    receiver: Receiver<HarnessEvent>,
+    handle: Arc<TurnHandle>,
+    weak: WeakEntity<ChatApp>,
+    mut app: AsyncApp,
+) {
     let _handle = handle;
 
     while let Ok(event) = receiver.recv().await {
@@ -871,6 +956,10 @@ async fn pump_codex(job: HarnessJob, weak: WeakEntity<ChatApp>, mut app: AsyncAp
             break;
         }
     }
+
+    let _ = weak.update(&mut app, |chat, cx| {
+        chat.finish_codex_turn(cx);
+    });
 }
 
 async fn pump_vizier(job: HarnessJob, weak: WeakEntity<ChatApp>, mut app: AsyncApp) {

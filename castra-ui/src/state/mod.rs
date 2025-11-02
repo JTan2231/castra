@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use castra::core::{
@@ -16,10 +17,47 @@ use castra_harness::{
 use chrono::{DateTime, Local};
 use gpui::{ScrollHandle, SharedString};
 
+use crate::transcript::TranscriptWriter;
+
 const VIZIER_AGENT_ID: &str = "vizier";
+const COLLAPSED_PREVIEW_MAX_CHARS: usize = 80;
+const DEFAULT_LOG_SOFT_LIMIT: usize = 500;
 
 fn current_timestamp() -> SharedString {
     Local::now().format("%H:%M:%S").to_string().into()
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TokenUsageTotals {
+    prompt: i64,
+    cached: i64,
+    completion: i64,
+}
+
+impl TokenUsageTotals {
+    pub fn add(&mut self, prompt: i64, cached: i64, completion: i64) {
+        self.prompt += prompt;
+        self.cached += cached;
+        self.completion += completion;
+    }
+
+    pub fn total(&self) -> i64 {
+        self.prompt + self.cached + self.completion
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.prompt == 0 && self.cached == 0 && self.completion == 0
+    }
+
+    pub fn summary(&self, label: &str) -> String {
+        format!(
+            "{label}: {} tok (prompt {}, cached {}, completion {})",
+            self.total(),
+            self.prompt,
+            self.cached,
+            self.completion
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +65,7 @@ pub enum MessageKind {
     System,
     Reasoning,
     Tool,
+    VizierCommand,
     User,
     Agent,
     Other,
@@ -41,6 +80,8 @@ impl MessageKind {
             MessageKind::Reasoning
         } else if normalized.contains("·CMD") {
             MessageKind::Tool
+        } else if normalized.eq_ignore_ascii_case("VIZIER·SYS") {
+            MessageKind::VizierCommand
         } else if normalized.starts_with("USER") {
             MessageKind::User
         } else if normalized.contains("CODEX") || normalized.contains("VIZIER") {
@@ -55,6 +96,7 @@ impl MessageKind {
             MessageKind::System => "System",
             MessageKind::Reasoning => "Reasoning",
             MessageKind::Tool => "Tool Output",
+            MessageKind::VizierCommand => "Vizier Command",
             MessageKind::User => "User",
             MessageKind::Agent => "Agent",
             MessageKind::Other => "Message",
@@ -63,6 +105,18 @@ impl MessageKind {
 
     pub fn is_collapsible(&self) -> bool {
         matches!(self, MessageKind::Reasoning | MessageKind::Tool)
+    }
+
+    pub fn slug(&self) -> &'static str {
+        match self {
+            MessageKind::System => "system",
+            MessageKind::Reasoning => "reasoning",
+            MessageKind::Tool => "tool",
+            MessageKind::VizierCommand => "vizier-command",
+            MessageKind::User => "user",
+            MessageKind::Agent => "agent",
+            MessageKind::Other => "other",
+        }
     }
 }
 
@@ -73,6 +127,7 @@ pub struct ChatMessage {
     text: SharedString,
     kind: MessageKind,
     expanded: bool,
+    collapsed_preview: Option<SharedString>,
 }
 
 impl ChatMessage {
@@ -81,12 +136,18 @@ impl ChatMessage {
         let text_string = text.into();
         let kind = MessageKind::from_speaker(&speaker_string);
         let expanded = !kind.is_collapsible();
+        let collapsed_preview = if kind.is_collapsible() {
+            Some(Self::build_collapsed_preview(&text_string, kind))
+        } else {
+            None
+        };
         Self {
             timestamp: current_timestamp(),
             speaker: speaker_string.into(),
             text: text_string.into(),
             kind,
             expanded,
+            collapsed_preview,
         }
     }
 
@@ -118,6 +179,36 @@ impl ChatMessage {
         if self.is_collapsible() {
             self.expanded = !self.expanded;
         }
+    }
+
+    pub fn collapsed_preview(&self) -> Option<&SharedString> {
+        self.collapsed_preview.as_ref()
+    }
+
+    fn build_collapsed_preview(text: &str, kind: MessageKind) -> SharedString {
+        let label = kind.display_name();
+        let preview_line = text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("");
+
+        let mut summary = String::new();
+        if !preview_line.is_empty() {
+            let mut collected = String::new();
+            for ch in preview_line.chars().take(COLLAPSED_PREVIEW_MAX_CHARS) {
+                collected.push(ch);
+            }
+            if preview_line.chars().count() > COLLAPSED_PREVIEW_MAX_CHARS {
+                collected.push('…');
+            }
+            summary.push_str(&collected);
+            summary.push(' ');
+        }
+        summary.push('(');
+        summary.push_str(label);
+        summary.push_str(" hidden — click to expand)");
+        summary.into()
     }
 }
 
@@ -156,6 +247,9 @@ pub struct ChatState {
     messages: Vec<ChatMessage>,
     scroll_handle: ScrollHandle,
     stick_to_bottom: bool,
+    scroll_dirty: bool,
+    dropped_messages: usize,
+    log_soft_limit: usize,
 }
 
 impl ChatState {
@@ -164,6 +258,9 @@ impl ChatState {
             messages: Vec::new(),
             scroll_handle: ScrollHandle::new(),
             stick_to_bottom: true,
+            scroll_dirty: true,
+            dropped_messages: 0,
+            log_soft_limit: DEFAULT_LOG_SOFT_LIMIT,
         }
     }
 
@@ -172,6 +269,7 @@ impl ChatState {
         if self.stick_to_bottom {
             self.scroll_handle.scroll_to_bottom();
         }
+        self.trim_if_needed();
     }
 
     pub fn messages(&self) -> &[ChatMessage] {
@@ -182,18 +280,58 @@ impl ChatState {
         &self.scroll_handle
     }
 
-    pub fn set_stick_to_bottom(&mut self, stick: bool) {
-        self.stick_to_bottom = stick;
-    }
-
     pub fn toggle_message_at(&mut self, index: usize) -> bool {
         if let Some(message) = self.messages.get_mut(index) {
             if message.is_collapsible() {
                 message.toggle_expanded();
+                self.scroll_dirty = true;
                 return true;
             }
         }
         false
+    }
+
+    pub fn mark_scroll_dirty(&mut self) {
+        self.scroll_dirty = true;
+    }
+
+    pub fn refresh_stick_to_bottom(
+        &mut self,
+        scrollable_threshold_px: f32,
+        bottom_tolerance_px: f32,
+    ) {
+        if !self.scroll_dirty {
+            return;
+        }
+
+        let handle = self.scroll_handle();
+        let offset = handle.offset();
+        let max_offset = handle.max_offset();
+        let offset_y = f32::from(offset.y);
+        let max_height = f32::from(max_offset.height);
+        let near_bottom = if max_height <= scrollable_threshold_px {
+            true
+        } else {
+            (offset_y + max_height).abs() <= bottom_tolerance_px
+        };
+
+        self.stick_to_bottom = near_bottom;
+        self.scroll_dirty = false;
+    }
+
+    pub fn dropped_messages(&self) -> usize {
+        self.dropped_messages
+    }
+
+    fn trim_if_needed(&mut self) {
+        if self.messages.len() <= self.log_soft_limit {
+            return;
+        }
+
+        let overflow = self.messages.len() - self.log_soft_limit;
+        self.messages.drain(0..overflow);
+        self.dropped_messages = self.dropped_messages.saturating_add(overflow);
+        self.scroll_dirty = true;
     }
 }
 
@@ -865,10 +1003,20 @@ pub struct AppState {
     vizier_activity_status: Option<String>,
     codex_thread_id: Option<String>,
     config_path: Option<PathBuf>,
+    transcript_writer: Option<Arc<TranscriptWriter>>,
+    transcript_error_reported: bool,
+    codex_usage: TokenUsageTotals,
+    vizier_usage: TokenUsageTotals,
+    codex_turn_active: bool,
 }
 
 impl AppState {
+    #[allow(dead_code)]
     pub fn new() -> Self {
+        Self::with_transcript(None)
+    }
+
+    pub fn with_transcript(transcript_writer: Option<Arc<TranscriptWriter>>) -> Self {
         let mut state = Self {
             chat: ChatState::default(),
             roster: RosterState::default(),
@@ -878,6 +1026,11 @@ impl AppState {
             vizier_activity_status: None,
             codex_thread_id: None,
             config_path: None,
+            transcript_writer,
+            transcript_error_reported: false,
+            codex_usage: TokenUsageTotals::default(),
+            vizier_usage: TokenUsageTotals::default(),
+            codex_turn_active: false,
         };
         state.push_system_message("Welcome to Castra. Type /help to discover commands.");
         state.push_system_message("Run /up to launch the bootstrap-quickstart workspace.");
@@ -1043,13 +1196,28 @@ impl AppState {
     }
 
     pub fn push_message<S: Into<String>, T: Into<String>>(&mut self, speaker: S, text: T) {
-        let speaker = speaker.into();
-        let text = text.into();
-        self.chat.push_message(ChatMessage::new(speaker, text));
+        let message = ChatMessage::new(speaker, text);
+        self.chat.push_message(message.clone());
+        self.record_transcript(&message);
     }
 
     pub fn push_system_message<T: Into<String>>(&mut self, text: T) {
         self.push_message("SYSTEM", text);
+    }
+
+    fn record_transcript(&mut self, message: &ChatMessage) {
+        let Some(writer) = self.transcript_writer.clone() else {
+            return;
+        };
+
+        if let Err(err) = writer.record(message) {
+            eprintln!("castra-ui: failed to write transcript entry: {err}");
+            self.transcript_writer = None;
+            if !self.transcript_error_reported {
+                self.transcript_error_reported = true;
+                self.push_system_message(format!("Transcript persistence disabled: {err}"));
+            }
+        }
     }
 
     pub fn push_user_command(&mut self, text: &str) {
@@ -1072,6 +1240,7 @@ impl AppState {
     }
 
     pub fn apply_harness_event(&mut self, event: &HarnessEvent) {
+        let mut record_usage = None;
         match event {
             HarnessEvent::ThreadStarted { thread_id } => {
                 self.codex_thread_id = Some(thread_id.clone());
@@ -1120,6 +1289,7 @@ impl AppState {
                 cached_tokens,
                 completion_tokens,
             } => {
+                record_usage = Some((*prompt_tokens, *cached_tokens, *completion_tokens));
                 self.push_system_message(format!(
                     "Codex usage — prompt: {prompt_tokens}, cached: {cached_tokens}, completion: {completion_tokens}"
                 ));
@@ -1128,9 +1298,13 @@ impl AppState {
                 self.push_system_message(format!("Codex failure: {message}"));
             }
         }
+        if let Some((prompt, cached, completion)) = record_usage {
+            self.codex_usage.add(prompt, cached, completion);
+        }
     }
 
     pub fn apply_vizier_event(&mut self, event: &HarnessEvent) {
+        let mut record_usage = None;
         match event {
             HarnessEvent::ThreadStarted { thread_id } => {
                 self.set_vizier_thread_id(thread_id.clone());
@@ -1169,7 +1343,7 @@ impl AppState {
                 if let Some(code) = exit_code {
                     message.push_str(&format!(" (exit {code})"));
                 }
-                self.push_system_message(message);
+                self.push_message("VIZIER·SYS", message);
                 if !output.is_empty() {
                     self.push_message("VIZIER·CMD", output.clone());
                 }
@@ -1193,6 +1367,7 @@ impl AppState {
                 cached_tokens,
                 completion_tokens,
             } => {
+                record_usage = Some((*prompt_tokens, *cached_tokens, *completion_tokens));
                 self.push_system_message(format!(
                     "Vizier usage — prompt: {prompt_tokens}, cached: {cached_tokens}, completion: {completion_tokens}"
                 ));
@@ -1201,6 +1376,9 @@ impl AppState {
                 self.push_system_message(format!("Vizier failure: {message}"));
                 self.set_vizier_activity_status("ERROR");
             }
+        }
+        if let Some((prompt, cached, completion)) = record_usage {
+            self.vizier_usage.add(prompt, cached, completion);
         }
     }
 
@@ -1412,6 +1590,29 @@ impl AppState {
 
     pub fn up_status_line(&self) -> String {
         self.up.status_line()
+    }
+
+    pub fn codex_turn_active(&self) -> bool {
+        self.codex_turn_active
+    }
+
+    pub fn set_codex_turn_active(&mut self, active: bool) {
+        self.codex_turn_active = active;
+    }
+
+    pub fn mark_codex_turn_finished(&mut self) {
+        self.codex_turn_active = false;
+    }
+
+    pub fn token_usage_summaries(&self) -> Vec<String> {
+        let mut summaries = Vec::new();
+        if !self.codex_usage.is_empty() {
+            summaries.push(self.codex_usage.summary("Codex"));
+        }
+        if !self.vizier_usage.is_empty() {
+            summaries.push(self.vizier_usage.summary("Vizier"));
+        }
+        summaries
     }
 }
 

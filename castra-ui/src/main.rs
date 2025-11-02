@@ -5,6 +5,7 @@ mod controller;
 mod input;
 mod ssh;
 mod state;
+mod transcript;
 
 use app::{ChatApp, ShutdownState, actions::*};
 use ctrlc;
@@ -30,7 +31,7 @@ fn main() {
     Application::new().run({
         let shutdown = shutdown.clone();
         move |cx: &mut App| {
-            let bounds = Bounds::centered(None, size(px(420.), px(640.)), cx);
+            let bounds = Bounds::centered(None, size(px(960.), px(720.)), cx);
 
             {
                 let shutdown_for_close = shutdown.clone();

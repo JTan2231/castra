@@ -37,6 +37,10 @@ Use `castra up --broker-only` to start just the TCP broker for bus testing. The 
 - `docs/library_usage.md` explains how to drive Castra from another crate.
 - `docs/RELEASING.md` captures the release checklist.
 
+## Chat Transcripts
+
+Launching `castra-ui` records every chat entry to `<workspace_root>/.castra/transcripts/chat-<session_id>.jsonl`. Each JSON line captures the session identifier, monotonic `sequence`, UTC `recorded_at`, the UI `display_timestamp`, `speaker`, `kind` (lowercased message kind), `text`, and whether the entry was `expanded_by_default`. Rotate the UI or tooling that consumes transcripts toward this directory to replay a complete operator timeline.
+
 ## Status JSON
 
 Running `castra status` (and `castra down`/`castra ports`) without `--config` now inspects every active workspace discovered under `~/.castra/projects` and any local `.castra/` state roots. Results are grouped per project with headers such as `=== demo-workspace (demo-1234abcd) ===`; pass `--workspace <id>` to narrow the view to a single entry. `castra status --json` returns the same reachability view rendered by the table. The `reachable` flag stays `true` while the freshest guest handshake is at most 45 seconds old and flips to `false` once that cache ages out; the value is derived from on-disk records and never blocks on a live network probe. `last_handshake_age_ms` reports the age of that freshest handshake in milliseconds (omitted when no guest has connected).

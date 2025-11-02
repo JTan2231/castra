@@ -2,7 +2,7 @@ use crate::{
     input::prompt::PromptInput,
     state::{AppState, RosterState},
 };
-use gpui::{Entity, Styled, div, hsla, prelude::*, px, rgb};
+use gpui::{CursorStyle, Entity, ScrollWheelEvent, Styled, div, hsla, prelude::*, px, rgb};
 
 use super::{
     message_log::message_log,
@@ -12,20 +12,25 @@ use super::{
     vm_fleet::{vm_column_container, vm_columns},
 };
 
-pub fn render<H, F>(
+pub fn render<H, F, S, B>(
     state: &AppState,
     prompt: &Entity<PromptInput>,
     roster_rows: Option<Vec<gpui::Div>>,
     toasts: &[String],
+    stop_handler: Option<B>,
     mut message_toggle: F,
+    scroll_listener: Option<S>,
 ) -> gpui::Div
 where
     F: FnMut(usize) -> Option<H>,
     H: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    S: Fn(&ScrollWheelEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    B: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
     let operation_status = state.up_status_line();
     let focused_label = state.focused_vm_label();
     let (vm_left_cards, vm_right_cards) = vm_columns(state.vm_fleet());
+    let token_summaries = state.token_usage_summaries();
 
     let log_container = div()
         .flex()
@@ -33,7 +38,11 @@ where
         .flex_grow()
         .min_h(px(0.))
         .min_w(px(0.))
-        .child(message_log(state.chat(), |index| message_toggle(index)));
+        .child(message_log(
+            state.chat(),
+            |index| message_toggle(index),
+            scroll_listener,
+        ));
 
     let mut central_shell = div().flex().flex_grow().min_w(px(0.)).min_h(px(0.));
 
@@ -83,9 +92,26 @@ where
             &state.active_agent_label(),
             focused_label.as_deref(),
             &operation_status,
+            &token_summaries,
         ))
         .child(div().h(px(1.)).bg(rgb(0x1e1e1e)))
-        .child(prompt_container(prompt));
+        .child(prompt_container(
+            prompt,
+            stop_handler.map(|handler| {
+                div()
+                    .text_sm()
+                    .px(px(12.))
+                    .py(px(6.))
+                    .rounded(px(4.))
+                    .border(px(1.))
+                    .border_color(rgb(0x5c1f1f))
+                    .bg(rgb(0x2b1111))
+                    .text_color(rgb(0xff6b6b))
+                    .cursor(CursorStyle::PointingHand)
+                    .child("Stop")
+                    .on_mouse_down(gpui::MouseButton::Left, handler)
+            }),
+        ));
 
     root
 }

@@ -5,6 +5,7 @@ pub fn status_footer(
     active_label: &str,
     focused_label: Option<&str>,
     operation_status: &str,
+    token_summaries: &[String],
 ) -> gpui::Div {
     let status_time = Local::now().format("%H:%M:%S").to_string();
     let (prompt_focus_hint, agent_hint, roster_hint) = if cfg!(target_os = "macos") {
@@ -24,6 +25,11 @@ pub fn status_footer(
         roster_hint
     );
     let focused_label = focused_label.unwrap_or("None");
+    let tokens_text = if token_summaries.is_empty() {
+        None
+    } else {
+        Some(token_summaries.join(" • "))
+    };
 
     div()
         .flex()
@@ -41,6 +47,12 @@ pub fn status_footer(
                 .child(div().child(format!("Active: {}", active_label)))
                 .child(div().child(format!("Focused VM: {}", focused_label))),
         )
-        .child(div().child(status_time))
+        .child({
+            let mut center = div().flex().items_center().gap(px(10.));
+            if let Some(tokens) = tokens_text {
+                center = center.child(div().child(tokens));
+            }
+            center.child(div().child(status_time))
+        })
         .child(div().text_right().child(status_hint))
 }
