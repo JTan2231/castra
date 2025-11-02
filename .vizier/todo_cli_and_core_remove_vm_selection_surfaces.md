@@ -19,4 +19,12 @@ Anchors
 - castra/README.md, castra-core/docs
 
 Thread links
-- Serves Thread 31; coordinated with Thread 30 to avoid reintroducing bus-era semantics.
+- Serves Thread 31; coordinated with Thread 30 to avoid reintroducing bus-era semantics.Snapshot v0.10.0-pre update
+- Alignment with agent-first model.
+- Acceptance:
+  - Replace VM-centric selectors with agent-centric affordances in CLI help and UI surface mapping; maintain compatibility shims where necessary.
+  - Document interim mapping (VM → Agent) in README.
+- Anchors: castra-core/src/cli.rs, castra-ui/src/components/roster_sidebar.rs.
+
+---
+

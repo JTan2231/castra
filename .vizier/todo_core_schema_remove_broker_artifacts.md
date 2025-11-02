@@ -17,4 +17,12 @@ Anchors (pointer-level):
 
 Notes:
 - Coordinate with docs_bus_deprecation_and_migration and cli_cleanup_bus_commands.
-- Expect substantial test rewrites and fixture updates.
+- Expect substantial test rewrites and fixture updates.Snapshot v0.10.0-pre update
+- Scope the first pass to schema/options and visible CLI flags only; avoid deep refactors.
+- Acceptance:
+  - No broker/bus types in options.rs public surfaces; any remaining internals clearly quarantined.
+  - CLI help no longer mentions broker/bus; deprecation banner added to docs.
+- Anchors: castra-core/src/core/options.rs, castra-core/src/cli.rs.
+
+---
+

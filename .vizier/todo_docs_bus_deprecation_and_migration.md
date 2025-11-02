@@ -12,4 +12,12 @@ Anchors:
 - castra-core/docs/*; castra-ui/docs/*; top-level README.md; AGENTS.md; HARNESS.md.
 
 Migration note:
-- Add a short "Breaking change" section with replacement guidance for any previous bus-centric workflows.
+- Add a short "Breaking change" section with replacement guidance for any previous bus-centric workflows.Snapshot v0.10.0-pre update
+- Add deprecation section covering broker/bus-era features and the busless pivot rationale.
+- Migration guidance:
+  - Mapping from bus commands to vm_commands.sh remote runner (send/interrupt/list/view-output, --wait).
+  - What disappears now vs later; timeline and version guardrails.
+- Cross-link: Thread 30 acceptance; vm_commands.sh usage examples.
+
+---
+

@@ -35,3 +35,13 @@ Threads: 21 — carry forward; aligns with agent-first pivot from Thread 31.
 
 ---
 
+Snapshot v0.10.0-pre update
+- Current: collapsible messages, scroll protections, truncation soft limit.
+- Next acceptance:
+  - Group sequential tool/reasoning bursts into a collapsible group with one-click expand/collapse-all.
+  - Maintain sticky-to-bottom behavior without jumping when expanding groups.
+  - Telemetry: footer continues token tallies; clicking a tally opens the agent context pane (stub acceptable in first slice).
+- Anchors: castra-ui/src/components/message_log.rs, castra-ui/src/state/mod.rs, castra-ui/src/components/status_footer.rs.
+
+---
+

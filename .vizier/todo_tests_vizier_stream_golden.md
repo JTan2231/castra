@@ -9,4 +9,13 @@ Acceptance criteria:
 
 Anchors:
 - Where to place: castra-harness/tests/ or castra-harness/src/tests/*. Use whichever is standard in the repo.
-- Example inputs: castra-core/examples/minimal-bootstrap, bootstrap-quickstart.
+- Example inputs: castra-core/examples/minimal-bootstrap, bootstrap-quickstart.Snapshot v0.10.0-pre update
+- Tie golden tests to vm_commands.sh as acceptance harness.
+- Required assertions:
+  - First line/preamble contains version + session id; stable regex documented.
+  - Event framing is stable across minor versions (documented invariants); unknown fields ignored by consumers.
+  - Round-trip: stream → UI transcript writer preserves ordering; verify with sample transcript fixture.
+- Artifacts: check fixtures into castra-harness/tests/ with README on regeneration policy.
+
+---
+

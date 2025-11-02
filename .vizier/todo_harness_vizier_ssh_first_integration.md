@@ -41,3 +41,14 @@ Anchors reaffirmed:
 
 ---
 
+Snapshot v0.10.0-pre update
+- Evidence: UI currently originates SSH stream consumption; harness does not emit a unified vizier SSH stream.
+- Acceptance (near-term):
+  - Harness emits a single, versioned vizier SSH event stream with a preamble on connect (version + session id).
+  - Stream can be driven and verified via vm_commands.sh: send → capture stdout → assert preamble + framing invariants.
+  - Golden fixtures checked in next to castra-harness tests.
+- Anchors: castra-harness/src/{session.rs,runner.rs,stream.rs,events.rs,translator.rs}; vm_commands.sh remote runner.
+- Notes: Keep implementation open; reserve library/protocol choices. Ensure backward compatibility for current UI consumer (pump_vizier).
+
+---
+

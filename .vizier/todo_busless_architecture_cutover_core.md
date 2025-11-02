@@ -21,4 +21,13 @@ Out of scope:
 - SSH/vizier event wiring (covered by harness_vizier_ssh_first_integration).
 
 Risk/Trade space:
-- Breaking change for any external automation using bus shell scripts. Provide migration note and suggest harness vizier stream as replacement.
+- Breaking change for any external automation using bus shell scripts. Provide migration note and suggest harness vizier stream as replacement.Snapshot v0.10.0-pre update
+- Evidence: broker/bus types and scripts remain; UI/harness moving busless.
+- Acceptance (initial cut):
+  - Remove broker handshake and contract artifacts from core schema/options while keeping CLI behavior stable.
+  - Introduce deprecation notices where removals are not yet feasible; add migration doc pointers.
+- Anchors: castra-core/src/core/options.rs, castra-core/src/core/broker.rs, scripts/.
+- Risk: accidental breakage of examples; add CI check that examples still build and run.
+
+---
+

@@ -18,4 +18,13 @@ Anchors
 - castra-ui/docs/tutorials/first_up.md
 
 Thread links
-- Advances Thread 31 and Thread 21; aligns with Thread 20 (UI subscribes to harness stream).
+- Advances Thread 31 and Thread 21; aligns with Thread 20 (UI subscribes to harness stream).Snapshot v0.10.0-pre update
+- Gap: vm_fleet is VM-centric; no agent roster.
+- Acceptance (UI slice):
+  - Roster sidebar lists agents (derived from message stream) instead of VMs.
+  - Clicking an agent filters the transcript view to that agent’s messages; visual chip indicates active filter.
+  - Empty state when no agents present.
+- Anchors: castra-ui/src/components/roster_sidebar.rs, vm_fleet.rs (to be replaced/pivoted), transcript.rs.
+
+---
+
