@@ -1,6 +1,8 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,7 +17,7 @@ use castra_harness::{
     CommandStatus, FileDiff, FileDiffKind, HarnessEvent, PatchStatus, TodoEntry, VmEndpoint,
 };
 use chrono::{DateTime, Local};
-use gpui::{ScrollHandle, SharedString};
+use gpui::{ListAlignment, ListOffset, ListState, Pixels, SharedString, px};
 
 use crate::transcript::TranscriptWriter;
 
@@ -245,30 +247,46 @@ impl Agent {
 
 pub struct ChatState {
     messages: Vec<ChatMessage>,
-    scroll_handle: ScrollHandle,
+    list_state: ListState,
     stick_to_bottom: bool,
-    scroll_dirty: bool,
+    scroll_dirty: Rc<Cell<bool>>,
     dropped_messages: usize,
     log_soft_limit: usize,
 }
 
 impl ChatState {
     pub fn new() -> Self {
+        let scroll_dirty = Rc::new(Cell::new(true));
+        let list_state = {
+            let state = ListState::new(0, ListAlignment::Bottom, px(160.));
+            let flag = scroll_dirty.clone();
+            state.set_scroll_handler(move |_, _, _| {
+                flag.set(true);
+            });
+            state
+        };
+
         Self {
             messages: Vec::new(),
-            scroll_handle: ScrollHandle::new(),
+            list_state,
             stick_to_bottom: true,
-            scroll_dirty: true,
+            scroll_dirty,
             dropped_messages: 0,
             log_soft_limit: DEFAULT_LOG_SOFT_LIMIT,
         }
     }
 
     pub fn push_message(&mut self, message: ChatMessage) {
+        let insertion_index = self.messages.len();
         self.messages.push(message);
+        self.list_state.splice(insertion_index..insertion_index, 1);
         if self.stick_to_bottom {
-            self.scroll_handle.scroll_to_bottom();
+            self.list_state.scroll_to(ListOffset {
+                item_ix: self.messages.len(),
+                offset_in_item: px(0.),
+            });
         }
+        self.scroll_dirty.set(true);
         self.trim_if_needed();
     }
 
@@ -276,23 +294,20 @@ impl ChatState {
         &self.messages
     }
 
-    pub fn scroll_handle(&self) -> &ScrollHandle {
-        &self.scroll_handle
+    pub fn list_state(&self) -> &ListState {
+        &self.list_state
     }
 
     pub fn toggle_message_at(&mut self, index: usize) -> bool {
         if let Some(message) = self.messages.get_mut(index) {
             if message.is_collapsible() {
                 message.toggle_expanded();
-                self.scroll_dirty = true;
+                self.scroll_dirty.set(true);
+                self.list_state.splice(index..index + 1, 1);
                 return true;
             }
         }
         false
-    }
-
-    pub fn mark_scroll_dirty(&mut self) {
-        self.scroll_dirty = true;
     }
 
     pub fn refresh_stick_to_bottom(
@@ -300,23 +315,24 @@ impl ChatState {
         scrollable_threshold_px: f32,
         bottom_tolerance_px: f32,
     ) {
-        if !self.scroll_dirty {
+        if !self.scroll_dirty.get() {
             return;
         }
-
-        let handle = self.scroll_handle();
-        let offset = handle.offset();
-        let max_offset = handle.max_offset();
-        let offset_y = f32::from(offset.y);
-        let max_height = f32::from(max_offset.height);
-        let near_bottom = if max_height <= scrollable_threshold_px {
+        let max_offset = f32::from(
+            self.list_state
+                .max_offset_for_scrollbar()
+                .height
+                .max(Pixels::ZERO),
+        );
+        let offset = -f32::from(self.list_state.scroll_px_offset_for_scrollbar().y);
+        let near_bottom = if max_offset <= scrollable_threshold_px {
             true
         } else {
-            (offset_y + max_height).abs() <= bottom_tolerance_px
+            (max_offset - offset).abs() <= bottom_tolerance_px
         };
 
         self.stick_to_bottom = near_bottom;
-        self.scroll_dirty = false;
+        self.scroll_dirty.set(false);
     }
 
     pub fn dropped_messages(&self) -> usize {
@@ -329,9 +345,10 @@ impl ChatState {
         }
 
         let overflow = self.messages.len() - self.log_soft_limit;
+        self.list_state.splice(0..overflow, 0);
         self.messages.drain(0..overflow);
         self.dropped_messages = self.dropped_messages.saturating_add(overflow);
-        self.scroll_dirty = true;
+        self.scroll_dirty.set(true);
     }
 }
 

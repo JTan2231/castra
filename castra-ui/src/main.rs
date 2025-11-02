@@ -51,6 +51,7 @@ fn main() {
             cx.bind_keys([
                 KeyBinding::new("backspace", Backspace, None),
                 KeyBinding::new("enter", SendMessage, None),
+                KeyBinding::new("shift-enter", InsertNewline, None),
                 KeyBinding::new("up", HistoryPrev, None),
                 KeyBinding::new("down", HistoryNext, None),
                 KeyBinding::new("escape", CancelHistory, None),

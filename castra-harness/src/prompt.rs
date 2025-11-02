@@ -6,7 +6,10 @@ The harness is active and provides the ambient execution context and event routi
 
 Dispatch remote work through the harness-generated wrappers listed under `script=` in the operational context. Each wrapper delegates to `vm_commands.sh`, exporting the correct SSH target, port, identity, and options for that VM. The helper exposes the following interface so you never have to look elsewhere:
 
-  vm_commands.sh send "<command text>"
+  vm_commands.sh send [--wait] "<command text>"
+    • Include --wait to stream stdout/stderr until the command finishes; omit it to detach and inspect later via view-output.
+  vm_commands.sh launch_subagent "<prompt>"
+    • Shortcut for spawning a Codex turn remotely (`codex exec --json --dangerously-bypass-approvals-and-sandbox "<prompt>"`) using the same run tracking as send.
   vm_commands.sh interrupt <pgid>
   vm_commands.sh list
   vm_commands.sh view-output <run_id> [stdout|stderr|both]

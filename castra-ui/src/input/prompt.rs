@@ -1,14 +1,19 @@
 use std::ops::Range;
 
-use crate::app::actions::{Backspace, CancelHistory, HistoryNext, HistoryPrev, SendMessage};
+use crate::app::actions::{
+    Backspace, CancelHistory, HistoryNext, HistoryPrev, InsertNewline, SendMessage,
+};
+use gpui::StatefulInteractiveElement;
 use gpui::{
     Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, InteractiveElement,
     IntoElement, LayoutId, MouseButton, MouseDownEvent, PaintQuad, ParentElement, Pixels, Point,
-    Render, ShapedLine, SharedString, Style, Styled, TextRun, UTF16Selection, Window, div, fill,
-    hsla, point, px, relative, rgb, size, white,
+    Render, ScrollHandle, SharedString, Style, Styled, TextAlign, TextRun, UTF16Selection, Window,
+    WrappedLine, auto, div, fill, hsla, point, px, relative, rgb, size, white,
 };
 use unicode_segmentation::UnicodeSegmentation;
+
+const PROMPT_MAX_HEIGHT_PX: f32 = 240.;
 
 pub enum PromptEvent {
     Submitted(String),
@@ -22,8 +27,9 @@ pub struct PromptInput {
     history: Vec<String>,
     history_index: Option<usize>,
     draft: Option<SharedString>,
-    last_layout: Option<ShapedLine>,
+    last_layout: Option<PromptLayout>,
     last_bounds: Option<Bounds<Pixels>>,
+    scroll_handle: ScrollHandle,
 }
 
 impl EventEmitter<PromptEvent> for PromptInput {}
@@ -40,6 +46,7 @@ impl PromptInput {
             draft: None,
             last_layout: None,
             last_bounds: None,
+            scroll_handle: ScrollHandle::new(),
         }
     }
 
@@ -89,6 +96,15 @@ impl PromptInput {
         }
     }
 
+    fn insert_newline(&mut self, _: &InsertNewline, _window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_draft_before_edit();
+        let mut updated = self.content.to_string();
+        updated.insert(self.cursor, '\n');
+        self.content = updated.into();
+        self.cursor += 1;
+        cx.notify();
+    }
+
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
@@ -102,16 +118,18 @@ impl PromptInput {
             return;
         };
 
-        let mut relative_x = event.position.x - bounds.left();
-        if relative_x < px(0.) {
-            relative_x = px(0.);
+        let mut relative_point = point(
+            event.position.x - bounds.left(),
+            event.position.y - bounds.top(),
+        );
+        if relative_point.x < px(0.) {
+            relative_point.x = px(0.);
         }
-        let max_x = layout.x_for_index(layout.len());
-        if relative_x > max_x {
-            relative_x = max_x;
+        if relative_point.y < px(0.) {
+            relative_point.y = px(0.);
         }
 
-        let index = layout.closest_index_for_x(relative_x);
+        let index = layout.closest_index_for_position(relative_point);
         self.cursor = index.min(self.content.len());
         cx.notify();
     }
@@ -166,22 +184,17 @@ impl PromptInput {
         self.cursor..self.cursor
     }
 
-    fn bounds_for_range_impl(
-        &self,
-        range_utf16: Range<usize>,
-    ) -> Option<(Bounds<Pixels>, ShapedLine)> {
+    fn bounds_for_range_impl(&self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
         let bounds = self.last_bounds?;
-        let layout = self.last_layout.clone()?;
+        let layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
-        let left = layout.x_for_index(range.start);
-        let right = layout.x_for_index(range.end);
-
-        Some((
-            Bounds::from_corners(
-                point(bounds.left() + left, bounds.top()),
-                point(bounds.left() + right, bounds.bottom()),
+        let local_bounds = layout.bounds_for_range(range)?;
+        Some(Bounds::new(
+            point(
+                bounds.left() + local_bounds.origin.x,
+                bounds.top() + local_bounds.origin.y,
             ),
-            layout,
+            local_bounds.size,
         ))
     }
 
@@ -353,7 +366,7 @@ impl EntityInputHandler for PromptInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        if let Some((bounds, _)) = self.bounds_for_range_impl(range_utf16.clone()) {
+        if let Some(bounds) = self.bounds_for_range_impl(range_utf16.clone()) {
             Some(bounds)
         } else {
             Some(element_bounds)
@@ -362,18 +375,21 @@ impl EntityInputHandler for PromptInput {
 
     fn character_index_for_point(
         &mut self,
-        point: Point<Pixels>,
+        position: Point<Pixels>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
         let bounds = self.last_bounds?;
         let layout = self.last_layout.as_ref()?;
-        let mut x = point.x - bounds.left();
-        if x < px(0.) {
-            x = px(0.);
+        let mut relative_point = point(position.x - bounds.left(), position.y - bounds.top());
+        if relative_point.x < px(0.) {
+            relative_point.x = px(0.);
         }
-        let index = layout.closest_index_for_x(x);
-        Some(self.offset_to_utf16(index))
+        if relative_point.y < px(0.) {
+            relative_point.y = px(0.);
+        }
+        let index = layout.closest_index_for_position(relative_point);
+        Some(self.offset_to_utf16(index.min(self.content.len())))
     }
 }
 
@@ -390,8 +406,160 @@ impl IntoElement for PromptTextElement {
 }
 
 struct PromptPrepaintState {
-    line: Option<ShapedLine>,
+    layout: Option<PromptLayout>,
     cursor: Option<PaintQuad>,
+}
+
+#[derive(Clone)]
+struct PromptLayout {
+    lines: Vec<PromptLayoutLine>,
+    line_height: Pixels,
+    text_len: usize,
+}
+
+#[derive(Clone)]
+struct PromptLayoutLine {
+    start: usize,
+    layout: WrappedLine,
+    height: Pixels,
+}
+
+impl PromptLayout {
+    fn new(lines: Vec<PromptLayoutLine>, line_height: Pixels, text_len: usize) -> Self {
+        Self {
+            lines,
+            line_height,
+            text_len,
+        }
+    }
+
+    fn line_height(&self) -> Pixels {
+        self.line_height
+    }
+
+    fn text_len(&self) -> usize {
+        self.text_len
+    }
+
+    fn position_for_index(&self, index: usize) -> Option<Point<Pixels>> {
+        if self.lines.is_empty() {
+            return Some(point(px(0.), px(0.)));
+        }
+
+        let mut y = px(0.);
+        for (idx, line) in self.lines.iter().enumerate() {
+            let start = line.start;
+            let end = start + line.layout.len();
+            if index < start {
+                return Some(point(px(0.), y));
+            }
+            if index <= end {
+                let index_in_line = index - start;
+                let mut position = line
+                    .layout
+                    .position_for_index(index_in_line, self.line_height)?;
+                position.y += y;
+                return Some(position);
+            }
+            y += line.height;
+
+            if idx == self.lines.len() - 1 {
+                let mut position = line
+                    .layout
+                    .position_for_index(line.layout.len(), self.line_height)?;
+                position.y += y - line.height;
+                return Some(position);
+            }
+        }
+
+        Some(point(px(0.), px(0.)))
+    }
+
+    fn closest_index_for_position(&self, mut position: Point<Pixels>) -> usize {
+        if self.lines.is_empty() {
+            return 0;
+        }
+
+        if position.x < px(0.) {
+            position.x = px(0.);
+        }
+        if position.y < px(0.) {
+            position.y = px(0.);
+        }
+
+        let mut y = px(0.);
+        for (idx, line) in self.lines.iter().enumerate() {
+            let line_bottom = y + line.height;
+            if position.y < y {
+                return line.start;
+            }
+
+            if position.y <= line_bottom || idx == self.lines.len() - 1 {
+                let local_point = point(position.x, position.y - y);
+                let index_in_line = match line
+                    .layout
+                    .closest_index_for_position(local_point, self.line_height)
+                {
+                    Ok(index) | Err(index) => index,
+                };
+                let mut absolute = line.start + index_in_line;
+                if absolute > self.text_len {
+                    absolute = self.text_len;
+                }
+                return absolute;
+            }
+
+            y += line.height;
+        }
+
+        self.text_len
+    }
+
+    fn bounds_for_range(&self, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        let start_position = self.position_for_index(range.start)?;
+        let end_position = self.position_for_index(range.end)?;
+        let (start_line_idx, _) = self.line_info_for_index(range.start)?;
+        let (end_line_idx, _) = self.line_info_for_index(range.end)?;
+
+        let mut width = end_position.x - start_position.x;
+        if start_line_idx != end_line_idx || width < px(0.) {
+            width = px(0.);
+        }
+
+        Some(Bounds::new(
+            point(start_position.x, start_position.y),
+            size(width, self.line_height),
+        ))
+    }
+
+    fn line_info_for_index(&self, index: usize) -> Option<(usize, Pixels)> {
+        if self.lines.is_empty() {
+            return Some((0, px(0.)));
+        }
+
+        let mut y = px(0.);
+        for (idx, line) in self.lines.iter().enumerate() {
+            let start = line.start;
+            let end = start + line.layout.len();
+            if index < start {
+                return Some((idx, y));
+            }
+            if index <= end {
+                return Some((idx, y));
+            }
+            y += line.height;
+        }
+
+        if let Some(last) = self.lines.last() {
+            let total_height = self
+                .lines
+                .iter()
+                .fold(px(0.), |acc, line| acc + line.height);
+            return Some((self.lines.len() - 1, total_height - last.height));
+        }
+
+        None
+    }
 }
 
 impl Element for PromptTextElement {
@@ -415,7 +583,8 @@ impl Element for PromptTextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = window.line_height().into();
+        style.size.height = auto();
+        style.min_size.height = window.line_height().into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -448,21 +617,63 @@ impl Element for PromptTextElement {
         };
 
         let font_size = style.font_size.to_pixels(window.rem_size());
-        let line = window
-            .text_system()
-            .shape_line(display_text, font_size, &[run], None);
+        let line_height = style
+            .line_height
+            .to_pixels(font_size.into(), window.rem_size());
+        let wrap_width = Some(bounds.size.width);
 
-        let cursor_pos = line.x_for_index(cursor);
+        let shaped_lines = window
+            .text_system()
+            .shape_text(display_text.clone(), font_size, &[run], wrap_width, None)
+            .unwrap_or_default()
+            .into_vec();
+        let mut shaped_lines = if shaped_lines.is_empty() {
+            vec![WrappedLine::default()]
+        } else {
+            shaped_lines
+        };
+
+        let mut line_offsets = Vec::with_capacity(shaped_lines.len());
+        line_offsets.push(0);
+        for (idx, ch) in display_text.as_str().char_indices() {
+            if ch == '\n' {
+                line_offsets.push(idx + ch.len_utf8());
+            }
+        }
+        while line_offsets.len() < shaped_lines.len() {
+            line_offsets.push(display_text.len());
+        }
+
+        let mut layout_lines = Vec::with_capacity(shaped_lines.len());
+        for (idx, line) in shaped_lines.drain(..).enumerate() {
+            let start = line_offsets.get(idx).copied().unwrap_or(display_text.len());
+            let height = line.size(line_height).height;
+            layout_lines.push(PromptLayoutLine {
+                start,
+                layout: line,
+                height,
+            });
+        }
+
+        let layout = PromptLayout::new(layout_lines, line_height, display_text.len());
+        let cursor_index = cursor.min(layout.text_len());
+        let cursor_position = layout
+            .position_for_index(cursor_index)
+            .unwrap_or_else(|| point(px(0.), px(0.)));
+
         let cursor_quad = fill(
             Bounds::new(
-                point(bounds.left() + cursor_pos, bounds.top()),
-                size(px(2.), bounds.bottom() - bounds.top()),
+                point(
+                    bounds.left() + cursor_position.x,
+                    bounds.top() + cursor_position.y,
+                ),
+                size(px(2.), layout.line_height()),
             ),
             white(),
         );
 
         PromptPrepaintState {
-            line: Some(line),
+            layout: Some(layout),
             cursor: Some(cursor_quad),
         }
     }
@@ -488,13 +699,42 @@ impl Element for PromptTextElement {
             window.paint_quad(cursor);
         }
 
-        if let Some(line) = prepaint.line.take() {
-            line.paint(bounds.origin, window.line_height(), window, cx)
-                .unwrap();
+        if let Some(layout) = prepaint.layout.take() {
+            let mut line_origin = bounds.origin;
+            let cursor_at_end = {
+                let input = self.input.read(cx);
+                input.cursor == input.content.len()
+            };
+            for line in &layout.lines {
+                line.layout
+                    .paint_background(
+                        line_origin,
+                        layout.line_height(),
+                        TextAlign::Left,
+                        Some(bounds),
+                        window,
+                        cx,
+                    )
+                    .unwrap();
+                line.layout
+                    .paint(
+                        line_origin,
+                        layout.line_height(),
+                        TextAlign::Left,
+                        Some(bounds),
+                        window,
+                        cx,
+                    )
+                    .unwrap();
+                line_origin.y += line.height;
+            }
 
             self.input.update(cx, |input, _cx| {
-                input.last_layout = Some(line);
+                input.last_layout = Some(layout);
                 input.last_bounds = Some(bounds);
+                if cursor_at_end {
+                    input.scroll_handle.scroll_to_bottom();
+                }
             });
         }
     }
@@ -505,7 +745,7 @@ impl Render for PromptInput {
         div()
             .flex()
             .w_full()
-            .items_center()
+            .items_start()
             .gap_3()
             .key_context("ChatInput")
             .track_focus(&self.focus_handle(cx))
@@ -514,6 +754,7 @@ impl Render for PromptInput {
             .px(px(12.))
             .py(px(10.))
             .on_action(cx.listener(Self::backspace))
+            .on_action(cx.listener(Self::insert_newline))
             .on_action(cx.listener(Self::send_action))
             .on_action(cx.listener(Self::history_prev))
             .on_action(cx.listener(Self::history_next))
@@ -523,7 +764,16 @@ impl Render for PromptInput {
             .child(
                 div()
                     .flex_grow()
-                    .child(PromptTextElement { input: cx.entity() }),
+                    .min_h(px(0.))
+                    .max_h(px(PROMPT_MAX_HEIGHT_PX))
+                    .id("prompt-input-scroll")
+                    .track_scroll(&self.scroll_handle)
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .w_full()
+                            .child(PromptTextElement { input: cx.entity() }),
+                    ),
             )
     }
 }

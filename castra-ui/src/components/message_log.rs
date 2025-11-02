@@ -1,53 +1,60 @@
 use crate::state::{ChatState, MessageKind};
 use gpui::{
-    App, CursorStyle, Div, MouseButton, MouseDownEvent, ScrollWheelEvent, Styled, Window, div,
-    hsla, prelude::*, px, rgb,
+    App, CursorStyle, Div, MouseButton, MouseDownEvent, Styled, Window, div, hsla, list,
+    prelude::*, px, rgb,
 };
+use std::sync::Arc;
 
 const SPEAKER_COLUMN_WIDTH_PX: f32 = 140.;
 const INDICATOR_COLUMN_WIDTH_PX: f32 = 18.;
 
-pub fn message_log<H, F, S>(
+pub type MessageToggleHandler = Arc<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
+
+pub fn message_log(
     chat: &ChatState,
-    mut attach_handler: F,
-    scroll_listener: Option<S>,
-) -> impl IntoElement
-where
-    F: FnMut(usize) -> Option<H>,
-    H: Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-    S: Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static,
-{
-    let mut rows: Vec<Div> = if chat.messages().is_empty() {
-        vec![placeholder_row()]
-    } else {
-        chat.messages()
-            .iter()
-            .enumerate()
-            .map(|(index, message)| render_message_row(index, message, &mut attach_handler))
-            .collect()
-    };
+    toggle_handlers: Arc<Vec<Option<MessageToggleHandler>>>,
+) -> impl IntoElement {
+    let mut content = div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .flex_grow()
+        .min_h(px(0.));
 
     if chat.dropped_messages() > 0 {
-        rows.insert(0, truncation_notice_row(chat.dropped_messages()));
+        content = content.child(truncation_notice_row(chat.dropped_messages()));
     }
 
-    let mut log = div()
+    if chat.messages().is_empty() {
+        content = content.child(placeholder_row());
+    } else {
+        let messages = chat.messages().to_vec();
+        let list_state = chat.list_state().clone();
+        let handlers = toggle_handlers.clone();
+
+        let list = list(list_state, move |index, _window, _app| {
+            let handler = handlers.get(index).and_then(|entry| entry.clone());
+            render_message_row(&messages[index], handler).into_any_element()
+        })
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .flex_grow()
+        .min_h(px(0.))
+        .w_full();
+
+        content = content.child(list);
+    }
+
+    div()
         .id("message-log")
         .flex()
         .flex_col()
         .flex_grow()
         .min_h(px(0.))
-        .overflow_y_scroll()
-        .track_scroll(chat.scroll_handle())
         .px(px(18.))
         .py(px(16.))
-        .child(div().flex().flex_col().gap(px(6.)).children(rows));
-
-    if let Some(listener) = scroll_listener {
-        log = log.on_scroll_wheel(listener);
-    }
-
-    log
+        .child(content)
 }
 
 fn placeholder_row() -> Div {
@@ -66,14 +73,10 @@ fn placeholder_row() -> Div {
         .child(div().child("Awaiting input..."))
 }
 
-fn render_message_row<H>(
-    index: usize,
+fn render_message_row(
     message: &crate::state::ChatMessage,
-    attach_handler: &mut impl FnMut(usize) -> Option<H>,
-) -> Div
-where
-    H: Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-{
+    handler: Option<MessageToggleHandler>,
+) -> Div {
     let kind = message.kind();
     let is_collapsible = message.is_collapsible();
     let is_expanded = message.is_expanded();
@@ -204,9 +207,12 @@ where
         .child(content_div.text_color(content_color).child(content));
 
     if is_collapsible {
-        if let Some(handler) = attach_handler(index) {
+        if let Some(handler) = handler {
+            let handler = handler.clone();
             row = row
-                .on_mouse_down(MouseButton::Left, handler)
+                .on_mouse_down(MouseButton::Left, move |event, window, app| {
+                    handler(event, window, app);
+                })
                 .cursor(CursorStyle::PointingHand);
         }
     }

@@ -2,29 +2,26 @@ use crate::{
     input::prompt::PromptInput,
     state::{AppState, RosterState},
 };
-use gpui::{CursorStyle, Entity, ScrollWheelEvent, Styled, div, hsla, prelude::*, px, rgb};
+use gpui::{CursorStyle, Entity, Styled, div, hsla, prelude::*, px, rgb};
+use std::sync::Arc;
 
 use super::{
-    message_log::message_log,
+    message_log::{MessageToggleHandler, message_log},
     prompt_shell::prompt_container,
     roster_sidebar::{agent_row, sidebar_container},
     status_footer::status_footer,
     vm_fleet::{vm_column_container, vm_columns},
 };
 
-pub fn render<H, F, S, B>(
+pub fn render<B>(
     state: &AppState,
     prompt: &Entity<PromptInput>,
     roster_rows: Option<Vec<gpui::Div>>,
     toasts: &[String],
     stop_handler: Option<B>,
-    mut message_toggle: F,
-    scroll_listener: Option<S>,
+    message_toggle_handlers: Arc<Vec<Option<MessageToggleHandler>>>,
 ) -> gpui::Div
 where
-    F: FnMut(usize) -> Option<H>,
-    H: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-    S: Fn(&ScrollWheelEvent, &mut gpui::Window, &mut gpui::App) + 'static,
     B: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
     let operation_status = state.up_status_line();
@@ -38,11 +35,7 @@ where
         .flex_grow()
         .min_h(px(0.))
         .min_w(px(0.))
-        .child(message_log(
-            state.chat(),
-            |index| message_toggle(index),
-            scroll_listener,
-        ));
+        .child(message_log(state.chat(), message_toggle_handlers));
 
     let mut central_shell = div().flex().flex_grow().min_w(px(0.)).min_h(px(0.));
 

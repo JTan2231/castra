@@ -9,7 +9,10 @@ use std::thread;
 
 use crate::{
     codex::{HarnessJob, HarnessRunner},
-    components::shell::{render as render_shell, roster_rows},
+    components::{
+        message_log::MessageToggleHandler,
+        shell::{render as render_shell, roster_rows},
+    },
     controller::command,
     input::prompt::{PromptEvent, PromptInput},
     ssh::{HANDSHAKE_BANNER, SshEvent, SshManager, SshStream},
@@ -35,7 +38,7 @@ use castra_harness::TurnHandle;
 use castra_harness::{HarnessEvent, PromptBuilder, TurnRequest};
 use gpui::{
     AppContext, AsyncApp, Context, Entity, FocusHandle, Focusable, IntoElement, MouseDownEvent,
-    Render, ScrollWheelEvent, Task, WeakEntity, Window,
+    Render, Task, WeakEntity, Window,
 };
 
 #[derive(Default)]
@@ -878,14 +881,34 @@ impl Render for ChatApp {
 
         let toasts = self.state.collect_active_toasts();
 
-        let scroll_listener = Some(cx.listener(
-            |chat: &mut ChatApp,
-             _: &ScrollWheelEvent,
-             _window: &mut Window,
-             _cx: &mut Context<ChatApp>| {
-                chat.state.chat_mut().mark_scroll_dirty();
-            },
-        ));
+        let toggle_handlers: Arc<Vec<Option<MessageToggleHandler>>> = {
+            let handlers = self
+                .state
+                .chat()
+                .messages()
+                .iter()
+                .enumerate()
+                .map(|(index, message)| {
+                    if message.is_collapsible() {
+                        let handler_index = index;
+                        let handler = cx.listener(
+                            move |chat: &mut ChatApp,
+                                  _: &MouseDownEvent,
+                                  _window: &mut Window,
+                                  cx: &mut Context<ChatApp>| {
+                                if chat.toggle_message(handler_index) {
+                                    cx.notify();
+                                }
+                            },
+                        );
+                        Some(Arc::new(handler) as MessageToggleHandler)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            Arc::new(handlers)
+        };
 
         let stop_handler = if self.state.codex_turn_active() {
             Some(cx.listener(
@@ -906,19 +929,7 @@ impl Render for ChatApp {
             roster_rows,
             &toasts,
             stop_handler,
-            |index| {
-                Some(cx.listener(
-                    move |chat: &mut ChatApp,
-                          _: &MouseDownEvent,
-                          _window: &mut Window,
-                          cx: &mut Context<ChatApp>| {
-                        if chat.toggle_message(index) {
-                            cx.notify();
-                        }
-                    },
-                ))
-            },
-            scroll_listener,
+            toggle_handlers,
         )
     }
 }

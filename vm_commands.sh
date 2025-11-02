@@ -5,6 +5,7 @@ usage() {
     cat <<'EOF'
 Usage:
   vm_commands.sh send [--wait] [command] "<command text>"
+  vm_commands.sh launch_subagent "<prompt>"
   vm_commands.sh interrupt <pgid>
   vm_commands.sh list
   vm_commands.sh view-output <run_id> [stdout|stderr|both]
@@ -225,6 +226,24 @@ exit "$COMMAND_STATUS"
 EOF
 }
 
+launch_subagent() {
+    if [[ $# -lt 1 ]]; then
+        echo "launch_subagent requires a prompt string." >&2
+        usage
+        exit 1
+    fi
+
+    local prompt="$*"
+    local escaped_prompt
+    printf -v escaped_prompt '%q' "$prompt"
+
+    local remote_cmd="codex exec --json --dangerously-bypass-approvals-and-sandbox"
+    remote_cmd+=" ${escaped_prompt}"
+
+    send_command command "$remote_cmd"
+}
+
+
 interrupt_process() {
     if [[ $# -ne 1 ]]; then
         echo "interrupt requires exactly one argument: <pgid>" >&2
@@ -336,6 +355,12 @@ case "$action" in
             shift
         fi
         send_command "$@"
+        ;;
+    launch_subagent)
+        if [[ ${1:-} == "command" ]]; then
+            shift
+        fi
+        launch_subagent "$@"
         ;;
     interrupt)
         interrupt_process "$@"

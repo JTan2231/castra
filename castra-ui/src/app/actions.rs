@@ -5,6 +5,7 @@ actions!(
     [
         Backspace,
         SendMessage,
+        InsertNewline,
         Quit,
         FocusPrompt,
         HistoryPrev,
