@@ -29,6 +29,7 @@ use castra::{
         reporter::Reporter,
         runtime::{BrokerHandle, BrokerLaunchRequest, BrokerLauncher},
     },
+    load_project_config,
 };
 use castra_harness::TurnHandle;
 use castra_harness::{HarnessEvent, PromptBuilder, TurnRequest};
@@ -115,7 +116,17 @@ impl ChatApp {
     pub fn new(prompt: Entity<PromptInput>, shutdown: Arc<ShutdownState>) -> Self {
         let (ssh_tx, ssh_rx) = unbounded();
         let workspace_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let (transcript_writer, transcript_status) = match TranscriptWriter::new(&workspace_root) {
+        let (transcript_root, transcript_warning) = match resolve_transcript_workspace_root() {
+            Ok(root) => (root, None),
+            Err(err) => {
+                eprintln!(
+                    "castra-ui: failed to resolve transcript workspace root: {err}; falling back to {}",
+                    workspace_root.display()
+                );
+                (workspace_root.clone(), Some(err))
+            }
+        };
+        let (transcript_writer, transcript_status) = match TranscriptWriter::new(&transcript_root) {
             Ok(writer) => {
                 let path = writer.path().to_path_buf();
                 let session = writer.session_id().to_string();
@@ -127,6 +138,12 @@ impl ChatApp {
             }
         };
         let mut state = AppState::with_transcript(transcript_writer);
+        if let Some(reason) = transcript_warning {
+            state.push_system_message(format!(
+                "Transcripts stored in {} (failed to resolve workspace state root: {reason}).",
+                workspace_root.display()
+            ));
+        }
         match transcript_status {
             Ok((session_id, path)) => {
                 state.push_system_message(format!(
@@ -1001,6 +1018,17 @@ async fn await_shutdown(
         shutdown.mark_cleanup_complete();
         let _ = app.update(|cx| cx.quit());
     }
+}
+
+fn resolve_transcript_workspace_root() -> Result<PathBuf, String> {
+    let config_path = default_quickstart_config_path()?;
+    let config = load_project_config(&config_path).map_err(|err| {
+        format!(
+            "unable to load project config at {}: {err}",
+            config_path.display()
+        )
+    })?;
+    Ok(config.state_root)
 }
 
 fn default_quickstart_config_path() -> Result<PathBuf, String> {
