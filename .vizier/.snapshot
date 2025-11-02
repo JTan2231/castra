@@ -4,6 +4,7 @@ Edits since previous snapshot
 - Clarified Core surface debt: options.rs still exposes broker/bus types (BrokerOptions, BusPublishOptions, BusTailOptions, BusLogTarget) and UpOptions.broker_only; CleanOptions.include_handshakes persists. These are bus-era artifacts slated for removal/deprecation under Thread 30.
 - UI evidence captured: vm_fleet.rs renders a VM-centric roster ("VM FLEET" header) and VM-focused attention/status. This blocks Thread 31 acceptance for agent-first roster.
 - Anchored Thread 20 to harness-side SSH stream work; no unified, agent-addressed stream exists yet.
+- De-duplication housekeeping: Marked duplicate TODO files (suffix .md.md or todo_todo_*) as duplicates; canonical items retained. Removal to follow after review.
 
 Active threads (intent + acceptance deltas)
 - Thread 2 — Cooperative shutdown lifecycle: unchanged.
@@ -46,7 +47,7 @@ Current code state (observable surfaces)
 - UI: vm_fleet.rs implements VM roster with "VM FLEET" heading and VM-focused attention/status; docs and components remain VM-centric.
 
 Narrative themes
-1) Robust lifecycle; 10) Trustworthy bootstrap; 12) Day‑1 productivity; 13) Ephemeral-only policy; 20) Harness-first integration; 21) Operational clarity; 22) Onboarding via tutorials; 30) Architectural simplicity (busless vizier); 31) Agent-first simplicity.
+1) Robust lifecycle; 10) Trustworthy bootstrap; 12) Day–1 productivity; 13) Ephemeral-only policy; 20) Harness-first integration; 21) Operational clarity; 22) Onboarding via tutorials; 30) Architectural simplicity (busless vizier); 31) Agent-first simplicity.
 
 Direction of travel
 - Remove broker/bus artifacts from core surfaces and CLI (Thread 30).
@@ -59,3 +60,4 @@ Cross-links
 
 Editorial housekeeping
 - Consolidate duplicate TODOs around event contract and harness stream into single authoritative items under Threads 20, 31.
+- Duplicates marked for removal: *busless_architecture_cutover_core.md.md, event_contract_v1.md.md, ui_components_agent_roster_pivot.md.md, harness_vizier_ssh_first_integration.md.md, cli_and_core_remove_vm_selection_surfaces.md.md, todo_event_contract_v1.md.md, todo_todo_event_contract_v1.md.md, todo_todo_ui_core_integration_v1.md.md*.
