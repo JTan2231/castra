@@ -1,10 +1,7 @@
 SNAPSHOT v0.10.0-pre — Castra (Agent-centric orchestration) — Busless vizier pivot
 
 Edits since previous snapshot
-- Clarified Core surface debt: options.rs still exposes broker/bus types (BrokerOptions, BusPublishOptions, BusTailOptions, BusLogTarget) and UpOptions.broker_only; CleanOptions.include_handshakes persists. These are bus-era artifacts slated for removal/deprecation under Thread 30.
-- UI evidence captured: vm_fleet.rs renders a VM-centric roster ("VM FLEET" header) and VM-focused attention/status. This blocks Thread 31 acceptance for agent-first roster.
-- Anchored Thread 20 to harness-side SSH stream work; no unified, agent-addressed stream exists yet.
-- De-duplication housekeeping: Marked duplicate TODO files (suffix .md.md or todo_todo_*) as duplicates; canonical items retained. Removal to follow after review.
+- Housekeeping: Merged and removed duplicate TODOs across Threads 20, 30, and 31. Canonical TODOs retained; all *.md.md and todo_todo_* duplicates deleted. Remaining TODO set now maps 1:1 to active threads without parallel duplicates.
 
 Active threads (intent + acceptance deltas)
 - Thread 2 — Cooperative shutdown lifecycle: unchanged.
@@ -13,51 +10,30 @@ Active threads (intent + acceptance deltas)
 
 - Thread 13 — Stateless runs (ephemeral-only): unchanged.
 
-- Thread 20 — Harness ↔ Core integration (Vizier-first):
-  Intent: The Codex harness is the front door for human interaction. It invokes castra-core operations and merges their events with agent (vizier) observations into a single, agent-addressed stream for consumers (UI/tests/automation).
-  Acceptance (no change):
-  - A harness session can initiate Up and receive a unified stream addressed by agent identity. [NEXT]
-  - No broker/bus launch occurs during any operation; legacy bus surfaces are non-functional with clear guidance. [BLOCKER]
-  - UI integration (if present) subscribes to the harness stream instead of embedding core directly. [FOLLOW-ON]
-  Anchors: castra-harness/src/{runner,session,stream,events}.rs; castra-core/src/app/{up,down,status,clean}.rs; castra-ui/src/ssh/mod.rs; castra-harness/src/prompt.rs.
+- Thread 20 — Harness ↔ Core integration (Vizier-first): unchanged; duplicates pruned.
 
 - Thread 21 — Operational clarity (Attention model): unchanged.
 
-- Thread 22 — UI onboarding docs (tutorial set): pending reframe to harness/agent-centric flows.
+- Thread 22 — UI onboarding docs (tutorial set): unchanged.
 
-- Thread 30 — Busless architecture cutover (Core):
-  Intent: Remove the broker/bus from castra-core; eliminate the common comms substrate in favor of agent-mediated operations via the harness.
-  Acceptance (updated):
-  - CLI/core expose no broker/bus concepts. Specifically, UpOptions.broker_only is gone (or hard-disabled); BrokerOptions, BusPublishOptions, BusTailOptions, BusLogTarget are removed from public API; CleanOptions.include_handshakes is removed or repurposed. [BLOCKER]
-  - No broker/bus code paths are reachable; no handshake/log artifacts are created. [BLOCKER]
-  Anchors: castra-core/src/core/operations/bus.rs; castra-core/src/core/broker.rs; castra-core/src/app/broker.rs; castra-core/tests/broker_contract.rs; scripts/castra-bus-*.sh; castra-core/src/options.rs (artifacts listed above).
+- Thread 30 — Busless architecture cutover (Core): unchanged; duplicates pruned. Canonical TODO: todo_busless_architecture_cutover_core.md.
 
-- Thread 31 — Agent-first interaction model:
-  Intent: Prioritize multiple agents over multiple VMs. Remove runtime VM choice UI/flags; expose agent identities/groups as the addressing surface for operations and events.
-  Acceptance (clarified blockers):
-  - UI contains no VM selection controls; vm_fleet.rs replaced by agent roster; header and labels shift to Agents; attention mapping follows Thread 21. [BLOCKER]
-  - CLI/core options that previously selected VMs are removed or deprecated with clear guidance; defaults operate against agent-defined scope. [NEXT]
-  - Event Contract v1 expresses agent-addressed events (agent.id, agent.role) and omits per-VM selection semantics. [COORDINATED]
-  - Tutorials/docs use agent terminology; VM-specific choice flows are removed. [FOLLOW-ON]
-  Anchors: castra-ui/src/components/{vm_fleet.rs,roster_sidebar.rs}; castra-ui/docs/components/vm_fleet.md; castra-core/src/core/options.rs; castra-core/src/app/common.rs; castra-ui/src/state; castra-harness/src/events.rs.
+- Thread 31 — Agent-first interaction model: unchanged; duplicates pruned. Canonical TODOs: todo_cli_and_core_remove_vm_selection_surfaces.md, todo_ui_components_agent_roster_pivot.md, todo_event_contract_v1.md (cross-thread with 20).
 
 Current code state (observable surfaces)
-- Core: options.rs contains broker/bus-related types and flags; broker/bus modules/tests/scripts exist. VM-oriented options (per-VM overrides) remain.
-- Harness: Prompt and session scaffolding present; unified, agent-addressed event stream not yet implemented.
-- UI: vm_fleet.rs implements VM roster with "VM FLEET" heading and VM-focused attention/status; docs and components remain VM-centric.
+- Core: options.rs still contains broker/bus-related types and VM-oriented options; broker/bus modules/tests/scripts exist.
+- Harness: Unified, agent-addressed stream not yet implemented; SSH integration planned. No change in code state from last snapshot.
+- UI: vm_fleet.rs still VM-centric.
 
 Narrative themes
-1) Robust lifecycle; 10) Trustworthy bootstrap; 12) Day–1 productivity; 13) Ephemeral-only policy; 20) Harness-first integration; 21) Operational clarity; 22) Onboarding via tutorials; 30) Architectural simplicity (busless vizier); 31) Agent-first simplicity.
+Unchanged.
 
 Direction of travel
-- Remove broker/bus artifacts from core surfaces and CLI (Thread 30).
-- Replace VM roster with agent roster; shift event/attention semantics to agent identity (Thread 31) and wire UI to harness stream (Thread 20).
-- Update docs/tutorials to reflect agent-first flows.
+Unchanged; reduced organizational noise by removing duplicate TODOs.
 
 Cross-links
-- Surfaces to retire/rename: UI vm_fleet/roster to agent roster; CLI/core VM selectors in options.rs/common.rs; docs/components/vm_fleet.md.
-- Event Contract v1: align with agent.* addressing; de-scope per-VM choice semantics.
+- Canonical TODOs reflect: Thread 20 (harness stream/tests), Thread 30 (busless core surfaces), Thread 31 (agent-first event/UI/CLI).
 
 Editorial housekeeping
-- Consolidate duplicate TODOs around event contract and harness stream into single authoritative items under Threads 20, 31.
-- Duplicates marked for removal: *busless_architecture_cutover_core.md.md, event_contract_v1.md.md, ui_components_agent_roster_pivot.md.md, harness_vizier_ssh_first_integration.md.md, cli_and_core_remove_vm_selection_surfaces.md.md, todo_event_contract_v1.md.md, todo_todo_event_contract_v1.md.md, todo_todo_ui_core_integration_v1.md.md*.
+- Deleted duplicate TODO files: busless_architecture_cutover_core.*.md (dupes), event_contract_v1.*.md (dupes), ui_vertical_slice_up_status.md.md, todo_todo_* dupes, harness_vizier_ssh_first_integration.md.md, ui_components_agent_roster_pivot.* dupes, cli_and_core_remove_vm_selection_surfaces.* dupes.
+- Remaining TODO list is authoritative; future additions must link to active threads to avoid re-duplication.
