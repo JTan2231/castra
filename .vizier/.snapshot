@@ -1,7 +1,12 @@
 SNAPSHOT v0.10.0-pre — Castra (Agent-centric orchestration) — Busless vizier pivot
 
 Edits since previous snapshot
-- Housekeeping: Merged and removed duplicate TODOs across Threads 20, 30, and 31. Canonical TODOs retained; all *.md.md and todo_todo_* duplicates deleted. Remaining TODO set now maps 1:1 to active threads without parallel duplicates.
+- UI advances on attention/noise control and operator ergonomics:
+  - Collapsible Reasoning/Tool outputs with click-to-expand previews; stick-to-bottom + scroll listener; soft log limit with truncation notice.
+  - Distinct Vizier System vs Vizier Command message kinds; Stop control during active Codex turn; token usage summaries (Codex/Vizier) in footer.
+  - Chat transcripts now recorded to <workspace_root>/.castra/transcripts/*.jsonl (see README update).
+- vm_commands.sh gains `--wait` streaming mode and `view-output` helper for stdout/stderr retrieval; usage strings updated.
+- No core/harness structural changes yet; UI now consumes HarnessEvent more fully and renders Vizier activity distinctly.
 
 Active threads (intent + acceptance deltas)
 - Thread 2 — Cooperative shutdown lifecycle: unchanged.
@@ -10,30 +15,44 @@ Active threads (intent + acceptance deltas)
 
 - Thread 13 — Stateless runs (ephemeral-only): unchanged.
 
-- Thread 20 — Harness ↔ Core integration (Vizier-first): unchanged; duplicates pruned.
+- Thread 20 — Harness ↔ Core integration (Vizier-first): progress in consumers
+  - Evidence: UI pumps HarnessEvent (pump_codex/pump_vizier) and renders Vizier command/system outputs; transcripts capture these.
+  - Gap: unified agent-addressed stream still originates UI-side for SSH; harness-side vizier.ssh.* stream + version preamble and golden tests remain outstanding.
 
-- Thread 21 — Operational clarity (Attention model): unchanged.
+- Thread 21 — Operational clarity (Attention model): partial delivery
+  - Evidence: Collapsible messages, scroll behavior, and log soft limit reduce noise and protect responsiveness.
+  - Gap: Event grouping/coalescing and per-agent context panes not yet shipped.
 
 - Thread 22 — UI onboarding docs (tutorial set): unchanged.
 
-- Thread 30 — Busless architecture cutover (Core): unchanged; duplicates pruned. Canonical TODO: todo_busless_architecture_cutover_core.md.
+- Thread 30 — Busless architecture cutover (Core): unchanged; bus-era artifacts remain in core options and scripts; scripts cleanup TODO open.
 
-- Thread 31 — Agent-first interaction model: unchanged; duplicates pruned. Canonical TODOs: todo_cli_and_core_remove_vm_selection_surfaces.md, todo_ui_components_agent_roster_pivot.md, todo_event_contract_v1.md (cross-thread with 20).
+- Thread 31 — Agent-first interaction model: in progress (consumers); blockers remain
+  - Evidence: UI distinguishes Vizier activity and tallies usage; foundation for agent-addressed flow.
+  - Gap: Roster still VM-centric; CLI/core still expose VM-selection surfaces.
 
 Current code state (observable surfaces)
 - Core: options.rs still contains broker/bus-related types and VM-oriented options; broker/bus modules/tests/scripts exist.
-- Harness: Unified, agent-addressed stream not yet implemented; SSH integration planned. No change in code state from last snapshot.
-- UI: vm_fleet.rs still VM-centric.
+- Harness: Unified, agent-addressed stream not yet implemented; SSH integration remains UI-side. No change in harness code structure.
+- UI:
+  - message_log: collapsible Reasoning/Tool messages; click-to-expand; truncation notice; improved scroll handling.
+  - state: new MessageKind::VizierCommand; token usage tracking; transcript writer integration.
+  - shell/prompt: Stop control during active Codex turn; wider default window.
+  - vm_fleet.rs remains VM-centric; agent roster not yet present.
+- Tooling: vm_commands.sh supports `--wait` and `view-output` to stream and later fetch outputs.
+- Docs: README documents transcript recording location and schema summary.
 
 Narrative themes
-Unchanged.
+- Busless, agent-first pivot remains the north star. Current increment invests in UX affordances to handle higher event volume and set up verifiable streams via transcripts and vm_commands.sh.
 
 Direction of travel
-Unchanged; reduced organizational noise by removing duplicate TODOs.
+- Next increments: move SSH/vizier stream into harness with versioned preamble and golden tests (Thread 20); pivot UI roster to agents and add grouping (Threads 31, 21); begin pruning bus-era scripts and options (Thread 30).
 
 Cross-links
-- Canonical TODOs reflect: Thread 20 (harness stream/tests), Thread 30 (busless core surfaces), Thread 31 (agent-first event/UI/CLI).
+- Thread 20: castra-harness/src/{session.rs,runner.rs,stream.rs,events.rs,translator.rs}; UI consumer in castra-ui/src/app/mod.rs (pump_codex/pump_vizier). Tooling anchor: vm_commands.sh.
+- Thread 21: castra-ui/src/components/{message_log.rs,shell.rs}; castra-ui/src/state/mod.rs.
+- Thread 30: castra-core/src/core/options.rs; scripts/* bus-era artifacts.
+- Thread 31: castra-ui/src/components/roster_sidebar.rs and vm_fleet.rs (to be replaced/pivoted).
 
 Editorial housekeeping
-- Deleted duplicate TODO files: busless_architecture_cutover_core.*.md (dupes), event_contract_v1.*.md (dupes), ui_vertical_slice_up_status.md.md, todo_todo_* dupes, harness_vizier_ssh_first_integration.md.md, ui_components_agent_roster_pivot.* dupes, cli_and_core_remove_vm_selection_surfaces.* dupes.
-- Remaining TODO list is authoritative; future additions must link to active threads to avoid re-duplication.
+- Canonical TODOs retained and updated with concrete evidence and gaps for Threads 20/21; no new threads opened. Remaining TODO list continues to be authoritative.

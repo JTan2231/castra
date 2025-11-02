@@ -21,4 +21,23 @@ Open choices (document, do not lock):
 - Whether to move SshManager into the harness crate vs reuse via a shared module. Keep implementation open; ensure the contract and event mapping are stable.
 
 Verification:
-- Golden tests for harness event stream including vizier.ssh family; exercise both success and failure flows.
+- Golden tests for harness event stream including vizier.ssh family; exercise both success and failure flows.Progress (evidence):
+- castra-ui now pumps HarnessEvent into AppState via pump_codex/pump_vizier; Vizier command/system outputs are rendered distinctly and token usage tallied.
+- SshManager present in UI; vm_commands.sh upgraded with `--wait` streaming and `view-output` helper to fetch outputs from remote runs.
+
+What’s still needed to meet acceptance:
+- Unified agent-addressed event stream originated in the harness (not UI) that includes vizier.ssh.* family; current SshManager remains UI-side.
+- Golden tests for harness event stream (success/failure flows) are not present.
+- Explicit preamble/versioning on the stream not yet verified end-to-end.
+- Performance target: document and measure N-SSH session setup bounds in harness tests.
+
+Open choice restated:
+- Whether to migrate SshManager capabilities into harness vs shared module; keep contract stable either way.
+
+Anchors reaffirmed:
+- castra-harness/src/{session.rs,runner.rs,stream.rs,events.rs,translator.rs}
+- castra-ui/src/{app/mod.rs,ssh/mod.rs,state/mod.rs}
+- castra-core surfaces for plan info remain unchanged.
+
+---
+

@@ -16,4 +16,23 @@ Scope:
 
 Anchors: castra-ui/src/controller/{mod.rs,command.rs}; castra-ui/src/components/{roster_sidebar.rs,status_footer.rs,message_log.rs,vm_fleet.rs}.
 
-Threads: Thread 20 and 21; consumes 12, 13.
+Threads: Thread 20 and 21; consumes 12, 13.Progress (evidence):
+- UI consumes HarnessEvent stream for Codex/Vizier and renders into message_log; start/finish statuses and command outputs appear with distinct kinds (Vizier Command vs Vizier System).
+- status_footer now displays token usage summaries (Codex and Vizier) and retains operation status; layout widened and responsive.
+- Prompt shell supports a Stop control while a Codex turn is active.
+- Message log ships with collapse for repetitive tool/reasoning outputs and truncation notice to keep UI responsive.
+
+Gaps to acceptance:
+- Roster remains VM-centric; pivot to agent roster pending (Thread 31).
+- Live per-agent progress badges and aggregate counts not yet implemented; timers exist but lack Up-specific progress semantics.
+- Completion banner for Up summary not yet wired from core/harness events.
+- Click-through to durable logs: vm_commands.sh now supports `--wait` and `view-output`, but UI affordance is not yet linked.
+
+Next steps:
+- Wire harness Up lifecycle events into roster badges and aggregate counts; update status_footer to show Up progress and durations.
+- Add link/command to open view-output for the selected run when available.
+
+Threads: 20, 21; consumes 12, 13. Anchors unchanged.
+
+---
+
