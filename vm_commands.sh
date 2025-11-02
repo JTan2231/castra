@@ -7,6 +7,7 @@ Usage:
   vm_commands.sh send [command] "<command text>"
   vm_commands.sh interrupt <pgid>
   vm_commands.sh list
+  vm_commands.sh view-output <run_id> [stdout|stderr|both]
 
 Environment:
   SSH_TARGET      Remote ssh target (e.g. user@host). Required.
@@ -184,6 +185,70 @@ done
 EOF
 }
 
+view_output() {
+    if [[ $# -lt 1 || $# -gt 2 ]]; then
+        echo "view-output requires <run_id> and optional stream selector (stdout|stderr|both)." >&2
+        usage
+        exit 1
+    fi
+
+    local run_id="$1"
+    local stream="${2:-both}"
+
+    case "$stream" in
+        stdout|stderr|both) ;;
+        *)
+            echo "Invalid stream selector: $stream (expected stdout, stderr, or both)." >&2
+            exit 1
+            ;;
+    esac
+
+    ssh_invoke bash -s -- "$run_id" "$stream" <<'EOF'
+set -euo pipefail
+
+RUN_ID="$1"
+STREAM="$2"
+RUN_DIR="/run/vizier/${RUN_ID}"
+
+if [[ ! -d "$RUN_DIR" ]]; then
+    echo "Run directory not found for $RUN_ID under /run/vizier." >&2
+    exit 1
+fi
+
+print_file() {
+    local label="$1"
+    local file="$2"
+
+    if [[ ! -f "$file" ]]; then
+        printf '===== %s (missing) =====\n' "$label"
+        return
+    fi
+
+    if [[ ! -s "$file" ]]; then
+        printf '===== %s (empty) =====\n' "$label"
+        return
+    fi
+
+    printf '===== %s =====\n' "$label"
+    cat "$file"
+    [[ $(tail -c1 "$file" 2>/dev/null || true) == $'\n' ]] || printf '\n'
+}
+
+case "$STREAM" in
+    stdout)
+        print_file "stdout" "$RUN_DIR/stdout"
+        ;;
+    stderr)
+        print_file "stderr" "$RUN_DIR/stderr"
+        ;;
+    both)
+        print_file "stdout" "$RUN_DIR/stdout"
+        print_file "stderr" "$RUN_DIR/stderr"
+        ;;
+esac
+EOF
+}
+
 if [[ $# -lt 1 ]]; then
     usage
     exit 1
@@ -204,6 +269,9 @@ case "$action" in
         ;;
     list)
         list_runs
+        ;;
+    view-output)
+        view_output "$@"
         ;;
     *)
         usage

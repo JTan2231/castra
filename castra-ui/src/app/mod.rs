@@ -218,10 +218,7 @@ impl ChatApp {
         }
     }
 
-    fn ensure_vizier_wrappers(
-        &self,
-        plans: &[(String, BootstrapPlanSsh)],
-    ) -> Result<(), String> {
+    fn ensure_vizier_wrappers(&self, plans: &[(String, BootstrapPlanSsh)]) -> Result<(), String> {
         if plans.is_empty() {
             return Ok(());
         }
@@ -264,9 +261,8 @@ impl ChatApp {
         for (vm, plan) in plans {
             let script_path = scripts_root.join(format!("{vm}.sh"));
             let script_contents = build_wrapper_script(plan);
-            write_if_changed(&script_path, &script_contents).map_err(|err| {
-                format!("failed to write {}: {err}", script_path.display())
-            })?;
+            write_if_changed(&script_path, &script_contents)
+                .map_err(|err| format!("failed to write {}: {err}", script_path.display()))?;
             set_executable(&script_path).map_err(|err| {
                 format!(
                     "failed to set executable bit on {}: {err}",
@@ -331,6 +327,10 @@ impl ChatApp {
         let label = self.state.active_agent_label();
         self.state
             .push_system_message(format!("Active agent set to {}", label));
+    }
+
+    fn toggle_message(&mut self, index: usize) -> bool {
+        self.state.chat_mut().toggle_message_at(index)
     }
 
     pub fn on_prompt_event(&mut self, event: &PromptEvent, cx: &mut Context<Self>) {
@@ -810,7 +810,18 @@ impl Render for ChatApp {
 
         let toasts = self.state.collect_active_toasts();
 
-        render_shell(&self.state, &self.prompt, roster_rows, &toasts)
+        render_shell(&self.state, &self.prompt, roster_rows, &toasts, |index| {
+            Some(cx.listener(
+                move |chat: &mut ChatApp,
+                      _: &MouseDownEvent,
+                      _window: &mut Window,
+                      cx: &mut Context<ChatApp>| {
+                    if chat.toggle_message(index) {
+                        cx.notify();
+                    }
+                },
+            ))
+        })
     }
 }
 

@@ -9,8 +9,9 @@ Dispatch remote work through the harness-generated wrappers listed under `script
   vm_commands.sh send "<command text>"
   vm_commands.sh interrupt <pgid>
   vm_commands.sh list
+  vm_commands.sh view-output <run_id> [stdout|stderr|both]
 
-Wrappers set `SSH_TARGET` (required), along with optional `SSH_PORT`, `SSH_EXTRA_OPTS`, and `SSH_STRICT=1` when you need strict host key checking. If a wrapper is unavailable or you must retarget, export these variables yourself before invoking `./vm_commands.sh`. Each run stages work under `/run/vizier/<run_id>` and captures `stdout`/`stderr` artifacts—reference the run IDs and logs when you report status or verify results.
+Wrappers set `SSH_TARGET` (required), along with optional `SSH_PORT`, `SSH_EXTRA_OPTS`, and `SSH_STRICT=1` when you need strict host key checking. If a wrapper is unavailable or you must retarget, export these variables yourself before invoking `./vm_commands.sh`. Each run stages work under `/run/vizier/<run_id>` and captures `stdout`/`stderr` artifacts—reference the run IDs and fetch logs via `vm_commands.sh view-output` when you report status or verify results.
 
 Assume complete administrative control over every VM placed under your supervision—and only those VMs. You may install packages, reshape configuration, and spawn or retire long-lived processes at will, but do not alter hosts outside the declared set. Prefer canonical UNIX session primitives—systemd-run, tmux, screen, nohup, journalctl, systemctl, rsync, scp—for managing concurrent tasks and inspecting their state. Use them to keep multiple agents running simultaneously without disturbing one another, and to surface their session details for later inspection.
 
@@ -137,7 +138,8 @@ impl PromptBuilder {
             }
 
             if let Some(script) = endpoint.wrapper_script.as_ref() {
-                write!(&mut line, "; script={}", script).expect("writing to string should not fail");
+                write!(&mut line, "; script={}", script)
+                    .expect("writing to string should not fail");
             }
 
             line.push('\n');

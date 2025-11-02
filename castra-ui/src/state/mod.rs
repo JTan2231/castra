@@ -119,12 +119,6 @@ impl ChatMessage {
             self.expanded = !self.expanded;
         }
     }
-
-    pub fn set_expanded(&mut self, expanded: bool) {
-        if self.is_collapsible() {
-            self.expanded = expanded;
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -190,6 +184,16 @@ impl ChatState {
 
     pub fn set_stick_to_bottom(&mut self, stick: bool) {
         self.stick_to_bottom = stick;
+    }
+
+    pub fn toggle_message_at(&mut self, index: usize) -> bool {
+        if let Some(message) = self.messages.get_mut(index) {
+            if message.is_collapsible() {
+                message.toggle_expanded();
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -691,8 +695,7 @@ impl UpState {
                     let canonical = script_path
                         .canonicalize()
                         .unwrap_or_else(|_| script_path.clone());
-                    endpoint =
-                        endpoint.with_wrapper_script(canonical.display().to_string());
+                    endpoint = endpoint.with_wrapper_script(canonical.display().to_string());
                 }
             }
 
