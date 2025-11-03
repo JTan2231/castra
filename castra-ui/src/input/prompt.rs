@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::app::actions::{
-    Backspace, CancelHistory, HistoryNext, HistoryPrev, InsertNewline, SendMessage,
+    Backspace, CancelHistory, HistoryNext, HistoryPrev, InsertNewline, Paste, SendMessage,
 };
 use gpui::StatefulInteractiveElement;
 use gpui::{
@@ -103,6 +103,12 @@ impl PromptInput {
         self.content = updated.into();
         self.cursor += 1;
         cx.notify();
+    }
+
+    fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            self.replace_text_in_range(None, text.as_str(), window, cx);
+        }
     }
 
     fn on_mouse_down(
@@ -755,6 +761,7 @@ impl Render for PromptInput {
             .py(px(10.))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::insert_newline))
+            .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::send_action))
             .on_action(cx.listener(Self::history_prev))
             .on_action(cx.listener(Self::history_next))

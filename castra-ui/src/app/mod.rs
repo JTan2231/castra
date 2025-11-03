@@ -226,9 +226,26 @@ impl ChatApp {
                 .push_system_message(format!("Failed to stage vizier wrapper scripts: {err}"));
         }
 
+        let bootstrap_scripts = self
+            .state
+            .vizier_bootstrap_scripts()
+            .into_iter()
+            .filter_map(|(vm, path)| match fs::read_to_string(&path) {
+                Ok(contents) => Some((vm, contents)),
+                Err(err) => {
+                    self.state.push_system_message(format!(
+                        "Unable to read bootstrap script for {vm} at {}: {err}",
+                        path.display()
+                    ));
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
         let endpoints = self.state.vizier_endpoints();
         let prompt_full = PromptBuilder::new()
             .with_operational_context(endpoints)
+            .with_bootstrap_scripts(bootstrap_scripts)
             .build();
 
         let request = if let Some(thread_id) = self.state.vizier_thread_id() {

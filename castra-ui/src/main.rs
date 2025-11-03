@@ -57,6 +57,8 @@ fn main() {
                 KeyBinding::new("escape", CancelHistory, None),
                 KeyBinding::new("cmd-k", FocusPrompt, None),
                 KeyBinding::new("ctrl-l", FocusPrompt, None),
+                KeyBinding::new("cmd-v", Paste, None),
+                KeyBinding::new("ctrl-v", Paste, None),
                 KeyBinding::new("tab", FocusNextVm, None),
                 KeyBinding::new("shift-tab", FocusPrevVm, None),
                 KeyBinding::new("cmd-b", ToggleSidebar, None),

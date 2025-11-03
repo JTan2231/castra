@@ -703,6 +703,7 @@ pub struct UpState {
     lifecycle: UpLifecycle,
     vm_fleet: VmFleetState,
     ssh_plans: BTreeMap<String, BootstrapPlanSsh>,
+    bootstrap_scripts: BTreeMap<String, PathBuf>,
     steward_vms: BTreeSet<String>,
     broker_port: Option<u16>,
     last_error: Option<String>,
@@ -716,6 +717,7 @@ impl Default for UpState {
             lifecycle: UpLifecycle::Idle,
             vm_fleet: VmFleetState::default(),
             ssh_plans: BTreeMap::new(),
+            bootstrap_scripts: BTreeMap::new(),
             steward_vms: BTreeSet::new(),
             broker_port: None,
             last_error: None,
@@ -739,6 +741,7 @@ impl UpState {
         };
         self.vm_fleet.reset();
         self.ssh_plans.clear();
+        self.bootstrap_scripts.clear();
         self.steward_vms.clear();
         self.broker_port = None;
         self.last_error = None;
@@ -819,6 +822,22 @@ impl UpState {
         self.ssh_plans
             .iter()
             .map(|(vm, plan)| (vm.clone(), plan.clone()))
+            .collect()
+    }
+
+    pub fn record_bootstrap_script(&mut self, vm: &str, script_path: &PathBuf) {
+        self.bootstrap_scripts
+            .insert(vm.to_string(), script_path.clone());
+    }
+
+    pub fn clear_bootstrap_script(&mut self, vm: &str) {
+        self.bootstrap_scripts.remove(vm);
+    }
+
+    pub fn bootstrap_script_snapshot(&self) -> Vec<(String, PathBuf)> {
+        self.bootstrap_scripts
+            .iter()
+            .map(|(vm, path)| (vm.clone(), path.clone()))
             .collect()
     }
 
@@ -1199,6 +1218,10 @@ impl AppState {
         self.up.ssh_plan_snapshot()
     }
 
+    pub fn vizier_bootstrap_scripts(&self) -> Vec<(String, PathBuf)> {
+        self.up.bootstrap_script_snapshot()
+    }
+
     pub fn vizier_thread_id(&self) -> Option<String> {
         self.vizier_thread_id.clone()
     }
@@ -1489,12 +1512,18 @@ impl AppState {
                 action,
                 reason,
                 ssh,
+                script_path,
                 ..
             } => {
                 let attention = if action.is_error() { Error } else { Progress };
                 let detail = format!("Plan {} ({reason})", action.describe());
                 if let Some(ssh) = ssh {
                     self.up.record_ssh_plan(vm, ssh);
+                }
+                if let Some(script_path) = script_path {
+                    self.up.record_bootstrap_script(vm, script_path);
+                } else {
+                    self.up.clear_bootstrap_script(vm);
                 }
                 self.up.note_steward_vm(vm);
                 self.up

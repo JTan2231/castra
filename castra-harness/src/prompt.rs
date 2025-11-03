@@ -90,6 +90,7 @@ impl VmEndpoint {
 #[derive(Default)]
 pub struct PromptBuilder {
     endpoints: Vec<VmEndpoint>,
+    bootstrap_scripts: Vec<(String, String)>,
 }
 
 impl PromptBuilder {
@@ -108,6 +109,14 @@ impl PromptBuilder {
         self
     }
 
+    /// Attach resolved bootstrap scripts so the vizier can inspect payloads.
+    pub fn with_bootstrap_scripts(mut self, scripts: Vec<(String, String)>) -> Self {
+        self.bootstrap_scripts = scripts;
+        self.bootstrap_scripts
+            .sort_by(|a, b| a.0.cmp(&b.0));
+        self
+    }
+
     /// Render the final prompt string.
     pub fn build(&self) -> String {
         let mut output = String::from(BASE_PROMPT);
@@ -119,34 +128,53 @@ impl PromptBuilder {
 
         if self.endpoints.is_empty() {
             output.push_str("- No active VMs reported\n");
-            return output;
+        } else {
+            for endpoint in &self.endpoints {
+                let mut line = String::new();
+                write!(
+                    &mut line,
+                    "- {}: ssh {}@{} -p {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+                    endpoint.name, endpoint.user, endpoint.host, endpoint.port
+                )
+                .expect("writing to string should not fail");
+
+                if let Some(auth_hint) = endpoint.auth_hint.as_ref() {
+                    write!(&mut line, " [{}]", auth_hint)
+                        .expect("writing to string should not fail");
+                }
+
+                if let Some(status) = endpoint.status.as_ref() {
+                    write!(&mut line, "; status={}", status)
+                        .expect("writing to string should not fail");
+                }
+
+                if let Some(script) = endpoint.wrapper_script.as_ref() {
+                    write!(&mut line, "; script={}", script)
+                        .expect("writing to string should not fail");
+                }
+
+                line.push('\n');
+                output.push_str(&line);
+            }
         }
 
-        for endpoint in &self.endpoints {
-            let mut line = String::new();
-            write!(
-                &mut line,
-                "- {}: ssh {}@{} -p {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-                endpoint.name, endpoint.user, endpoint.host, endpoint.port
-            )
-            .expect("writing to string should not fail");
-
-            if let Some(auth_hint) = endpoint.auth_hint.as_ref() {
-                write!(&mut line, " [{}]", auth_hint).expect("writing to string should not fail");
+        if !self.bootstrap_scripts.is_empty() {
+            output.push('\n');
+            output.push_str("# Bootstrap Scripts\n");
+            for (index, (vm, script)) in self.bootstrap_scripts.iter().enumerate() {
+                output.push_str("## ");
+                output.push_str(vm);
+                output.push('\n');
+                output.push_str("```sh\n");
+                output.push_str(script);
+                if !script.ends_with('\n') {
+                    output.push('\n');
+                }
+                output.push_str("```\n");
+                if index + 1 < self.bootstrap_scripts.len() {
+                    output.push('\n');
+                }
             }
-
-            if let Some(status) = endpoint.status.as_ref() {
-                write!(&mut line, "; status={}", status)
-                    .expect("writing to string should not fail");
-            }
-
-            if let Some(script) = endpoint.wrapper_script.as_ref() {
-                write!(&mut line, "; script={}", script)
-                    .expect("writing to string should not fail");
-            }
-
-            line.push('\n');
-            output.push_str(&line);
         }
 
         output
@@ -209,5 +237,36 @@ mod tests {
         assert!(!lines[2].contains("[")); // No auth hint
         assert!(!lines[2].contains("; status="));
         assert!(lines[2].contains("; script=/tmp/vizier/vm-gamma.sh"));
+    }
+
+    #[test]
+    fn renders_bootstrap_scripts_section_sorted_by_vm() {
+        let scripts = vec![
+            ("vm-beta".to_string(), "echo beta".to_string()),
+            ("vm-alpha".to_string(), "echo alpha\nline2".to_string()),
+        ];
+
+        let prompt = PromptBuilder::new()
+            .with_operational_context(Vec::<VmEndpoint>::new())
+            .with_bootstrap_scripts(scripts)
+            .build();
+
+        let section_start = prompt
+            .find("# Bootstrap Scripts\n")
+            .expect("bootstrap scripts section present");
+        let section = &prompt[section_start..];
+
+        let alpha_index = section.find("## vm-alpha").expect("vm-alpha present");
+        let beta_index = section.find("## vm-beta").expect("vm-beta present");
+        assert!(alpha_index < beta_index, "scripts sorted by vm name");
+
+        assert!(
+            section.contains("## vm-alpha\n```sh\necho alpha\nline2\n```"),
+            "vm-alpha script rendered with newline preserved"
+        );
+        assert!(
+            section.contains("## vm-beta\n```sh\necho beta\n```"),
+            "vm-beta script rendered and terminates newline"
+        );
     }
 }
