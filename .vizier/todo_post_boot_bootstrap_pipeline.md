@@ -40,4 +40,12 @@ Pointers
 
 Notes (safety/correctness)
 - Stamp writes are atomic and only on Success; concurrent per‑VM runs do not race stamp writes; a single durable failed‑run log is kept on BootstrapFailed.
+---Add: In-VM Vizier launch as part of bootstrap
+
+- On successful bootstrap, the VM must have a long-lived Vizier process running and ready to accept stdin/stdout control over SSH.
+- Health check step verifies the Vizier handshake responds within 2s and reports its version.
+- Failure to start/handshake surfaces a remediation hint and durable log path; stamp is not written on failure.
+- `--plan` output annotates whether Vizier is expected to (Re)start or is already healthy (NoOp).
+
 ---
+

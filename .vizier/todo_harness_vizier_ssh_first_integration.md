@@ -52,3 +52,29 @@ Snapshot v0.10.0-pre update
 
 ---
 
+Pivot note — In-VM Vizier residency
+
+Decision: Orchestrating Vizier will reside inside each VM. Harness no longer issues ad-hoc remote commands; instead it maintains a durable SSH stdin/stdout/stderr tunnel to the in-VM Vizier process.
+
+Reframed desired behavior (product-level):
+- Upon Up, the harness establishes one SSH session per VM that attaches to the VM-resident Vizier. The event stream is now vizier.remote.* representing messages to/from the in-VM Vizier, plus VM lifecycle.
+- User input is forwarded as vizier.remote.input frames over this tunnel; VM Vizier responses are emitted as vizier.remote.output/system/status.
+- No broker/bus. SSH is transport only; orchestration logic executes in-VM.
+
+Acceptance adjustments:
+- Stream preamble includes protocol version and vm_vizier_version. First-frame handshake verifies compatibility; on mismatch, surface remediation_hint.
+- Reconnect semantics: if SSH drops, harness attempts backoff reconnect to the in-VM Vizier and reports vizier.remote.reconnect_attempt/established.
+- Latency: round-trip (input → output echo) under 150ms on localhost lab for single VM.
+
+Anchors (unchanged + new):
+- Harness: castra-harness/src/{session.rs, runner.rs, stream.rs, events.rs, translator.rs} remains the stream origin.
+- In-VM Vizier entrypoint (pointer-level): align with castra-core bootstrap surfaces to start the Vizier process as a long-lived service.
+
+Compatibility:
+- UI pump_vizier continues to consume the unified stream; only event family names and preamble fields change. Provide a translation shim during migration if necessary.
+
+Verification additions:
+- Golden tests updated to cover vizier.remote handshake, input forwarding, output streaming, and reconnect.
+
+---
+

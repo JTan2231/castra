@@ -1,67 +1,46 @@
-SNAPSHOT v0.10.0-pre — Castra (Agent-centric orchestration) — Busless vizier pivot
+SNAPSHOT v0.10.0-pre — Castra (Agent-centric orchestration) — In-VM Vizier residency pivot
 
 Edits since previous snapshot
-- Clarified remote runner expectations: vm_commands.sh is the canonical harness driver during the busless pivot. Use send/interrupt/list + stdout/stderr fetches as the acceptance harness for stream/golden tests.
-- No new code landed since last snapshot; threads updated with crisper acceptance criteria tied to the remote runner and UI event shaping.
+- Architectural decision: Orchestrating Vizier will run inside each VM. Host-side harness maintains durable SSH tunnels to each VM-resident Vizier for stdin/stdout control. Bus remains deprecated; SSH is transport only.
+- Thread 20 (Harness ↔ Core integration) reframed to vizier.remote.* event family with versioned handshake and reconnect semantics; preamble now includes vm_vizier_version.
+- Thread 12 (Post-boot bootstrap): augmented to include launching and health-checking an in-VM Vizier process as an idempotent bootstrap step; `--plan` reflects Vizier status.
+- New TODO opened to define In-VM Vizier service bootstrap and SSH tunnel control with acceptance (handshake ≤2s, echo latency ≤150ms, reconnect semantics, no zombie processes).
 
 Active threads (intent + acceptance deltas)
-- Thread 2 — Cooperative shutdown lifecycle: unchanged.
+- Thread 12 — Post-boot bootstrap pipeline: updated
+  - Evidence: Need a long-lived Vizier in-VM to terminate fragile host-driven orchestration via ad-hoc SSH.
+  - Acceptance (added): After bootstrap, in-VM Vizier is running; handshake verifiable; `--plan` shows Start/Restart/Healthy; failures provide hints and durable logs.
 
-- Thread 12 — Post-boot bootstrap pipeline: unchanged.
+- Thread 20 — Harness ↔ In-VM Vizier integration: updated
+  - Evidence: UI currently hosts SshManager; harness must own SSH tunnel to VM Vizier and emit vizier.remote.* stream with preamble (protocol + vm_vizier_version).
+  - Acceptance (updated):
+    - Harness establishes per-VM SSH sessions to in-VM Vizier; emits connected/handshake events.
+    - User input forwarded as vizier.remote.input; outputs surfaced as vizier.remote.output/system/status.
+    - Reconnect/backoff with clear events; golden tests verify framing, handshake, echo latency bounds, and reconnect.
 
-- Thread 13 — Stateless runs (ephemeral-only): unchanged.
+- Thread 21 — Operational clarity (Attention model): unchanged (will consume vizier.remote.* without UI-side SSH).
 
-- Thread 20 — Harness ↔ Core integration (Vizier-first): acceptance tightened
-  - Evidence: UI pumps HarnessEvent (pump_codex/pump_vizier) and renders Vizier command/system outputs; transcripts capture these.
-  - Gap: unified agent-addressed stream still originates UI-side for SSH; harness-side vizier.ssh.* stream + version preamble and golden tests remain outstanding.
-  - Acceptance (near-term):
-    - Harness emits a single, versioned vizier SSH event stream with preamble on connect.
-    - Stream is consumable and verifiable via vm_commands.sh remote runner (send → capture stdout → assert preamble + framing invariants).
-    - Golden test fixtures checked in alongside harness tests.
+- Thread 30 — Busless architecture cutover (Core): unchanged (still removing broker/bus artifacts).
 
-- Thread 21 — Operational clarity (Attention model): partial delivery; grouping next
-  - Evidence: Collapsible messages, scroll behavior, and log soft limit reduce noise and protect responsiveness.
-  - Gap: Event grouping/coalescing and per-agent context panes not yet shipped.
-  - Acceptance (next increment):
-    - Message log groups sequential tool/reasoning bursts; offers one-click expand-all within group.
-    - Footer shows per-agent token tallies; click opens agent context pane.
-
-- Thread 22 — UI onboarding docs (tutorial set): unchanged.
-
-- Thread 30 — Busless architecture cutover (Core): pruning staged
-  - Evidence: broker/bus types remain in core options; bus scripts still present.
-  - Acceptance (initial cut):
-    - Remove broker handshake/contract artifacts from core schema/options without breaking current CLI UX.
-    - Deprecation notice in docs with migration hints.
-
-- Thread 31 — Agent-first interaction model: in progress (consumers); roster pivot next
-  - Evidence: UI distinguishes Vizier activity and tallies usage; foundation for agent-addressed flow.
-  - Gap: Roster still VM-centric; CLI/core still expose VM-selection surfaces.
-  - Acceptance (UI slice):
-    - Roster sidebar lists agents instead of VMs; clicking filters transcript to that agent.
+- Thread 31 — Agent-first interaction model: unchanged (roster pivot remains; addresses now agents, streams carry agent id sourced via VM Vizier where applicable).
 
 Current code state (observable surfaces)
-- Core: options.rs still contains broker/bus-related types and VM-oriented options; broker/bus modules/tests/scripts exist.
-- Harness: Unified, agent-addressed stream not yet implemented; SSH integration remains UI-side. No change in harness code structure.
-- UI:
-  - message_log: collapsible Reasoning/Tool messages; click-to-expand; truncation notice; improved scroll handling.
-  - state: new MessageKind::VizierCommand; token usage tracking; transcript writer integration.
-  - shell/prompt: Stop control during active Codex turn; wider default window.
-  - vm_fleet.rs remains VM-centric; agent roster not yet present.
-- Tooling: vm_commands.sh supports `send`, `interrupt`, `list`, `--wait` streaming, and `view-output` to stream and later fetch outputs; serves as acceptance harness for stream verification.
-- Docs: README documents transcript recording location and schema summary.
+- Core: broker/bus artifacts still present; bootstrap surfaces exist but do not yet start an in-VM Vizier.
+- Harness: unified stream exists only as intent; SSH management lives UI-side today; no vizier.remote.* events yet.
+- UI: consumes HarnessEvent; has an SshManager implementation that will be retired once harness emits vizier.remote.*. VM-centric roster remains.
+- Tooling: vm_commands.sh continues as remote runner to validate stream behavior and latency; will be used for golden tests.
 
 Narrative themes
-- Busless, agent-first pivot remains the north star. We are consolidating around a verifiable event stream with golden tests, while reducing UI noise and preparing the roster pivot.
+- Move orchestration into the VMs to reduce coupling and flakiness; the host harness becomes a thin transport/stream origin. Keep contracts stable for UI and tests.
 
 Direction of travel
-- Next increments: implement harness-side vizier SSH stream with versioned preamble and golden tests (Thread 20); pivot UI roster to agents and add grouping (Threads 31, 21); begin pruning bus-era scripts and options with clear deprecation notes (Thread 30).
+- Implement in-VM Vizier bootstrap + health check (Thread 12) and harness-side SSH tunnels with versioned handshake and vizier.remote.* events plus golden tests (Thread 20). Begin UI simplification by removing UI-side SSH once harness stream lands.
 
 Cross-links
-- Thread 20: castra-harness/src/{session.rs,runner.rs,stream.rs,events.rs,translator.rs}; UI consumer in castra-ui/src/app/mod.rs (pump_codex/pump_vizier). Tooling anchor: vm_commands.sh.
-- Thread 21: castra-ui/src/components/{message_log.rs,shell.rs}; castra-ui/src/state/mod.rs.
+- Thread 12: castra-core/src/core/bootstrap.rs; app/up.rs; docs/BOOTSTRAP.md.
+- Thread 20: castra-harness/src/{session.rs,runner.rs,stream.rs,events.rs,translator.rs}; UI consumer pump_vizier; prior art in castra-ui/src/ssh/mod.rs.
 - Thread 30: castra-core/src/core/options.rs; scripts/* bus-era artifacts.
-- Thread 31: castra-ui/src/components/roster_sidebar.rs and vm_fleet.rs (to be replaced/pivoted).
+- Thread 31: castra-ui/src/components/{roster_sidebar.rs, vm_fleet.rs}.
 
 Editorial housekeeping
-- Canonical TODOs updated with acceptance criteria tied to remote runner harness, grouping, and roster pivot; no new threads opened.
+- Acceptance thresholds include concrete timing bounds (handshake ≤2s, echo latency ≤150ms) under localhost lab; keep implementation choices open. Golden tests to assert framing and reconnect behavior using vm_commands.sh.
