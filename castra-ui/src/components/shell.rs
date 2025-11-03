@@ -10,13 +10,15 @@ use super::{
     prompt_shell::prompt_container,
     roster_sidebar::{agent_row, sidebar_container},
     status_footer::status_footer,
-    vm_fleet::{vm_column_container, vm_columns},
+    vm_fleet::vm_column_container,
 };
 
 pub fn render<B>(
     state: &AppState,
     prompt: &Entity<PromptInput>,
     roster_rows: Option<Vec<gpui::Div>>,
+    fleet_title: &str,
+    fleet_columns: (Vec<gpui::Div>, Vec<gpui::Div>),
     toasts: &[String],
     stop_handler: Option<B>,
     message_toggle_handlers: Arc<Vec<Option<MessageToggleHandler>>>,
@@ -26,7 +28,7 @@ where
 {
     let operation_status = state.up_status_line();
     let focused_label = state.focused_vm_label();
-    let (vm_left_cards, vm_right_cards) = vm_columns(state.vm_fleet());
+    let (vm_left_cards, vm_right_cards) = fleet_columns;
     let token_summaries = state.token_usage_summaries();
 
     let log_container = div()
@@ -47,19 +49,19 @@ where
 
     central_shell = central_shell.child(log_container);
 
-    let mut upper_shell = div().flex().flex_grow().min_h(px(0.)).bg(rgb(0x050505));
+    let left_column = vm_column_container(fleet_title, vm_left_cards);
 
-    if !vm_left_cards.is_empty() {
-        let left_column = vm_column_container(vm_left_cards);
-        upper_shell = upper_shell
-            .child(left_column)
-            .child(div().w(px(1.)).bg(rgb(0x1e1e1e)));
-    }
-
-    upper_shell = upper_shell.child(central_shell);
+    let mut upper_shell = div()
+        .flex()
+        .flex_grow()
+        .min_h(px(0.))
+        .bg(rgb(0x050505))
+        .child(left_column)
+        .child(div().w(px(1.)).bg(rgb(0x1e1e1e)))
+        .child(central_shell);
 
     if !vm_right_cards.is_empty() {
-        let right_column = vm_column_container(vm_right_cards);
+        let right_column = vm_column_container("VM FLEET", vm_right_cards);
         upper_shell = upper_shell
             .child(div().w(px(1.)).bg(rgb(0x1e1e1e)))
             .child(right_column);

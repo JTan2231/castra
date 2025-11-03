@@ -1028,7 +1028,6 @@ fn wait_for_handshake(
 
     loop {
         if let Some(timestamp) = read_handshake_timestamp(&handshake_path)? {
-            println!("TIMESTAMP: {:?}", timestamp);
             let now = SystemTime::now();
             if now
                 .duration_since(timestamp)

@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -19,7 +19,10 @@ use castra_harness::{
 use chrono::{DateTime, Local};
 use gpui::{ListAlignment, ListOffset, ListState, Pixels, SharedString, px};
 
-use crate::transcript::TranscriptWriter;
+use crate::{
+    config_catalog::{self, ConfigEntry},
+    transcript::TranscriptWriter,
+};
 
 const VIZIER_AGENT_ID: &str = "vizier";
 const COLLAPSED_PREVIEW_MAX_CHARS: usize = 80;
@@ -118,6 +121,314 @@ impl MessageKind {
             MessageKind::User => "user",
             MessageKind::Agent => "agent",
             MessageKind::Other => "other",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ConfigEntryState {
+    entry: ConfigEntry,
+    last_failure: Option<String>,
+}
+
+impl ConfigEntryState {
+    fn matches_path(&self, other: &PathBuf) -> bool {
+        &self.entry.path == other
+    }
+
+    fn display_name(&self) -> String {
+        self.entry.display_name.clone()
+    }
+
+    fn summary(&self) -> Option<String> {
+        self.entry.summary()
+    }
+
+    fn discovery_error(&self) -> Option<String> {
+        self.entry.error.clone()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigSource {
+    Catalog,
+    Quickstart,
+}
+
+#[derive(Clone, Debug)]
+pub struct CatalogEntryView {
+    pub index: usize,
+    pub display_name: String,
+    pub summary: Option<String>,
+    pub discovery_error: Option<String>,
+    pub last_failure: Option<String>,
+    pub is_selected: bool,
+    pub is_disabled: bool,
+    pub source: ConfigSource,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigCatalogView {
+    pub entries: Vec<CatalogEntryView>,
+    pub hint: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConfigSelection {
+    pub path: PathBuf,
+    pub display_name: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Default)]
+pub struct ConfigCatalogState {
+    entries: Vec<ConfigEntryState>,
+    selected_path: Option<PathBuf>,
+    quickstart_path: Option<PathBuf>,
+    quickstart_entry: Option<ConfigEntryState>,
+    quickstart_failure: Option<String>,
+    catalog_root: Option<PathBuf>,
+    last_error: Option<String>,
+    launching: bool,
+}
+
+impl ConfigCatalogState {
+    pub fn new(quickstart_path: Option<PathBuf>) -> Self {
+        let mut state = Self {
+            entries: Vec::new(),
+            selected_path: None,
+            quickstart_path,
+            quickstart_entry: None,
+            quickstart_failure: None,
+            catalog_root: None,
+            last_error: None,
+            launching: false,
+        };
+        state.refresh_quickstart_entry();
+        state
+    }
+
+    pub fn refresh(&mut self) -> Result<(), String> {
+        match config_catalog::discover() {
+            Ok(discovery) => {
+                self.catalog_root = Some(discovery.root);
+                let mut failures: HashMap<PathBuf, Option<String>> = self
+                    .entries
+                    .iter()
+                    .map(|state| (state.entry.path.clone(), state.last_failure.clone()))
+                    .collect();
+                self.entries = discovery
+                    .entries
+                    .into_iter()
+                    .map(|entry| ConfigEntryState {
+                        last_failure: failures.remove(&entry.path).and_then(|value| value),
+                        entry,
+                    })
+                    .collect();
+                self.last_error = None;
+            }
+            Err(err) => {
+                self.last_error = Some(err.clone());
+                return Err(err);
+            }
+        }
+        self.refresh_quickstart_entry();
+        self.sync_selection();
+        Ok(())
+    }
+
+    pub fn set_launching(&mut self, launching: bool) {
+        self.launching = launching;
+    }
+
+    pub fn select(&mut self, index: usize) -> Result<ConfigSelection, String> {
+        if self.launching {
+            return Err("Launch already in progress; wait for completion.".to_string());
+        }
+
+        if self.entries.is_empty() {
+            if index != 0 {
+                return Err("Invalid catalog selection.".to_string());
+            }
+            let selection = self.quickstart_selection()?;
+            self.selected_path = Some(selection.path.clone());
+            Ok(selection)
+        } else {
+            let state = self
+                .entries
+                .get(index)
+                .ok_or_else(|| "Invalid catalog selection.".to_string())?;
+            self.selected_path = Some(state.entry.path.clone());
+            Ok(ConfigSelection {
+                path: state.entry.path.clone(),
+                display_name: state.display_name(),
+                summary: state.summary(),
+            })
+        }
+    }
+
+    pub fn active_selection(&self) -> Result<ConfigSelection, String> {
+        if let Some(path) = self.selected_path.as_ref() {
+            if let Some(selection) = self.selection_for_path(path) {
+                return Ok(selection);
+            }
+        }
+
+        self.quickstart_selection()
+    }
+
+    pub fn view(&self) -> ConfigCatalogView {
+        let mut entries = Vec::new();
+        if self.entries.is_empty() {
+            if let Some(entry) = self.quickstart_entry.as_ref() {
+                let is_selected = self
+                    .selected_path
+                    .as_ref()
+                    .map(|path| entry.matches_path(path))
+                    .unwrap_or(true);
+                entries.push(CatalogEntryView {
+                    index: 0,
+                    display_name: entry.display_name(),
+                    summary: entry.summary(),
+                    discovery_error: entry.discovery_error(),
+                    last_failure: self.quickstart_failure.clone(),
+                    is_selected,
+                    is_disabled: self.launching,
+                    source: ConfigSource::Quickstart,
+                });
+            }
+        } else {
+            for (index, entry) in self.entries.iter().enumerate() {
+                let is_selected = self
+                    .selected_path
+                    .as_ref()
+                    .map(|path| entry.matches_path(path))
+                    .unwrap_or(false);
+                entries.push(CatalogEntryView {
+                    index,
+                    display_name: entry.display_name(),
+                    summary: entry.summary(),
+                    discovery_error: entry.discovery_error(),
+                    last_failure: entry.last_failure.clone(),
+                    is_selected,
+                    is_disabled: self.launching,
+                    source: ConfigSource::Catalog,
+                });
+            }
+        }
+
+        let hint = if entries.is_empty() {
+            self.catalog_root
+                .as_ref()
+                .map(|root| format!("Drop castra.toml files into {}.", root.display()))
+        } else {
+            None
+        };
+
+        ConfigCatalogView {
+            entries,
+            hint,
+            last_error: self.last_error.clone(),
+        }
+    }
+
+    pub fn note_launch_failure(&mut self, path: &PathBuf, message: String) {
+        if self
+            .quickstart_path
+            .as_ref()
+            .map(|root| root == path)
+            .unwrap_or(false)
+        {
+            self.quickstart_failure = Some(message.clone());
+            if let Some(entry) = self.quickstart_entry.as_mut() {
+                entry.last_failure = Some(message);
+            }
+            return;
+        }
+
+        for entry in &mut self.entries {
+            if entry.matches_path(path) {
+                entry.last_failure = Some(message.clone());
+                break;
+            }
+        }
+    }
+
+    pub fn clear_launch_failure(&mut self, path: &PathBuf) {
+        if self
+            .quickstart_path
+            .as_ref()
+            .map(|root| root == path)
+            .unwrap_or(false)
+        {
+            self.quickstart_failure = None;
+            if let Some(entry) = self.quickstart_entry.as_mut() {
+                entry.last_failure = None;
+            }
+            return;
+        }
+
+        for entry in &mut self.entries {
+            if entry.matches_path(path) {
+                entry.last_failure = None;
+                break;
+            }
+        }
+    }
+
+    fn selection_for_path(&self, path: &PathBuf) -> Option<ConfigSelection> {
+        if self
+            .quickstart_path
+            .as_ref()
+            .map(|root| root == path)
+            .unwrap_or(false)
+        {
+            return self.quickstart_selection().ok();
+        }
+
+        self.entries
+            .iter()
+            .find(|entry| entry.matches_path(path))
+            .map(|entry| ConfigSelection {
+                path: entry.entry.path.clone(),
+                display_name: entry.display_name(),
+                summary: entry.summary(),
+            })
+    }
+
+    fn quickstart_selection(&self) -> Result<ConfigSelection, String> {
+        let path = self
+            .quickstart_path
+            .as_ref()
+            .ok_or_else(|| "Quickstart config unavailable.".to_string())?
+            .clone();
+
+        let (display_name, summary) = if let Some(entry) = self.quickstart_entry.as_ref() {
+            (entry.display_name(), entry.summary())
+        } else {
+            ("bootstrap-quickstart".to_string(), None)
+        };
+
+        Ok(ConfigSelection {
+            path,
+            display_name,
+            summary,
+        })
+    }
+
+    fn refresh_quickstart_entry(&mut self) {
+        self.quickstart_entry = self.quickstart_path.as_ref().map(|path| ConfigEntryState {
+            entry: config_catalog::load_entry(path),
+            last_failure: self.quickstart_failure.clone(),
+        });
+    }
+
+    fn sync_selection(&mut self) {
+        if let Some(selected) = self.selected_path.clone() {
+            if self.selection_for_path(&selected).is_none() {
+                self.selected_path = None;
+            }
         }
     }
 }
@@ -732,6 +1043,10 @@ impl UpState {
         matches!(self.lifecycle, UpLifecycle::Running { .. })
     }
 
+    pub fn lifecycle(&self) -> UpLifecycle {
+        self.lifecycle.clone()
+    }
+
     pub fn start(&mut self) -> bool {
         if self.is_running() {
             return false;
@@ -1035,6 +1350,7 @@ pub struct AppState {
     roster: RosterState,
     up: UpState,
     ui: UiState,
+    config_catalog: ConfigCatalogState,
     vizier_thread_id: Option<String>,
     vizier_activity_status: Option<String>,
     codex_thread_id: Option<String>,
@@ -1049,15 +1365,19 @@ pub struct AppState {
 impl AppState {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Self::with_transcript(None)
+        Self::with_transcript(None, None)
     }
 
-    pub fn with_transcript(transcript_writer: Option<Arc<TranscriptWriter>>) -> Self {
+    pub fn with_transcript(
+        transcript_writer: Option<Arc<TranscriptWriter>>,
+        quickstart_path: Option<PathBuf>,
+    ) -> Self {
         let mut state = Self {
             chat: ChatState::default(),
             roster: RosterState::default(),
             up: UpState::default(),
             ui: UiState::default(),
+            config_catalog: ConfigCatalogState::new(quickstart_path),
             vizier_thread_id: None,
             vizier_activity_status: None,
             codex_thread_id: None,
@@ -1069,7 +1389,9 @@ impl AppState {
             codex_turn_active: false,
         };
         state.push_system_message("Welcome to Castra. Type /help to discover commands.");
-        state.push_system_message("Run /up to launch the bootstrap-quickstart workspace.");
+        state.push_system_message(
+            "Pick a catalog entry or run /up to launch the bootstrap-quickstart workspace.",
+        );
         state
     }
 
@@ -1087,6 +1409,10 @@ impl AppState {
 
     pub fn vm_fleet(&self) -> &VmFleetState {
         self.up.vm_fleet()
+    }
+
+    pub fn up_lifecycle(&self) -> UpLifecycle {
+        self.up.lifecycle()
     }
 
     pub fn focused_vm_name(&self) -> Option<String> {
@@ -1139,6 +1465,30 @@ impl AppState {
             .iter()
             .find(|vm| vm.name().eq_ignore_ascii_case(needle))
             .map(|vm| vm.name().to_string())
+    }
+
+    pub fn refresh_config_catalog(&mut self) -> Result<(), String> {
+        self.config_catalog.refresh()
+    }
+
+    pub fn catalog_view(&self) -> ConfigCatalogView {
+        self.config_catalog.view()
+    }
+
+    pub fn select_catalog_entry(&mut self, index: usize) -> Result<ConfigSelection, String> {
+        self.config_catalog.select(index)
+    }
+
+    pub fn active_config_selection(&self) -> Result<ConfigSelection, String> {
+        self.config_catalog.active_selection()
+    }
+
+    pub fn catalog_note_launch_failure(&mut self, path: &PathBuf, message: String) {
+        self.config_catalog.note_launch_failure(path, message);
+    }
+
+    pub fn catalog_clear_launch_failure(&mut self, path: &PathBuf) {
+        self.config_catalog.clear_launch_failure(path);
     }
 
     pub fn push_toast<T: Into<String>>(&mut self, message: T) {
@@ -1436,6 +1786,7 @@ impl AppState {
         if !self.up.start() {
             return Err("An /up operation is already in progress.");
         }
+        self.config_catalog.set_launching(true);
         let vizier_index = self.ensure_vizier_agent();
         if self.roster.active_index() != vizier_index {
             let _ = self.roster.switch_to(vizier_index);
@@ -1447,11 +1798,20 @@ impl AppState {
 
     pub fn complete_up_success(&mut self) {
         self.up.mark_success();
+        self.config_catalog.set_launching(false);
+        if let Some(path) = self.config_path.clone() {
+            self.catalog_clear_launch_failure(&path);
+        }
         self.set_vizier_activity_status("ONLINE");
     }
 
     pub fn complete_up_failure<T: Into<String>>(&mut self, reason: T) {
-        self.up.mark_failure(reason.into());
+        let reason_string = reason.into();
+        self.up.mark_failure(reason_string.clone());
+        self.config_catalog.set_launching(false);
+        if let Some(path) = self.config_path.clone() {
+            self.catalog_note_launch_failure(&path, reason_string.clone());
+        }
         self.set_vizier_activity_status("ERROR");
     }
 
@@ -1471,6 +1831,7 @@ impl AppState {
     pub fn mark_shutdown_complete(&mut self) {
         self.up.mark_shutdown_complete();
         self.clear_vizier_activity_status();
+        self.config_catalog.set_launching(false);
     }
 
     pub fn shutdown_in_progress(&self) -> bool {
@@ -1729,6 +2090,31 @@ fn render_todo_list(items: &[TodoEntry]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set_path(key: &'static str, value: &Path) -> Self {
+            let original = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(ref value) = self.original {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn user_entries_route_through_vizier() {
@@ -1772,5 +2158,53 @@ mod tests {
             .find(|agent| agent.id() == VIZIER_AGENT_ID)
             .expect("vizier agent should exist");
         assert_eq!(vizier.status(), "ONLINE");
+    }
+
+    #[test]
+    fn catalog_selection_survives_refresh() {
+        let temp_home = TempDir::new().expect("temp dir should exist");
+        let _home_guard = EnvVarGuard::set_path("HOME", temp_home.path());
+
+        let config_dir = temp_home.path().join(".castra").join("configs");
+        std::fs::create_dir_all(&config_dir).expect("catalog dir should be created");
+        let config_path = config_dir.join("sample.toml");
+        std::fs::write(
+            &config_path,
+            r#"version = "0.2.0"
+
+[project]
+name = "sample"
+
+[[vms]]
+name = "alpine"
+base_image = "alpine.qcow2"
+cpus = 1
+memory = "1 GiB"
+"#,
+        )
+        .expect("config write should succeed");
+
+        let mut state = AppState::with_transcript(None, None);
+        state
+            .refresh_config_catalog()
+            .expect("catalog refresh should succeed");
+
+        let selection = state
+            .select_catalog_entry(0)
+            .expect("selection should succeed");
+        assert_eq!(selection.display_name, "sample");
+
+        state
+            .refresh_config_catalog()
+            .expect("second refresh should succeed");
+
+        let view = state.catalog_view();
+        assert!(
+            view.entries
+                .first()
+                .map(|entry| entry.is_selected)
+                .unwrap_or(false),
+            "selection should persist after refresh"
+        );
     }
 }

@@ -19,7 +19,7 @@ pub const DEFAULT_BROKER_PORT: u16 = 7070;
 pub const DEFAULT_GRACEFUL_SHUTDOWN_WAIT_SECS: u64 = 20;
 pub const DEFAULT_SIGTERM_WAIT_SECS: u64 = 10;
 pub const DEFAULT_SIGKILL_WAIT_SECS: u64 = 5;
-pub const DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS: u64 = 60;
+pub const DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS: u64 = 120;
 
 #[derive(Debug, Clone)]
 pub struct BaseImageSource {

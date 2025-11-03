@@ -112,8 +112,7 @@ impl PromptBuilder {
     /// Attach resolved bootstrap scripts so the vizier can inspect payloads.
     pub fn with_bootstrap_scripts(mut self, scripts: Vec<(String, String)>) -> Self {
         self.bootstrap_scripts = scripts;
-        self.bootstrap_scripts
-            .sort_by(|a, b| a.0.cmp(&b.0));
+        self.bootstrap_scripts.sort_by(|a, b| a.0.cmp(&b.0));
         self
     }
 

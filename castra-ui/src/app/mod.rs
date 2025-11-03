@@ -12,11 +12,12 @@ use crate::{
     components::{
         message_log::MessageToggleHandler,
         shell::{render as render_shell, roster_rows},
+        vm_fleet::{catalog_cards, vm_columns},
     },
     controller::command,
     input::prompt::{PromptEvent, PromptInput},
     ssh::{HANDSHAKE_BANNER, SshEvent, SshManager, SshStream},
-    state::AppState,
+    state::{AppState, ConfigSelection, UpLifecycle},
     transcript::TranscriptWriter,
 };
 use async_channel::{Receiver, Sender, unbounded};
@@ -140,7 +141,11 @@ impl ChatApp {
                 (None, Err(err.to_string()))
             }
         };
-        let mut state = AppState::with_transcript(transcript_writer);
+        let (quickstart_path, quickstart_error) = match default_quickstart_config_path() {
+            Ok(path) => (Some(path), None),
+            Err(message) => (None, Some(message)),
+        };
+        let mut state = AppState::with_transcript(transcript_writer, quickstart_path);
         if let Some(reason) = transcript_warning {
             state.push_system_message(format!(
                 "Transcripts stored in {} (failed to resolve workspace state root: {reason}).",
@@ -155,6 +160,14 @@ impl ChatApp {
                 ));
             }
             Err(reason) => state.push_system_message(format!("Transcripts unavailable: {reason}")),
+        }
+
+        if let Some(message) = quickstart_error {
+            state.push_system_message(format!("Quickstart bundle unavailable: {message}"));
+        }
+
+        if let Err(err) = state.refresh_config_catalog() {
+            state.push_system_message(format!("Failed to load config catalog: {err}"));
         }
         Self {
             state,
@@ -475,7 +488,26 @@ impl ChatApp {
         }
     }
 
+    fn handle_config_click(&mut self, index: usize, cx: &mut Context<Self>) {
+        match self.state.select_catalog_entry(index) {
+            Ok(_) => self.start_up(cx),
+            Err(message) => {
+                self.state.push_system_message(message);
+                cx.notify();
+            }
+        }
+    }
+
     fn start_up(&mut self, cx: &mut Context<Self>) {
+        let selection = match self.state.active_config_selection() {
+            Ok(selection) => selection,
+            Err(message) => {
+                self.state.push_system_message(message);
+                cx.notify();
+                return;
+            }
+        };
+
         if let Err(message) = self.state.begin_up_operation() {
             self.state.push_system_message(message);
             cx.notify();
@@ -484,17 +516,14 @@ impl ChatApp {
 
         self.ssh_manager.reset();
 
-        let config_path = match default_quickstart_config_path() {
-            Ok(path) => path,
-            Err(message) => {
-                self.state.complete_up_failure(&message);
-                self.state.push_system_message(message);
-                cx.notify();
-                return;
-            }
-        };
+        let ConfigSelection {
+            path: config_path,
+            display_name,
+            summary,
+        } = selection;
 
         self.state.set_config_path(config_path.clone());
+        self.state.catalog_clear_launch_failure(&config_path);
         self.shutdown.record_config(config_path.clone());
 
         if let Err(message) = self.preflight_cleanup(&config_path) {
@@ -504,10 +533,15 @@ impl ChatApp {
             return;
         }
 
-        self.state.push_system_message(format!(
-            "Launching quickstart workspace from {}...",
-            config_path.display()
-        ));
+        let mut announcement =
+            format!("Launching {display_name} from {}...", config_path.display());
+        if let Some(detail) = summary {
+            announcement.push(' ');
+            announcement.push('(');
+            announcement.push_str(&detail);
+            announcement.push(')');
+        }
+        self.state.push_system_message(announcement);
         cx.notify();
 
         let async_app = cx.to_async();
@@ -735,6 +769,10 @@ impl ChatApp {
                     self.state
                         .push_system_message("Shutdown complete: nothing was running.");
                 }
+                if let Err(err) = self.state.refresh_config_catalog() {
+                    self.state
+                        .push_system_message(format!("Failed to refresh config catalog: {err}"));
+                }
             }
             Err(error) => {
                 let message = format!("Shutdown encountered an error: {error}");
@@ -940,10 +978,31 @@ impl Render for ChatApp {
             None
         };
 
+        let (fleet_title, fleet_columns) = match self.state.up_lifecycle() {
+            UpLifecycle::Idle | UpLifecycle::Failed { .. } => {
+                let view = self.state.catalog_view();
+                let cards = catalog_cards(&view, |index| {
+                    let handler = cx.listener(
+                        move |chat: &mut ChatApp,
+                              _: &MouseDownEvent,
+                              _window: &mut Window,
+                              cx: &mut Context<ChatApp>| {
+                            chat.handle_config_click(index, cx);
+                        },
+                    );
+                    Some(handler)
+                });
+                ("CONFIG CATALOG", (cards, Vec::new()))
+            }
+            _ => ("VM FLEET", vm_columns(self.state.vm_fleet())),
+        };
+
         render_shell(
             &self.state,
             &self.prompt,
             roster_rows,
+            fleet_title,
+            fleet_columns,
             &toasts,
             stop_handler,
             toggle_handlers,
@@ -1143,12 +1202,17 @@ fn operational_context_section(prompt: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use castra::core::options::ConfigSource;
     use std::path::PathBuf;
 
     #[test]
     fn build_up_options_configures_attached_launch_mode() {
         let path = PathBuf::from("castra.toml");
         let options = build_up_options(&path);
+        match &options.config.source {
+            ConfigSource::Explicit(explicit) => assert_eq!(explicit, &path),
+            other => panic!("expected explicit config path, got {other:?}"),
+        }
         assert_eq!(options.launch_mode, VmLaunchMode::Attached);
     }
 }

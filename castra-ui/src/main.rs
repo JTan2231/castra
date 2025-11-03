@@ -1,6 +1,7 @@
 mod app;
 mod codex;
 mod components;
+mod config_catalog;
 mod controller;
 mod input;
 mod ssh;
