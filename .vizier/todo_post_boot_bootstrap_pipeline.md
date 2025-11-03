@@ -49,3 +49,13 @@ Notes (safety/correctness)
 
 ---
 
+Augment: In-VM Vizier health and plan annotations
+- After bootstrap, perform a Vizier handshake check (≤2s) and surface vm_vizier_version.
+- `--plan` shows Vizier action per VM: Start | Restart | Healthy (NoOp) | Unavailable.
+- Stamp policy: do not write idempotence stamp on failed Vizier start/handshake; only on Success.
+- Errors include remediation_hint and durable in-VM log path.
+- Pointer: VIZIER_REMOTE_PROTOCOL.md for handshake fields.
+
+
+---
+

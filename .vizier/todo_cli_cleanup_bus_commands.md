@@ -11,4 +11,10 @@ Anchors (pointer-level):
 - CLI wiring: castra-core/src/cli.rs; castra-core/src/app/broker.rs; castra-core/src/core/operations/bus.rs.
 
 User guidance:
-- Print: "Deprecated: bus/broker have been removed. Use the Codex harness (vizier) for per-VM SSH control and event streaming."
+- Print: "Deprecated: bus/broker have been removed. Use the Codex harness (vizier) for per-VM SSH control and event streaming."CLI deprecation messaging:
+- `castra broker` and `castra bus *` print: "Deprecated: bus/broker have been removed. Use the Codex harness vizier stream over SSH (see VIZIER_REMOTE_PROTOCOL.md)." and exit 0, until full removal.
+- Help text scrub: ensure `castra --help` and subcommands contain no bus/broker mentions; link to the migration doc in castra-core/docs.
+
+
+---
+

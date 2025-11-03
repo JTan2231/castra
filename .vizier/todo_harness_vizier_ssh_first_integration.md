@@ -78,3 +78,12 @@ Verification additions:
 
 ---
 
+Snapshot alignment (v0.10.0-pre):
+- Event family is vizier.remote.* (rename from any prior vizier.ssh mentions). Preamble must include protocol version + vm_vizier_version as per VIZIER_REMOTE_PROTOCOL.md.
+- Acceptance tightened: echo RTT ≤150ms (localhost lab); reconnect emits vizier.remote.reconnect_attempt/established; no zombie Vizier processes after drops.
+- Migration note: provide a temporary translation shim so existing UI pump_vizier continues to render until it natively consumes vizier.remote.*.
+- Anchors added: VIZIER_REMOTE_PROTOCOL.md for framing; vm_commands.sh for validation harness.
+
+
+---
+

@@ -31,3 +31,11 @@ Risk/Trade space:
 
 ---
 
+Cutover steps (de-duped with CLI cleanup):
+- Remove broker-era test: delete castra-core/tests/broker_contract.rs once harness golden tests land.
+- Scripts: retire scripts/castra-bus-*.sh with deprecation notes in docs; ensure running them prints a clear deprecation message or is removed from distribution.
+- Docs: add migration pointers to VIZIER_REMOTE_PROTOCOL.md and harness vizier stream.
+
+
+---
+

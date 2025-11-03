@@ -19,3 +19,11 @@ Anchors:
 
 ---
 
+Scope refine:
+- Update assertions and fixtures to use vizier.remote.* family and preamble fields defined in VIZIER_REMOTE_PROTOCOL.md.
+- Add reconnect scenario: drop SSH mid-stream via vm_commands.sh and assert reconnect events and ordering are preserved.
+- Latency check: measure echo round-trip and assert ≤150ms under localhost lab conditions; skip or relax in CI if environment variance detected (document policy in fixture README).
+
+
+---
+

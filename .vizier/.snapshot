@@ -1,46 +1,45 @@
 SNAPSHOT v0.10.0-pre — Castra (Agent-centric orchestration) — In-VM Vizier residency pivot
 
 Edits since previous snapshot
-- Architectural decision: Orchestrating Vizier will run inside each VM. Host-side harness maintains durable SSH tunnels to each VM-resident Vizier for stdin/stdout control. Bus remains deprecated; SSH is transport only.
-- Thread 20 (Harness ↔ Core integration) reframed to vizier.remote.* event family with versioned handshake and reconnect semantics; preamble now includes vm_vizier_version.
-- Thread 12 (Post-boot bootstrap): augmented to include launching and health-checking an in-VM Vizier process as an idempotent bootstrap step; `--plan` reflects Vizier status.
-- New TODO opened to define In-VM Vizier service bootstrap and SSH tunnel control with acceptance (handshake ≤2s, echo latency ≤150ms, reconnect semantics, no zombie processes).
+- Event family rename affirmed: vizier.remote.* is the authoritative harness ↔ in-VM Vizier stream; SSH is transport only. Timing bounds captured (handshake ≤2s; echo latency ≤150ms in localhost lab).
+- Thread 12 (Post-boot bootstrap): concretized health check and plan annotations for in-VM Vizier (Start/Restart/Healthy/Unavailable). Stamp policy clarified: no stamp on failed Vizier start/handshake.
+- Thread 20 (Harness ↔ In-VM Vizier): acceptance expanded to cover reconnect/backoff signals, single-instance guarantee (no zombies), and translation shim for UI during migration.
+- Cross-link added to VIZIER_REMOTE_PROTOCOL.md as the evolving reference for framing/preamble invariants.
 
 Active threads (intent + acceptance deltas)
 - Thread 12 — Post-boot bootstrap pipeline: updated
-  - Evidence: Need a long-lived Vizier in-VM to terminate fragile host-driven orchestration via ad-hoc SSH.
-  - Acceptance (added): After bootstrap, in-VM Vizier is running; handshake verifiable; `--plan` shows Start/Restart/Healthy; failures provide hints and durable logs.
+  - Evidence: Need durable, idempotent start of VM-resident Vizier with observable health.
+  - Acceptance (added): After bootstrap, Vizier handshake within 2s; plan shows Vizier action; failure emits remediation_hint + durable log path; stamps only on Success.
 
 - Thread 20 — Harness ↔ In-VM Vizier integration: updated
-  - Evidence: UI currently hosts SshManager; harness must own SSH tunnel to VM Vizier and emit vizier.remote.* stream with preamble (protocol + vm_vizier_version).
+  - Evidence: UI still owns SshManager; harness must originate vizier.remote.* stream for UI/tests.
   - Acceptance (updated):
-    - Harness establishes per-VM SSH sessions to in-VM Vizier; emits connected/handshake events.
-    - User input forwarded as vizier.remote.input; outputs surfaced as vizier.remote.output/system/status.
-    - Reconnect/backoff with clear events; golden tests verify framing, handshake, echo latency bounds, and reconnect.
+    - Per-VM SSH sessions attach to VM Vizier; preamble includes protocol + vm_vizier_version; echo RTT ≤150ms (lab).
+    - Reconnect/backoff with vizier.remote.reconnect_* events; no orphaned Vizier processes.
+    - Temporary translation shim keeps current UI pump_vizier working until direct consumption lands.
 
-- Thread 21 — Operational clarity (Attention model): unchanged (will consume vizier.remote.* without UI-side SSH).
-
-- Thread 30 — Busless architecture cutover (Core): unchanged (still removing broker/bus artifacts).
-
-- Thread 31 — Agent-first interaction model: unchanged (roster pivot remains; addresses now agents, streams carry agent id sourced via VM Vizier where applicable).
+- Thread 21 — Operational clarity (Attention model): unchanged; will consume vizier.remote.*.
+- Thread 30 — Busless architecture cutover (Core): updated to note removal path for scripts/tests and deprecation messages in CLI.
+- Thread 31 — Agent-first interaction model: unchanged.
 
 Current code state (observable surfaces)
-- Core: broker/bus artifacts still present; bootstrap surfaces exist but do not yet start an in-VM Vizier.
-- Harness: unified stream exists only as intent; SSH management lives UI-side today; no vizier.remote.* events yet.
-- UI: consumes HarnessEvent; has an SshManager implementation that will be retired once harness emits vizier.remote.*. VM-centric roster remains.
-- Tooling: vm_commands.sh continues as remote runner to validate stream behavior and latency; will be used for golden tests.
+- Core: broker/bus artifacts remain; bootstrap does not yet start in-VM Vizier; CLI still exposes bus-era commands.
+- Harness: no vizier.remote.* stream yet; SSH logic lives in UI; vm_commands.sh available for remote runs and log retrieval.
+- UI: consumes HarnessEvent; SshManager present; roster and pump_vizier prepared to switch once harness stream lands.
+- Protocol/docs: VIZIER_REMOTE_PROTOCOL.md exists; will anchor handshake/preamble invariants.
 
 Narrative themes
-- Move orchestration into the VMs to reduce coupling and flakiness; the host harness becomes a thin transport/stream origin. Keep contracts stable for UI and tests.
+- Move orchestration into each VM to reduce flakiness and simplify contracts; host harness becomes a thin, versioned stream origin. Keep UI stable via translation during migration.
 
 Direction of travel
-- Implement in-VM Vizier bootstrap + health check (Thread 12) and harness-side SSH tunnels with versioned handshake and vizier.remote.* events plus golden tests (Thread 20). Begin UI simplification by removing UI-side SSH once harness stream lands.
+- Land in-VM Vizier bootstrap + health (Thread 12), harness-side SSH tunnels with vizier.remote.* and golden tests (Thread 20), begin removing bus/broker commands and artifacts with deprecation messaging (Thread 30).
 
 Cross-links
+- Protocol: VIZIER_REMOTE_PROTOCOL.md.
 - Thread 12: castra-core/src/core/bootstrap.rs; app/up.rs; docs/BOOTSTRAP.md.
-- Thread 20: castra-harness/src/{session.rs,runner.rs,stream.rs,events.rs,translator.rs}; UI consumer pump_vizier; prior art in castra-ui/src/ssh/mod.rs.
-- Thread 30: castra-core/src/core/options.rs; scripts/* bus-era artifacts.
+- Thread 20: castra-harness/src/{session.rs,runner.rs,stream.rs,events.rs,translator.rs}; prior art castra-ui/src/ssh/mod.rs; vm_commands.sh.
+- Thread 30: castra-core/src/core/options.rs; scripts/* bus-era; castra-core/tests/broker_contract.rs; castra-core/src/cli.rs.
 - Thread 31: castra-ui/src/components/{roster_sidebar.rs, vm_fleet.rs}.
 
 Editorial housekeeping
-- Acceptance thresholds include concrete timing bounds (handshake ≤2s, echo latency ≤150ms) under localhost lab; keep implementation choices open. Golden tests to assert framing and reconnect behavior using vm_commands.sh.
+- Golden tests will assert: versioned preamble, framing invariants from VIZIER_REMOTE_PROTOCOL.md, reconnect semantics, latency bounds (lab). Implementation choices remain open; contracts are product-level.

@@ -23,4 +23,11 @@ Pointers (anchor-level):
 Safety/correctness notes (implementation-open):
 - Keep supervision strategy open (systemd, dumb init, or custom loop); contract is the stable stdin/stdout handshake and framing.
 - Ensure only one Vizier instance per VM; restarts should be graceful when possible.
-- Log paths in-VM must be discoverable via events for troubleshooting.
+- Log paths in-VM must be discoverable via events for troubleshooting.Clarifications:
+- Single-instance guarantee: bootstrap must ensure exactly one Vizier instance per VM; restarts are graceful; no leftover processes.
+- Health check emits vizier.remote.connected with version fields on success; on mismatch, surface compatibility error with remediation_hint.
+- Keep supervision strategy open (systemd, init loop, etc.); the invariant is the stdin/stdout handshake per VIZIER_REMOTE_PROTOCOL.md.
+
+
+---
+
