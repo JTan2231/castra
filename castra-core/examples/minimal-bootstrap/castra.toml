@@ -19,7 +19,7 @@ name = "bootstrap-demo"
 
 [bootstrap]
 # Upper bound (in seconds) for the global handshake wait. If the guest does not
-# report a fresh broker handshake before this deadline the bootstrap run aborts
+# report a fresh vizier handshake before this deadline the bootstrap run aborts
 # before any SSH work is attempted.
 handshake_timeout_secs = 45
 # Default remote working directory. Each VM derives its per-instance directory

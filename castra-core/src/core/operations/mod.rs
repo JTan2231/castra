@@ -1,26 +1,21 @@
 use std::env;
-use std::fs;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
-mod bus;
 mod clean;
 
 use super::bootstrap;
-use super::broker as broker_core;
 use super::diagnostics::{Diagnostic, Severity};
 use super::events::{EphemeralCleanupReason, Event, ShutdownOutcome};
 use super::logs as logs_core;
 use super::options::{
-    BootstrapOverrides, BrokerOptions, BusPublishOptions, BusTailOptions, CleanOptions,
-    ConfigLoadOptions, DownOptions, InitOptions, LogsOptions, PortsOptions, StatusOptions,
-    UpOptions,
+    BootstrapOverrides, CleanOptions, ConfigLoadOptions, DownOptions, InitOptions, LogsOptions,
+    PortsOptions, StatusOptions, UpOptions,
 };
 use super::outcome::{
-    BootstrapRunStatus, BrokerLaunchOutcome, BrokerShutdownOutcome, BusPublishOutcome,
-    BusTailOutcome, CleanOutcome, DownOutcome, InitOutcome, LogsOutcome, OperationOutput,
+    BootstrapRunStatus, CleanOutcome, DownOutcome, InitOutcome, LogsOutcome, OperationOutput,
     OperationResult, PortsOutcome, ProjectPortsOutcome, ProjectStatusOutcome, StatusOutcome,
     UpOutcome, VmLaunchOutcome, VmShutdownOutcome, VmStatusRow,
 };
@@ -31,10 +26,9 @@ use super::project::{
 };
 use super::reporter::Reporter;
 use super::runtime::{
-    BrokerLauncher, BrokerProcessState, CheckOutcome, ProcessBrokerLauncher, ShutdownTimeouts,
-    check_disk_space, check_host_capacity, ensure_broker_port_available, ensure_ports_available,
-    ensure_vm_assets, launch_vm, prepare_runtime_context, shutdown_broker, shutdown_vm,
-    start_broker,
+    CheckOutcome, ProcessVizierLauncher, ShutdownTimeouts, VizierLaunchRequest, VizierLauncher,
+    check_disk_space, check_host_capacity, ensure_ports_available, ensure_vm_assets, launch_vm,
+    prepare_runtime_context, shutdown_vm,
 };
 use super::status as status_core;
 use super::workspace_registry::{WorkspaceHandle, WorkspaceRegistry, persist_workspace_metadata};
@@ -174,13 +168,13 @@ pub fn init(
 }
 
 pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationResult<UpOutcome> {
-    let launcher = ProcessBrokerLauncher::from_env()?;
+    let launcher = ProcessVizierLauncher::from_env()?;
     up_internal(options, reporter, &launcher)
 }
 
 pub fn up_with_launcher(
     options: UpOptions,
-    launcher: &dyn BrokerLauncher,
+    launcher: &dyn VizierLauncher,
     reporter: Option<&mut dyn Reporter>,
 ) -> OperationResult<UpOutcome> {
     up_internal(options, reporter, launcher)
@@ -189,7 +183,7 @@ pub fn up_with_launcher(
 fn up_internal(
     options: UpOptions,
     reporter: Option<&mut dyn Reporter>,
-    launcher: &dyn BrokerLauncher,
+    launcher: &dyn VizierLauncher,
 ) -> OperationResult<UpOutcome> {
     let mut diagnostics = Vec::new();
     let mut events = Vec::new();
@@ -216,7 +210,6 @@ fn up_internal(
             state_root,
             log_root,
             launched_vms: Vec::new(),
-            broker: None,
             bootstraps: Vec::new(),
             plans,
         })
@@ -240,213 +233,135 @@ fn up_internal(
             .map(|row| row.name.clone())
             .collect();
         if !running.is_empty() {
-            if options.broker_only {
-                diagnostics.push(
-                    Diagnostic::new(
-                        Severity::Warning,
-                        format!("VMs already running: {}.", running.join(", ")),
-                    )
-                    .with_help(
-                        "Broker-only mode leaves running VMs untouched; stop them with `castra down` if you intend to relaunch.",
-                    ),
-                );
-            } else {
-                return Err(Error::PreflightFailed {
-                    message: format!(
-                        "VMs already running: {}. Use `castra status` or `castra down` before invoking `up` again.",
-                        running.join(", ")
-                    ),
-                });
-            }
+            return Err(Error::PreflightFailed {
+                message: format!(
+                    "VMs already running: {}. Use `castra status` or `castra down` before invoking `up` again.",
+                    running.join(", ")
+                ),
+            });
         }
 
-        if options.broker_only {
-            ensure_broker_port_available(&project)?;
+        process_check(
+            check_host_capacity(&project),
+            options.force,
+            &mut diagnostics,
+            "Host resource checks failed:",
+            "Rerun with `castra up --force` to override.",
+        )?;
 
-            fs::create_dir_all(&state_root).map_err(|err| Error::PreflightFailed {
-                message: format!(
-                    "Failed to create castra state directory at {}: {err}",
-                    state_root.display()
-                ),
-            })?;
-            fs::create_dir_all(&log_root).map_err(|err| Error::PreflightFailed {
-                message: format!(
-                    "Failed to create log directory at {}: {err}",
-                    log_root.display()
-                ),
-            })?;
+        let context = prepare_runtime_context(&project, options.launch_mode)?;
 
-            persist_workspace_metadata(
-                &project,
-                synthetic_config,
-                &options,
-                &state_root,
-                &mut diagnostics,
-            )?;
+        persist_workspace_metadata(
+            &project,
+            synthetic_config,
+            &options,
+            &context.state_root,
+            &mut diagnostics,
+        )?;
 
-            let broker_outcome = reporter
-                .with_event_buffer(|events| {
-                    start_broker(
-                        &project,
-                        &state_root,
-                        &log_root,
-                        &mut diagnostics,
-                        events,
-                        launcher,
-                    )
-                })?
-                .map(|pid| BrokerLaunchOutcome {
-                    pid,
-                    config: project.broker.clone(),
+        process_check(
+            check_disk_space(&project, &context),
+            options.force,
+            &mut diagnostics,
+            "Insufficient free disk space:",
+            "Rerun with `castra up --force` to override.",
+        )?;
+
+        ensure_ports_available(&project)?;
+
+        let vizier_request = VizierLaunchRequest {
+            project: &project,
+            context: &context,
+        };
+        launcher.launch(&vizier_request)?;
+
+        let mut preparations = Vec::new();
+        for vm in &project.vms {
+            let prep = ensure_vm_assets(vm, &context)?;
+            for event in prep.events.iter().cloned() {
+                reporter.emit(event);
+            }
+            if let Some(bytes) = prep.overlay_reclaimed_bytes {
+                reporter.emit(Event::EphemeralLayerDiscarded {
+                    vm: vm.name.clone(),
+                    overlay_path: vm.overlay.clone(),
+                    reclaimed_bytes: bytes,
+                    reason: EphemeralCleanupReason::Orphan,
                 });
+            }
+            if prep.overlay_created {
+                reporter.emit(Event::OverlayPrepared {
+                    vm: vm.name.clone(),
+                    overlay_path: vm.overlay.clone(),
+                });
+            }
+            preparations.push(prep);
+        }
 
-            reporter.emit(Event::Message {
-                severity: Severity::Info,
-                text: "Broker-only mode: VMs and bootstrap steps were skipped.".to_string(),
+        let mut launched_vms = Vec::new();
+        for (vm, prep) in project.vms.iter().zip(preparations.iter()) {
+            let pid = reporter
+                .with_event_buffer(|events| launch_vm(vm, &prep.assets, &context, events))?;
+            launched_vms.push(VmLaunchOutcome {
+                name: vm.name.clone(),
+                pid,
+                base_image: vm.base_image.path().to_path_buf(),
+                base_image_provenance: vm.base_image.provenance(),
+                overlay_created: prep.overlay_created,
+                port_forwards: vm.port_forwards.clone(),
             });
+        }
 
-            UpOutcome {
-                state_root: state_root.clone(),
-                log_root: log_root.clone(),
-                launched_vms: Vec::new(),
-                broker: broker_outcome,
-                bootstraps: Vec::new(),
-                plans: Vec::new(),
-            }
-        } else {
-            process_check(
-                check_host_capacity(&project),
-                options.force,
-                &mut diagnostics,
-                "Host resource checks failed:",
-                "Rerun with `castra up --force` to override.",
-            )?;
+        reporter.emit(Event::Message {
+            severity: Severity::Info,
+            text: format!("Launched {} VM(s).", launched_vms.len()),
+        });
 
-            let context = prepare_runtime_context(&project, options.launch_mode)?;
-
-            persist_workspace_metadata(
-                &project,
-                synthetic_config,
-                &options,
-                &context.state_root,
-                &mut diagnostics,
-            )?;
-
-            process_check(
-                check_disk_space(&project, &context),
-                options.force,
-                &mut diagnostics,
-                "Insufficient free disk space:",
-                "Rerun with `castra up --force` to override.",
-            )?;
-
-            ensure_ports_available(&project)?;
-
-            let mut preparations = Vec::new();
-            for vm in &project.vms {
-                let prep = ensure_vm_assets(vm, &context)?;
-                for event in prep.events.iter().cloned() {
-                    reporter.emit(event);
-                }
-                if let Some(bytes) = prep.overlay_reclaimed_bytes {
-                    reporter.emit(Event::EphemeralLayerDiscarded {
-                        vm: vm.name.clone(),
-                        overlay_path: vm.overlay.clone(),
-                        reclaimed_bytes: bytes,
-                        reason: EphemeralCleanupReason::Orphan,
-                    });
-                }
-                if prep.overlay_created {
-                    reporter.emit(Event::OverlayPrepared {
-                        vm: vm.name.clone(),
-                        overlay_path: vm.overlay.clone(),
-                    });
-                }
-                preparations.push(prep);
-            }
-
-            let broker_outcome = reporter
-                .with_event_buffer(|events| {
-                    start_broker(
-                        &project,
-                        &context.state_root,
-                        &context.log_root,
-                        &mut diagnostics,
-                        events,
-                        launcher,
-                    )
-                })?
-                .map(|pid| BrokerLaunchOutcome {
-                    pid,
-                    config: project.broker.clone(),
-                });
-
-            let mut launched_vms = Vec::new();
-            for (vm, prep) in project.vms.iter().zip(preparations.iter()) {
-                let pid = reporter
-                    .with_event_buffer(|events| launch_vm(vm, &prep.assets, &context, events))?;
-                launched_vms.push(VmLaunchOutcome {
-                    name: vm.name.clone(),
-                    pid,
-                    base_image: vm.base_image.path().to_path_buf(),
-                    base_image_provenance: vm.base_image.provenance(),
-                    overlay_created: prep.overlay_created,
-                    port_forwards: vm.port_forwards.clone(),
-                });
-            }
-
-            reporter.emit(Event::Message {
-                severity: Severity::Info,
-                text: format!("Launched {} VM(s).", launched_vms.len()),
-            });
-
-            reporter.emit(Event::Message {
+        reporter.emit(Event::Message {
                 severity: Severity::Info,
                 text: "Guest disk changes are ephemeral; export via SSH before running `castra down` if you need to retain data.".to_string(),
             });
 
-            let bootstrap_runs = bootstrap::run_all(
-                &project,
-                &context,
-                &preparations,
-                &mut reporter,
-                &mut diagnostics,
-            )?;
+        let bootstrap_runs = bootstrap::run_all(
+            &project,
+            &context,
+            &preparations,
+            &mut reporter,
+            &mut diagnostics,
+        )?;
 
-            if !bootstrap_runs.is_empty() {
-                let success = bootstrap_runs
-                    .iter()
-                    .filter(|run| matches!(run.status, BootstrapRunStatus::Success))
-                    .count();
-                let noop = bootstrap_runs
-                    .iter()
-                    .filter(|run| matches!(run.status, BootstrapRunStatus::NoOp))
-                    .count();
-                let skipped = bootstrap_runs
-                    .iter()
-                    .filter(|run| matches!(run.status, BootstrapRunStatus::Skipped))
-                    .count();
-                reporter.emit(Event::Message {
+        if !bootstrap_runs.is_empty() {
+            let success = bootstrap_runs
+                .iter()
+                .filter(|run| matches!(run.status, BootstrapRunStatus::Success))
+                .count();
+            let noop = bootstrap_runs
+                .iter()
+                .filter(|run| matches!(run.status, BootstrapRunStatus::NoOp))
+                .count();
+            let skipped = bootstrap_runs
+                .iter()
+                .filter(|run| matches!(run.status, BootstrapRunStatus::Skipped))
+                .count();
+            reporter.emit(Event::Message {
                     severity: Severity::Info,
                     text: format!(
                         "Bootstrap pipeline: {success} succeeded, {noop} up-to-date, {skipped} skipped.",
                     ),
                 });
-            }
+        }
 
-            reporter.emit(Event::Message {
-                severity: Severity::Info,
-                text: "Use `castra status` to monitor startup progress.".to_string(),
-            });
+        reporter.emit(Event::Message {
+            severity: Severity::Info,
+            text: "Use `castra status` to monitor startup progress.".to_string(),
+        });
 
-            UpOutcome {
-                state_root: context.state_root.clone(),
-                log_root: context.log_root.clone(),
-                launched_vms,
-                broker: broker_outcome,
-                bootstraps: bootstrap_runs,
-                plans: Vec::new(),
-            }
+        UpOutcome {
+            state_root: context.state_root.clone(),
+            log_root: context.log_root.clone(),
+            launched_vms,
+            bootstraps: bootstrap_runs,
+            plans: Vec::new(),
         }
     };
 
@@ -478,7 +393,6 @@ pub fn down(
         StatusTarget::Workspaces(workspaces) => {
             let multi = workspaces.len() > 1;
             let mut combined_vm_results = Vec::new();
-            let mut any_broker_changed = false;
 
             for WorkspaceProject { handle, project } in workspaces {
                 if multi {
@@ -500,14 +414,10 @@ pub fn down(
 
                 let outcome = down_project(project, &options, &mut reporter, &mut diagnostics)?;
                 combined_vm_results.extend(outcome.vm_results);
-                any_broker_changed |= outcome.broker.changed;
             }
 
             DownOutcome {
                 vm_results: combined_vm_results,
-                broker: BrokerShutdownOutcome {
-                    changed: any_broker_changed,
-                },
             }
         }
     };
@@ -536,20 +446,13 @@ pub fn status(
         } => {
             let status_core::StatusSnapshot {
                 rows,
-                broker_state: broker_state_raw,
                 diagnostics: mut status_diags,
                 reachable,
-                last_handshake,
             } = status_core::collect_status(&project);
             diagnostics.append(&mut status_diags);
             StatusOutcome {
                 projects: vec![project_status_from_components(
-                    &project,
-                    rows,
-                    broker_state_raw,
-                    reachable,
-                    last_handshake,
-                    None,
+                    &project, rows, reachable, None,
                 )],
                 aggregated: false,
             }
@@ -559,18 +462,14 @@ pub fn status(
             for WorkspaceProject { handle, project } in workspaces {
                 let status_core::StatusSnapshot {
                     rows,
-                    broker_state: broker_state_raw,
                     diagnostics: mut status_diags,
                     reachable,
-                    last_handshake,
                 } = status_core::collect_status(&project);
                 diagnostics.append(&mut status_diags);
                 projects.push(project_status_from_components(
                     &project,
                     rows,
-                    broker_state_raw,
                     reachable,
-                    last_handshake,
                     Some(&handle),
                 ));
             }
@@ -600,24 +499,9 @@ struct WorkspaceProject {
 fn project_status_from_components(
     project: &ProjectConfig,
     rows: Vec<VmStatusRow>,
-    broker_state_raw: BrokerProcessState,
     reachable: bool,
-    last_handshake: Option<status_core::BrokerHandshake>,
     handle: Option<&WorkspaceHandle>,
 ) -> ProjectStatusOutcome {
-    let broker_state = match broker_state_raw {
-        BrokerProcessState::Running { pid } => super::outcome::BrokerState::Running { pid },
-        BrokerProcessState::Offline => super::outcome::BrokerState::Offline,
-    };
-
-    let (last_handshake_vm, last_handshake_age_ms) = match last_handshake {
-        Some(handshake) => {
-            let age_ms = handshake.age.as_millis().min(u128::from(u64::MAX)) as u64;
-            (Some(handshake.vm), Some(age_ms))
-        }
-        None => (None, None),
-    };
-
     let state_root = handle
         .map(|h| h.state_root.clone())
         .or_else(|| Some(config_state_root(project)));
@@ -628,11 +512,7 @@ fn project_status_from_components(
         project_path: project.file_path.clone(),
         project_name: project.project_name.clone(),
         config_version: project.version.clone(),
-        broker_port: project.broker.port,
-        broker_state,
         reachable,
-        last_handshake_vm,
-        last_handshake_age_ms,
         rows,
         workspace_id: handle.map(|h| h.workspace_id.clone()),
         state_root,
@@ -828,40 +708,19 @@ fn down_project(
         })
         .collect::<Vec<_>>();
 
-    let broker_changed =
-        reporter.with_event_buffer(|events| shutdown_broker(&state_root, events, diagnostics))?;
-
-    let outcome = DownOutcome {
-        vm_results,
-        broker: BrokerShutdownOutcome {
-            changed: broker_changed,
-        },
-    };
+    let outcome = DownOutcome { vm_results };
 
     let any_vm = outcome.vm_results.iter().any(|vm| vm.changed);
-    match (any_vm, outcome.broker.changed) {
-        (false, false) => reporter.emit(Event::Message {
-            severity: Severity::Info,
-            text: "No running VMs or broker detected.".to_string(),
-        }),
-        (true, false) => reporter.emit(Event::Message {
+    if any_vm {
+        reporter.emit(Event::Message {
             severity: Severity::Info,
             text: "All VMs have been stopped.".to_string(),
-        }),
-        (false, true) => reporter.emit(Event::Message {
+        });
+    } else {
+        reporter.emit(Event::Message {
             severity: Severity::Info,
-            text: "Broker listener stopped.".to_string(),
-        }),
-        (true, true) => {
-            reporter.emit(Event::Message {
-                severity: Severity::Info,
-                text: "All VMs have been stopped.".to_string(),
-            });
-            reporter.emit(Event::Message {
-                severity: Severity::Info,
-                text: "Broker listener stopped.".to_string(),
-            });
-        }
+            text: "No running VMs detected.".to_string(),
+        });
     }
 
     Ok(outcome)
@@ -931,11 +790,6 @@ pub fn clean(
     reporter: Option<&mut dyn Reporter>,
 ) -> OperationResult<CleanOutcome> {
     clean::clean(options, reporter)
-}
-
-pub fn broker(options: BrokerOptions, _reporter: Option<&mut dyn Reporter>) -> OperationResult<()> {
-    broker_core::run(&options)?;
-    Ok(OperationOutput::new(()))
 }
 
 pub(super) fn load_project_for_operation(
@@ -1065,27 +919,12 @@ impl Reporter for ReporterProxy<'_, '_> {
     }
 }
 
-pub fn bus_publish(
-    options: BusPublishOptions,
-    reporter: Option<&mut dyn Reporter>,
-) -> OperationResult<BusPublishOutcome> {
-    bus::publish(options, reporter)
-}
-
-pub fn bus_tail(
-    options: BusTailOptions,
-    reporter: Option<&mut dyn Reporter>,
-) -> OperationResult<BusTailOutcome> {
-    bus::tail(options, reporter)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{
-        BootstrapConfig, BootstrapMode, BrokerConfig, DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
-        DEFAULT_BROKER_PORT, LifecycleConfig, MemorySpec, VmBootstrapConfig, VmDefinition,
-        Workflows,
+        BootstrapConfig, BootstrapMode, DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, LifecycleConfig,
+        MemorySpec, ProjectFeatures, VmBootstrapConfig, VmDefinition, Workflows,
     };
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
@@ -1097,6 +936,7 @@ mod tests {
             project_root: PathBuf::from("."),
             version: "0.1.0".to_string(),
             project_name: "demo".to_string(),
+            features: ProjectFeatures::default(),
             vms: vec![VmDefinition {
                 name: "vm".to_string(),
                 role_name: "vm".to_string(),
@@ -1121,9 +961,6 @@ mod tests {
             }],
             state_root: PathBuf::from("/tmp/state"),
             workflows: Workflows { init: Vec::new() },
-            broker: BrokerConfig {
-                port: DEFAULT_BROKER_PORT,
-            },
             lifecycle: LifecycleConfig::default(),
             bootstrap: BootstrapConfig::default(),
             warnings: Vec::new(),

@@ -23,7 +23,7 @@ Active threads (intent + acceptance deltas)
 - Thread 31 — Agent-first interaction model: unchanged.
 
 Current code state (observable surfaces)
-- Core: broker/bus artifacts remain; bootstrap does not yet start in-VM Vizier; CLI still exposes bus-era commands.
+- Core: broker/bus artifacts have been removed; bootstrap now prepares in-VM Vizier.
 - Harness: no vizier.remote.* stream yet; SSH logic lives in UI; vm_commands.sh available for remote runs and log retrieval.
 - UI: consumes HarnessEvent; SshManager present; roster and pump_vizier prepared to switch once harness stream lands.
 - Protocol/docs: VIZIER_REMOTE_PROTOCOL.md exists; will anchor handshake/preamble invariants.
@@ -32,7 +32,7 @@ Narrative themes
 - Move orchestration into each VM to reduce flakiness and simplify contracts; host harness becomes a thin, versioned stream origin. Keep UI stable via translation during migration.
 
 Direction of travel
-- Land in-VM Vizier bootstrap + health (Thread 12), harness-side SSH tunnels with vizier.remote.* and golden tests (Thread 20), begin removing bus/broker commands and artifacts with deprecation messaging (Thread 30).
+- Land in-VM Vizier bootstrap + health (Thread 12), harness-side SSH tunnels with vizier.remote.* and golden tests (Thread 20), continue polishing brokerless documentation after Stage 30 landed.
 
 Cross-links
 - Protocol: VIZIER_REMOTE_PROTOCOL.md.

@@ -1,4 +1,4 @@
-Thread: 30 — Busless architecture cutover (Core)
+Thread: 30 — Busless architecture cutover (Core) — ✅ completed via brokerless core landing
 
 Why (tension): Current core depends on a local TCP broker/bus for VM/host messaging, but the product direction eliminates the shared comms substrate. The Codex harness (vizier) will manage VMs directly over SSH; the broker/bus creates unnecessary processes, logs, and coupling.
 
@@ -38,4 +38,3 @@ Cutover steps (de-duped with CLI cleanup):
 
 
 ---
-

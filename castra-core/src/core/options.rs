@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde_json::Value;
-
 use crate::config::BootstrapMode;
 
 /// Controls how VMs are launched.
@@ -102,8 +100,6 @@ pub struct UpOptions {
     pub config: ConfigLoadOptions,
     /// Whether to force operations even if host checks fail.
     pub force: bool,
-    /// Launch only the broker and skip VM launch/bootstrap.
-    pub broker_only: bool,
     /// How QEMU instances should be launched.
     pub launch_mode: VmLaunchMode,
     /// Per-invocation overrides for bootstrap behavior.
@@ -119,7 +115,6 @@ impl Default for UpOptions {
         Self {
             config: ConfigLoadOptions::discover(true),
             force: false,
-            broker_only: false,
             launch_mode: VmLaunchMode::default(),
             bootstrap: BootstrapOverrides::default(),
             plan: false,
@@ -248,7 +243,7 @@ pub struct CleanOptions {
     pub include_overlays: bool,
     /// Include orchestrator logs directory.
     pub include_logs: bool,
-    /// Include broker handshake artifacts.
+    /// Include legacy handshake artifacts.
     pub include_handshakes: bool,
     /// Override running-process safeguards.
     pub force: bool,
@@ -264,38 +259,6 @@ pub enum CleanScope {
 }
 
 /// Options for publishing a message onto the Castra bus.
-#[derive(Debug, Clone)]
-pub struct BusPublishOptions {
-    /// Configuration lookup parameters.
-    pub config: ConfigLoadOptions,
-    /// Topic to publish to.
-    pub topic: String,
-    /// JSON payload delivered with the message.
-    pub payload: Value,
-}
-
-/// Options for tailing bus logs.
-#[derive(Debug, Clone)]
-pub struct BusTailOptions {
-    /// Configuration lookup parameters.
-    pub config: ConfigLoadOptions,
-    /// Which bus log to inspect.
-    pub target: BusLogTarget,
-    /// Number of historical lines to show before streaming.
-    pub tail: usize,
-    /// Whether to follow logs continuously.
-    pub follow: bool,
-}
-
-/// Selector for bus log streams.
-#[derive(Debug, Clone)]
-pub enum BusLogTarget {
-    /// Shared log that aggregates all messages.
-    Shared,
-    /// Per-VM log scoped to the provided VM name.
-    Vm(String),
-}
-
 /// Workspace selection strategy.
 #[derive(Debug, Clone)]
 pub enum ProjectSelector {
@@ -303,17 +266,4 @@ pub enum ProjectSelector {
     Config(ConfigLoadOptions),
     /// Use the provided state root directly.
     StateRoot(PathBuf),
-}
-
-/// Options for the hidden `broker` command exposed via the library API.
-#[derive(Debug, Clone)]
-pub struct BrokerOptions {
-    /// Port to bind the broker to.
-    pub port: u16,
-    /// Broker PID file path.
-    pub pidfile: PathBuf,
-    /// Log file path for the broker.
-    pub logfile: PathBuf,
-    /// Directory where broker ↔ guest handshake artifacts are recorded.
-    pub handshake_dir: PathBuf,
 }

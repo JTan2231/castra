@@ -38,9 +38,8 @@ pub fn summarize(
     view: PortsView,
 ) -> (ProjectPortsOutcome, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
-    let (conflicts, broker_collision) = project.port_conflicts();
+    let conflicts = project.port_conflicts();
     let conflict_ports: HashSet<u16> = conflicts.iter().map(|c| c.port).collect();
-    let broker_conflict_port = broker_collision.as_ref().map(|c| c.port);
 
     let runtime_inspection = if matches!(view, PortsView::Active) {
         let (inspection, mut runtime_diags) = inspect_runtime_forwards(project);
@@ -55,8 +54,6 @@ pub fn summarize(
         for forward in &vm.port_forwards {
             let mut status = if conflict_ports.contains(&forward.host) {
                 PortForwardStatus::Conflicting
-            } else if broker_conflict_port == Some(forward.host) {
-                PortForwardStatus::BrokerReserved
             } else {
                 PortForwardStatus::Declared
             };
@@ -106,19 +103,6 @@ pub fn summarize(
         }
     }
 
-    if let Some(collision) = broker_collision {
-        diagnostics.push(
-            Diagnostic::new(
-                Severity::Warning,
-                format!(
-                    "Host port {} overlaps with the castra broker. Adjust the broker port or the forward.",
-                    collision.port
-                ),
-            )
-            .with_help("Update `[broker].port` or the conflicting `[[vms.port_forwards]]` entry."),
-        );
-    }
-
     let port_conflicts = conflicts
         .into_iter()
         .map(|conflict| PortConflictRow {
@@ -159,7 +143,6 @@ pub fn summarize(
         project_path: project.file_path.clone(),
         project_name: project.project_name.clone(),
         config_version: project.version.clone(),
-        broker_port: project.broker.port,
         declared,
         conflicts: port_conflicts,
         vm_details,
@@ -290,9 +273,9 @@ fn inspect_udp_port(port: u16) -> io::Result<ForwardRuntimeState> {
 mod tests {
     use super::*;
     use crate::config::{
-        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig,
-        DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, LifecycleConfig, MemorySpec, PortForward,
-        PortProtocol, ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
+        BaseImageSource, BootstrapConfig, BootstrapMode, DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+        LifecycleConfig, MemorySpec, PortForward, PortProtocol, ProjectConfig, ProjectFeatures,
+        VmBootstrapConfig, VmDefinition, Workflows,
     };
     use std::collections::HashMap;
     use std::net::TcpListener;
@@ -332,10 +315,10 @@ mod tests {
             project_root,
             version: "0.1.0".to_string(),
             project_name: "demo".to_string(),
+            features: ProjectFeatures::default(),
             vms: vec![vm],
             state_root: state_root.to_path_buf(),
             workflows: Workflows { init: Vec::new() },
-            broker: BrokerConfig { port: 7070 },
             lifecycle: LifecycleConfig::default(),
             bootstrap: BootstrapConfig::default(),
             warnings: Vec::new(),

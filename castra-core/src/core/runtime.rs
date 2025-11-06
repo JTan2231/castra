@@ -8,7 +8,7 @@ use std::net::TcpListener;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -30,6 +30,7 @@ use super::events::{
 };
 use super::options::VmLaunchMode;
 
+#[derive(Debug)]
 pub struct RuntimeContext {
     pub state_root: PathBuf,
     pub log_root: PathBuf,
@@ -39,123 +40,75 @@ pub struct RuntimeContext {
     pub launch_mode: VmLaunchMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BrokerProcessState {
-    Running { pid: pid_t },
-    Offline,
-}
-
-#[derive(Debug, Clone)]
-pub struct BrokerLaunchRequest<'a> {
+#[derive(Debug)]
+pub struct VizierLaunchRequest<'a> {
     pub project: &'a ProjectConfig,
-    pub port: u16,
-    pub pidfile: PathBuf,
-    pub logfile: PathBuf,
-    pub handshake_dir: PathBuf,
+    pub context: &'a RuntimeContext,
 }
 
-pub trait BrokerHandle: Send {
-    fn pid(&self) -> Option<u32>;
-    fn abort(&mut self) -> std::io::Result<()>;
+pub trait VizierLauncher: Send + Sync {
+    fn launch(&self, request: &VizierLaunchRequest<'_>) -> Result<()>;
 }
 
-pub trait BrokerLauncher: Send + Sync {
-    fn launch(
-        &self,
-        request: &BrokerLaunchRequest<'_>,
-    ) -> crate::error::Result<Box<dyn BrokerHandle>>;
+#[derive(Debug, Clone, Default)]
+pub struct ProcessVizierLauncher {
+    shim: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ProcessBrokerLauncher {
-    executable: PathBuf,
-}
-
-impl ProcessBrokerLauncher {
-    pub fn new<P: Into<PathBuf>>(executable: P) -> Self {
+impl ProcessVizierLauncher {
+    pub fn new<P: Into<PathBuf>>(shim: P) -> Self {
         Self {
-            executable: executable.into(),
+            shim: Some(shim.into()),
         }
     }
 
-    pub fn executable(&self) -> &Path {
-        &self.executable
+    pub fn shim(&self) -> Option<&Path> {
+        self.shim.as_deref()
     }
 
-    pub fn from_env() -> crate::error::Result<Self> {
-        const ENV_KEY: &str = "CASTRA_CLI_EXECUTABLE";
-        match std::env::var_os(ENV_KEY) {
-            Some(path) => {
-                let candidate = PathBuf::from(path);
-                if candidate.is_file() {
-                    Ok(Self::new(candidate))
-                } else {
-                    Err(Error::PreflightFailed {
-                        message: format!(
-                            "Environment variable {ENV_KEY} points to missing broker executable at {}.",
-                            candidate.display()
-                        ),
-                    })
-                }
+    pub fn from_env() -> Result<Self> {
+        const VIZIER_ENV_KEY: &str = "CASTRA_VIZIER_SHIM";
+        if let Some(path) = std::env::var_os(VIZIER_ENV_KEY) {
+            let candidate = PathBuf::from(path);
+            if candidate.is_file() {
+                return Ok(Self::new(candidate));
             }
-            None => Err(Error::PreflightFailed {
+            return Err(Error::PreflightFailed {
                 message: format!(
-                    "Broker launch executable is not configured. Set {ENV_KEY} or call operations::up_with_launcher with a custom launcher."
+                    "Environment variable {VIZIER_ENV_KEY} points to missing vizier shim at {}.",
+                    candidate.display()
                 ),
-            }),
+            });
         }
+
+        const LEGACY_ENV_KEY: &str = "CASTRA_CLI_EXECUTABLE";
+        if let Some(path) = std::env::var_os(LEGACY_ENV_KEY) {
+            let candidate = PathBuf::from(path);
+            if candidate.is_file() {
+                return Ok(Self::new(candidate));
+            }
+            return Err(Error::PreflightFailed {
+                message: format!(
+                    "Environment variable {LEGACY_ENV_KEY} points to missing executable at {}.",
+                    candidate.display()
+                ),
+            });
+        }
+
+        Ok(Self::default())
     }
 }
 
-struct ProcessBrokerHandle {
-    child: Option<Child>,
-}
-
-impl BrokerHandle for ProcessBrokerHandle {
-    fn pid(&self) -> Option<u32> {
-        self.child.as_ref().map(|child| child.id())
-    }
-
-    fn abort(&mut self) -> std::io::Result<()> {
-        if let Some(mut child) = self.child.take() {
-            match child.kill() {
-                Ok(_) => {
-                    let _ = child.wait();
-                }
-                Err(err) if err.kind() == ErrorKind::InvalidInput => {
-                    let _ = child.wait();
-                }
-                Err(err) => return Err(err),
+impl VizierLauncher for ProcessVizierLauncher {
+    fn launch(&self, _request: &VizierLaunchRequest<'_>) -> Result<()> {
+        if let Some(shim) = &self.shim {
+            if !shim.is_file() {
+                return Err(Error::PreflightFailed {
+                    message: format!("Configured vizier shim {} does not exist.", shim.display()),
+                });
             }
         }
         Ok(())
-    }
-}
-
-impl BrokerLauncher for ProcessBrokerLauncher {
-    fn launch(
-        &self,
-        request: &BrokerLaunchRequest<'_>,
-    ) -> crate::error::Result<Box<dyn BrokerHandle>> {
-        let mut command = Command::new(&self.executable);
-        command
-            .arg("broker")
-            .arg("--port")
-            .arg(request.port.to_string())
-            .arg("--pidfile")
-            .arg(request.pidfile.as_os_str())
-            .arg("--logfile")
-            .arg(request.logfile.as_os_str())
-            .arg("--handshake-dir")
-            .arg(request.handshake_dir.as_os_str())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-
-        let child = command.spawn().map_err(|err| Error::PreflightFailed {
-            message: format!("Failed to launch broker subprocess: {err}"),
-        })?;
-
-        Ok(Box::new(ProcessBrokerHandle { child: Some(child) }))
     }
 }
 
@@ -356,7 +309,7 @@ pub fn check_disk_space(project: &ProjectConfig, context: &RuntimeContext) -> Ch
 }
 
 pub fn ensure_ports_available(project: &ProjectConfig) -> Result<()> {
-    let (conflicts, broker_collision) = project.port_conflicts();
+    let conflicts = project.port_conflicts();
     if !conflicts.is_empty() {
         let mut lines = Vec::new();
         for conflict in conflicts {
@@ -368,15 +321,6 @@ pub fn ensure_ports_available(project: &ProjectConfig) -> Result<()> {
         }
         return Err(Error::PreflightFailed {
             message: format!("Host port conflicts detected:\n{}", lines.join("\n")),
-        });
-    }
-
-    if let Some(collision) = broker_collision {
-        return Err(Error::PreflightFailed {
-            message: format!(
-                "Host port {} is reserved for the castra broker. Update the broker port or VM forwards.",
-                collision.port
-            ),
         });
     }
 
@@ -392,123 +336,8 @@ pub fn ensure_ports_available(project: &ProjectConfig) -> Result<()> {
         }
     }
 
-    if checked.insert(project.broker.port) {
-        ensure_port_is_free(
-            project.broker.port,
-            &format!("broker port {}", project.broker.port),
-        )?;
-    }
-
     Ok(())
 }
-
-pub fn ensure_broker_port_available(project: &ProjectConfig) -> Result<()> {
-    let (conflicts, broker_collision) = project.port_conflicts();
-    if !conflicts.is_empty() {
-        let mut lines = Vec::new();
-        for conflict in conflicts {
-            lines.push(format!(
-                "- Port {} declared by: {}",
-                conflict.port,
-                conflict.vm_names.join(", ")
-            ));
-        }
-        return Err(Error::PreflightFailed {
-            message: format!("Host port conflicts detected:\n{}", lines.join("\n")),
-        });
-    }
-
-    if let Some(collision) = broker_collision {
-        return Err(Error::PreflightFailed {
-            message: format!(
-                "Host port {} is reserved for the castra broker. Update the broker port or VM forwards.",
-                collision.port
-            ),
-        });
-    }
-
-    ensure_port_is_free(
-        project.broker.port,
-        &format!("broker port {}", project.broker.port),
-    )
-}
-
-pub fn start_broker(
-    project: &ProjectConfig,
-    state_root: &Path,
-    log_root: &Path,
-    diagnostics: &mut Vec<Diagnostic>,
-    events: &mut Vec<Event>,
-    launcher: &dyn BrokerLauncher,
-) -> Result<Option<u32>> {
-    let pidfile = broker_pid_path_from_root(state_root);
-    let (state, mut warnings) = inspect_broker_state(&pidfile);
-    diagnostics.extend(
-        warnings
-            .drain(..)
-            .map(|warning| Diagnostic::new(Severity::Warning, warning)),
-    );
-
-    if let BrokerProcessState::Running { pid } = state {
-        events.push(Event::Message {
-            severity: Severity::Info,
-            text: format!(
-                "→ broker: already running on 127.0.0.1:{} (pid {pid}).",
-                project.broker.port
-            ),
-        });
-        return Ok(None);
-    }
-
-    if pidfile.exists() {
-        let _ = fs::remove_file(&pidfile);
-    }
-
-    fs::create_dir_all(log_root).map_err(|err| Error::PreflightFailed {
-        message: format!(
-            "Failed to prepare broker log directory {}: {err}",
-            log_root.display()
-        ),
-    })?;
-
-    let log_path = broker_log_path_from_root(log_root);
-    let handshake_dir = broker_handshake_dir_from_root(state_root);
-    fs::create_dir_all(&handshake_dir).map_err(|err| Error::PreflightFailed {
-        message: format!(
-            "Failed to prepare broker handshake directory {}: {err}",
-            handshake_dir.display()
-        ),
-    })?;
-
-    let request = BrokerLaunchRequest {
-        project,
-        port: project.broker.port,
-        pidfile: pidfile.clone(),
-        logfile: log_path.clone(),
-        handshake_dir: handshake_dir.clone(),
-    };
-
-    let mut handle = launcher.launch(&request)?;
-
-    if let Err(err) = wait_for_pidfile(&pidfile, Duration::from_secs(3)) {
-        let mut message = format!("Broker process did not initialize: {err}");
-        if let Err(kill_err) = handle.abort() {
-            message.push_str(&format!(" (failed to terminate broker: {kill_err})"));
-        }
-        return Err(Error::PreflightFailed { message });
-    }
-
-    let pid = handle.pid().ok_or_else(|| Error::PreflightFailed {
-        message: "Broker launcher did not return a process identifier.".to_string(),
-    })?;
-    events.push(Event::BrokerStarted {
-        pid,
-        port: project.broker.port,
-    });
-
-    Ok(Some(pid))
-}
-
 pub fn ensure_vm_assets(vm: &VmDefinition, context: &RuntimeContext) -> Result<AssetPreparation> {
     let mut events = Vec::new();
     let base_image_path = vm.base_image.path();
@@ -1434,109 +1263,6 @@ pub fn shutdown_vm(
     Ok(VmShutdownReport::new(events, diagnostics, true, outcome))
 }
 
-pub fn shutdown_broker(
-    state_root: &Path,
-    events: &mut Vec<Event>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Result<bool> {
-    let pidfile = state_root.join("broker.pid");
-    if !pidfile.is_file() {
-        events.push(Event::BrokerStopped { changed: false });
-        return Ok(false);
-    }
-
-    let contents = fs::read_to_string(&pidfile).map_err(|err| Error::ShutdownFailed {
-        vm: "broker".to_string(),
-        message: format!("Unable to read broker pidfile {}: {err}", pidfile.display()),
-    })?;
-
-    let trimmed = contents.trim();
-    let pid: pid_t = trimmed.parse().map_err(|_| Error::ShutdownFailed {
-        vm: "broker".to_string(),
-        message: format!(
-            "Broker pidfile {} contained invalid pid `{trimmed}`.",
-            pidfile.display()
-        ),
-    })?;
-
-    let term = unsafe { libc::kill(pid, libc::SIGTERM) };
-    if term != 0 {
-        let errno = io::Error::last_os_error()
-            .raw_os_error()
-            .unwrap_or_default();
-        if errno == libc::ESRCH {
-            diagnostics.push(Diagnostic::new(
-                Severity::Warning,
-                format!(
-                    "Broker pidfile {} was stale (process {pid} already exited); removing.",
-                    pidfile.display()
-                ),
-            ));
-            let _ = fs::remove_file(&pidfile);
-            events.push(Event::BrokerStopped { changed: false });
-            return Ok(false);
-        }
-
-        return Err(Error::ShutdownFailed {
-            vm: "broker".to_string(),
-            message: format!("Failed to send SIGTERM to broker pid {pid}: errno {errno}"),
-        });
-    }
-
-    events.push(Event::Message {
-        severity: Severity::Info,
-        text: format!("→ broker: sent SIGTERM to pid {}.", pid),
-    });
-    if !wait_for_process_exit(pid, Duration::from_secs(5)).map_err(|err| Error::ShutdownFailed {
-        vm: "broker".to_string(),
-        message: format!("Error while waiting for broker pid {pid}: {err}"),
-    })? {
-        events.push(Event::Message {
-            severity: Severity::Warning,
-            text: format!("→ broker: escalating to SIGKILL (pid {}).", pid),
-        });
-        let kill_res = unsafe { libc::kill(pid, libc::SIGKILL) };
-        if kill_res != 0 {
-            let errno = io::Error::last_os_error()
-                .raw_os_error()
-                .unwrap_or_default();
-            if errno != libc::ESRCH {
-                return Err(Error::ShutdownFailed {
-                    vm: "broker".to_string(),
-                    message: format!("Failed to send SIGKILL to broker pid {pid}: errno {errno}"),
-                });
-            }
-        }
-
-        if !wait_for_process_exit(pid, Duration::from_secs(5)).map_err(|err| {
-            Error::ShutdownFailed {
-                vm: "broker".to_string(),
-                message: format!("Error while waiting for broker pid {pid} after SIGKILL: {err}"),
-            }
-        })? {
-            return Err(Error::ShutdownFailed {
-                vm: "broker".to_string(),
-                message: "Broker process did not exit after SIGKILL.".to_string(),
-            });
-        }
-    }
-
-    if let Err(err) = fs::remove_file(&pidfile) {
-        if err.kind() != io::ErrorKind::NotFound {
-            return Err(Error::ShutdownFailed {
-                vm: "broker".to_string(),
-                message: format!(
-                    "Broker stopped but failed to remove pidfile {}: {err}",
-                    pidfile.display()
-                ),
-            });
-        }
-    }
-
-    events.push(Event::BrokerStopped { changed: true });
-    Ok(true)
-}
-
 pub(crate) fn inspect_vm_state(
     pidfile: &Path,
     vm_name: &str,
@@ -1616,80 +1342,6 @@ pub(crate) fn inspect_vm_state(
     ("unknown".to_string(), None, warnings)
 }
 
-pub(crate) fn inspect_broker_state(pidfile: &Path) -> (BrokerProcessState, Vec<String>) {
-    let mut warnings = Vec::new();
-
-    if !pidfile.is_file() {
-        return (BrokerProcessState::Offline, warnings);
-    }
-
-    let contents = match fs::read_to_string(pidfile) {
-        Ok(contents) => contents,
-        Err(err) => {
-            warnings.push(format!(
-                "Unable to read broker pidfile at {}: {err}",
-                pidfile.display()
-            ));
-            return (BrokerProcessState::Offline, warnings);
-        }
-    };
-
-    let trimmed = contents.trim();
-    if trimmed.is_empty() {
-        warnings.push(format!(
-            "Broker pidfile at {} is empty. Removing stale file.",
-            pidfile.display()
-        ));
-        let _ = fs::remove_file(pidfile);
-        return (BrokerProcessState::Offline, warnings);
-    }
-
-    let pid: pid_t = match trimmed.parse() {
-        Ok(pid) => pid,
-        Err(_) => {
-            warnings.push(format!(
-                "Broker pidfile at {} has invalid pid `{trimmed}`. Removing stale file.",
-                pidfile.display()
-            ));
-            let _ = fs::remove_file(pidfile);
-            return (BrokerProcessState::Offline, warnings);
-        }
-    };
-
-    let alive = unsafe { libc::kill(pid, 0) };
-    if alive == 0 {
-        return (BrokerProcessState::Running { pid }, warnings);
-    }
-
-    let errno = io::Error::last_os_error()
-        .raw_os_error()
-        .unwrap_or_default();
-    if errno == libc::EPERM {
-        return (BrokerProcessState::Running { pid }, warnings);
-    }
-
-    if errno == libc::ESRCH {
-        warnings.push(format!(
-            "Removing stale broker pidfile at {} (process {pid} no longer exists).",
-            pidfile.display()
-        ));
-        if let Err(err) = fs::remove_file(pidfile) {
-            warnings.push(format!(
-                "Failed to remove stale broker pidfile at {}: {err}",
-                pidfile.display()
-            ));
-        }
-        return (BrokerProcessState::Offline, warnings);
-    }
-
-    warnings.push(format!(
-        "Unable to determine broker process state (pid {pid}, errno {errno}).",
-        errno = errno,
-        pid = pid
-    ));
-    (BrokerProcessState::Offline, warnings)
-}
-
 fn ensure_port_is_free(port: u16, description: &str) -> Result<()> {
     let bind_addr = format!("127.0.0.1:{port}");
     match TcpListener::bind(&bind_addr) {
@@ -1706,18 +1358,6 @@ fn ensure_port_is_free(port: u16, description: &str) -> Result<()> {
             message: format!("Unable to check host port {port} for {description}: {err}"),
         }),
     }
-}
-
-fn broker_pid_path_from_root(state_root: &Path) -> PathBuf {
-    state_root.join("broker.pid")
-}
-
-fn broker_log_path_from_root(log_root: &Path) -> PathBuf {
-    log_root.join("broker.log")
-}
-
-pub(crate) fn broker_handshake_dir_from_root(state_root: &Path) -> PathBuf {
-    state_root.join("handshakes")
 }
 
 #[derive(Debug)]
@@ -2270,131 +1910,16 @@ fn find_executable(candidates: &[&str]) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::config::{
-        BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig,
-        DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, DEFAULT_BROKER_PORT, LifecycleConfig, MemorySpec,
-        ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
+        BaseImageSource, BootstrapConfig, BootstrapMode, DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS,
+        LifecycleConfig, MemorySpec, ProjectConfig, ProjectFeatures, VmBootstrapConfig,
+        VmDefinition, Workflows,
     };
     use crate::error::Error;
     use std::collections::HashMap;
     use std::fs;
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex};
-    use std::thread;
-    use std::time::Duration;
     use tempfile::tempdir;
-
-    #[derive(Clone, Default)]
-    struct TestBrokerLauncher {
-        pid: u32,
-        requests: Arc<Mutex<Vec<PathBuf>>>,
-        aborts: Arc<Mutex<usize>>,
-    }
-
-    impl TestBrokerLauncher {
-        fn new(pid: u32) -> Self {
-            Self {
-                pid,
-                requests: Arc::new(Mutex::new(Vec::new())),
-                aborts: Arc::new(Mutex::new(0)),
-            }
-        }
-
-        fn request_count(&self) -> usize {
-            self.requests.lock().unwrap().len()
-        }
-
-        fn abort_count(&self) -> usize {
-            *self.aborts.lock().unwrap()
-        }
-    }
-
-    impl BrokerLauncher for TestBrokerLauncher {
-        fn launch(
-            &self,
-            request: &BrokerLaunchRequest<'_>,
-        ) -> crate::error::Result<Box<dyn BrokerHandle>> {
-            let pidfile = request.pidfile.clone();
-            std::fs::File::create(&pidfile).map_err(|err| Error::PreflightFailed {
-                message: format!(
-                    "Test launcher failed to create pidfile {}: {err}",
-                    pidfile.display()
-                ),
-            })?;
-            self.requests.lock().unwrap().push(pidfile);
-            Ok(Box::new(TestBrokerHandle {
-                pid: self.pid,
-                aborts: Arc::clone(&self.aborts),
-            }))
-        }
-    }
-
-    struct TestBrokerHandle {
-        pid: u32,
-        aborts: Arc<Mutex<usize>>,
-    }
-
-    impl BrokerHandle for TestBrokerHandle {
-        fn pid(&self) -> Option<u32> {
-            Some(self.pid)
-        }
-
-        fn abort(&mut self) -> std::io::Result<()> {
-            *self.aborts.lock().unwrap() += 1;
-            Ok(())
-        }
-    }
-
-    fn minimal_project(state_root: &Path) -> ProjectConfig {
-        ProjectConfig {
-            file_path: state_root.join("castra.toml"),
-            project_root: state_root.to_path_buf(),
-            version: "0.1.0".to_string(),
-            project_name: "demo".to_string(),
-            vms: Vec::new(),
-            state_root: state_root.to_path_buf(),
-            workflows: Workflows { init: Vec::new() },
-            broker: BrokerConfig {
-                port: DEFAULT_BROKER_PORT,
-            },
-            lifecycle: LifecycleConfig::default(),
-            bootstrap: BootstrapConfig::default(),
-            warnings: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn start_broker_uses_supplied_launcher() {
-        let dir = tempdir().unwrap();
-        let state_root = dir.path().join("state");
-        let log_root = state_root.join("logs");
-        let project = minimal_project(&state_root);
-        let launcher = TestBrokerLauncher::new(4321);
-        let mut diagnostics = Vec::new();
-        let mut events = Vec::new();
-
-        let result = start_broker(
-            &project,
-            &state_root,
-            &log_root,
-            &mut diagnostics,
-            &mut events,
-            &launcher,
-        )
-        .expect("broker launch");
-
-        assert_eq!(result, Some(4321));
-        assert_eq!(launcher.request_count(), 1);
-        assert_eq!(launcher.abort_count(), 0);
-        assert!(state_root.join("broker.pid").exists());
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, Event::BrokerStarted { pid, .. } if *pid == 4321))
-        );
-        assert!(diagnostics.is_empty());
-    }
-
     #[test]
     fn assess_cache_reports_missing_image() {
         let dir = tempdir().unwrap();
@@ -2490,6 +2015,36 @@ mod tests {
         assert!(accelerator_requested(&available, "accel=hvf:tcg"));
         assert!(!accelerator_requested(&available, "machine=q35"));
         assert!(!accelerator_requested(&available, "accel=tcg"));
+    }
+
+    fn empty_project(state_root: &Path) -> ProjectConfig {
+        ProjectConfig {
+            file_path: state_root.join("castra.toml"),
+            project_root: state_root.to_path_buf(),
+            version: "0.1.0".to_string(),
+            project_name: "demo".to_string(),
+            features: ProjectFeatures::default(),
+            vms: Vec::new(),
+            state_root: state_root.to_path_buf(),
+            workflows: Workflows { init: Vec::new() },
+            lifecycle: LifecycleConfig::default(),
+            bootstrap: BootstrapConfig::default(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn prepare_runtime_context_skips_legacy_directories() {
+        let temp = tempdir().unwrap();
+        let state_root = temp.path().join("state-root");
+        let project = empty_project(&state_root);
+
+        let context = prepare_runtime_context(&project, VmLaunchMode::Daemonize).expect("context");
+
+        assert!(context.state_root.exists());
+        assert!(context.log_root.exists());
+        assert!(!context.state_root.join("handshakes").exists());
+        assert!(!context.log_root.join("bus").exists());
     }
 
     #[cfg(unix)]

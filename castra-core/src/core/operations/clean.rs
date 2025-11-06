@@ -13,9 +13,7 @@ use crate::core::outcome::{
 };
 use crate::core::project::config_state_root;
 use crate::core::reporter::Reporter;
-use crate::core::runtime::{
-    BrokerProcessState, broker_handshake_dir_from_root, inspect_broker_state, inspect_vm_state,
-};
+use crate::core::runtime::inspect_vm_state;
 use crate::core::status;
 
 use super::{ReporterProxy, load_project_for_operation};
@@ -194,19 +192,12 @@ fn ensure_not_running_config(
     let status_snapshot = status::collect_status(project);
     diagnostics.extend(status_snapshot.diagnostics);
 
-    let mut running_vms = status_snapshot
+    let running_vms = status_snapshot
         .rows
         .iter()
         .filter(|row| row.state == "running")
         .map(|row| row.name.clone())
         .collect::<Vec<_>>();
-    let broker_running = matches!(
-        status_snapshot.broker_state,
-        BrokerProcessState::Running { .. }
-    );
-    if broker_running {
-        running_vms.push("broker".to_string());
-    }
 
     if running_vms.is_empty() {
         return Ok(());
@@ -239,18 +230,7 @@ fn ensure_not_running_state_root(
     if !state_root.exists() {
         return Ok(());
     }
-    let broker_pid = state_root.join("broker.pid");
-    let (broker_state, mut broker_warnings) = inspect_broker_state(&broker_pid);
-    diagnostics.extend(
-        broker_warnings
-            .drain(..)
-            .map(|warning| Diagnostic::new(Severity::Warning, warning)),
-    );
-
     let mut running = Vec::new();
-    if matches!(broker_state, BrokerProcessState::Running { .. }) {
-        running.push("broker".to_string());
-    }
 
     if let Ok(entries) = fs::read_dir(state_root) {
         for entry in entries.flatten() {
@@ -299,6 +279,10 @@ fn ensure_not_running_state_root(
     }
 }
 
+fn legacy_handshake_dir(state_root: &Path) -> PathBuf {
+    state_root.join("handshakes")
+}
+
 fn clean_state_root(
     project_name: Option<String>,
     state_root: PathBuf,
@@ -332,7 +316,7 @@ fn clean_state_root(
     )?;
 
     reclaimed += process_target(
-        &broker_handshake_dir_from_root(&state_root),
+        &legacy_handshake_dir(&state_root),
         CleanupKind::Handshakes,
         options,
         reporter,

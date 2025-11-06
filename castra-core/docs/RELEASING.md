@@ -12,21 +12,24 @@ This document tracks the steps for cutting an official Castra release. It is del
 
 1. **Update metadata**
    - Bump the version in `Cargo.toml` and regenerate `Cargo.lock` (`cargo update -p castra`).
-   - Ensure any documentation updates for the release are committed (README, docs, etc.).
+   - Ensure any documentation updates for the release are committed (README, docs, `docs/migration/v0.10-brokerless-announcement.md`, etc.).
 2. **Verify the build on MSRV**
    - `rustup run 1.77.0 cargo fmt`
    - `rustup run 1.77.0 cargo test`
    - Optionally run `cargo clippy --all-targets --all-features` and address warnings.
-3. **Smoke-test the CLI**
+3. **Run hygiene checks**
+   - `rg '(broker|bus)'` — only historical docs or migration notes should match.
+   - Confirm harness logs capture Vizier tunnel summaries (protocol, RTT hint, log path) in recent runs.
+4. **Smoke-test the CLI**
    - `cargo run -- --version` should report the bumped semver and the current short git SHA.
    - Run representative commands against a sample project (`up`, `status`, `down`) to spot regressions.
-4. **Tag the release**
+5. **Tag the release**
    - `git tag -a vX.Y.Z -m "Castra vX.Y.Z"`
    - `git push origin vX.Y.Z`
-5. **Publish crates.io artifacts**
+6. **Publish crates.io artifacts**
    - `cargo publish`
    - Wait for publication to propagate, then verify `castra --version` from the registry build (no git metadata) prints the plain semver.
-6. **Share release notes**
+7. **Share release notes**
    - Draft release notes summarizing major changes and TODO updates.
    - Announce in the appropriate channels once the crate and binaries are available.
 

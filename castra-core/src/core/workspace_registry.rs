@@ -10,7 +10,7 @@ use crate::config::{self, ProjectConfig};
 use crate::core::diagnostics::{Diagnostic, Severity};
 use crate::core::options::{ConfigLoadOptions, ConfigSource, UpOptions, VmLaunchMode};
 use crate::core::project::default_projects_root;
-use crate::core::runtime::{BrokerProcessState, inspect_broker_state, inspect_vm_state};
+use crate::core::runtime::inspect_vm_state;
 use crate::error::{Error, Result};
 
 use sha2::{Digest, Sha256};
@@ -205,7 +205,6 @@ pub struct BootstrapOverridesMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvocationMetadata {
     pub plan: bool,
-    pub broker_only: bool,
     pub force: bool,
     #[serde(default)]
     pub alpine_qcow_override: Option<PathBuf>,
@@ -253,14 +252,12 @@ pub struct WorkspaceHandle {
 
 #[derive(Debug, Clone)]
 pub struct WorkspaceRuntimeState {
-    pub broker: BrokerRuntimeState,
     pub vms: Vec<VmRuntimeState>,
 }
 
 impl WorkspaceRuntimeState {
     pub fn is_active(&self) -> bool {
-        matches!(self.broker.state, BrokerProcessState::Running { .. })
-            || self.vms.iter().any(|vm| vm.running)
+        self.vms.iter().any(|vm| vm.running)
     }
 }
 
@@ -291,12 +288,6 @@ impl WorkspaceHandle {
             id: self.workspace_id.clone(),
         })
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct BrokerRuntimeState {
-    pub state: BrokerProcessState,
-    pub pid: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -448,7 +439,6 @@ fn build_workspace_metadata(
         },
         invocation: InvocationMetadata {
             plan: options.plan,
-            broker_only: options.broker_only,
             force: options.force,
             alpine_qcow_override: options.alpine_qcow_override.clone(),
             bootstrap_overrides_applied: options.bootstrap.global.is_some()
@@ -580,19 +570,6 @@ fn inspect_runtime(
     metadata: Option<&WorkspaceMetadata>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> WorkspaceRuntimeState {
-    let broker_pid_path = state_root.join("broker.pid");
-    let (broker_state, mut broker_warnings) = inspect_broker_state(&broker_pid_path);
-    diagnostics.extend(
-        broker_warnings
-            .drain(..)
-            .map(|warning| Diagnostic::new(Severity::Warning, warning)),
-    );
-
-    let broker_pid = match broker_state {
-        BrokerProcessState::Running { pid } => Some(pid),
-        BrokerProcessState::Offline => None,
-    };
-
     let vm_names: Vec<String> = if let Some(meta) = metadata {
         meta.vms.iter().map(|vm| vm.name.clone()).collect()
     } else {
@@ -617,13 +594,7 @@ fn inspect_runtime(
         });
     }
 
-    WorkspaceRuntimeState {
-        broker: BrokerRuntimeState {
-            state: broker_state,
-            pid: broker_pid,
-        },
-        vms: vm_states,
-    }
+    WorkspaceRuntimeState { vms: vm_states }
 }
 
 fn discover_vm_names_from_pidfiles(state_root: &Path) -> Vec<String> {

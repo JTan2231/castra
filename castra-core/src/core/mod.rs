@@ -7,7 +7,6 @@ pub mod outcome;
 pub mod reporter;
 
 pub mod bootstrap;
-pub mod broker;
 pub mod logs;
 pub mod operations;
 pub mod ports;
@@ -18,21 +17,17 @@ pub mod workspace_registry;
 
 pub use diagnostics::{Diagnostic, Severity};
 pub use events::{CleanupKind, Event};
-pub use operations::{
-    broker, bus_publish, bus_tail, clean, down, init, logs, ports, status, up, up_with_launcher,
-};
+pub use operations::{clean, down, init, logs, ports, status, up, up_with_launcher};
 pub use options::{
-    BrokerOptions, BusLogTarget, BusPublishOptions, BusTailOptions, CleanOptions, CleanScope,
-    ConfigLoadOptions, ConfigSource, DownOptions, InitOptions, LogsOptions, PortsOptions,
-    PortsView, ProjectSelector, StatusOptions, UpOptions, VmLaunchMode,
+    CleanOptions, CleanScope, ConfigLoadOptions, ConfigSource, DownOptions, InitOptions,
+    LogsOptions, PortsOptions, PortsView, ProjectSelector, StatusOptions, UpOptions, VmLaunchMode,
 };
 pub use outcome::{
-    BootstrapRunOutcome, BootstrapRunStatus, BrokerLaunchOutcome, BrokerShutdownOutcome,
-    BrokerState, BusPublishOutcome, BusTailOutcome, CleanOutcome, CleanupAction, DownOutcome,
-    InitOutcome, LogEntry, LogFollower, LogSection, LogSectionState, LogsOutcome, OperationOutput,
+    BootstrapRunOutcome, BootstrapRunStatus, CleanOutcome, CleanupAction, DownOutcome, InitOutcome,
+    LogEntry, LogFollower, LogSection, LogSectionState, LogsOutcome, OperationOutput,
     OperationResult, PortConflictRow, PortForwardRow, PortForwardStatus, PortInactiveReason,
     PortsOutcome, ProjectPortsOutcome, SkipReason, StateRootCleanup, StatusOutcome, UpOutcome,
     VmLaunchOutcome, VmPortDetail, VmShutdownOutcome,
 };
 pub use reporter::Reporter;
-pub use runtime::{BrokerLaunchRequest, BrokerLauncher, ProcessBrokerLauncher};
+pub use runtime::{ProcessVizierLauncher, VizierLaunchRequest, VizierLauncher};

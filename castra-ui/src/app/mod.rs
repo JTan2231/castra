@@ -1,14 +1,11 @@
 pub mod actions;
 
 use std::env;
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::thread;
 
 use crate::{
-    codex::{HarnessJob, HarnessRunner},
+    codex::HarnessRunner,
     components::{
         message_log::MessageToggleHandler,
         shell::{render as render_shell, roster_rows},
@@ -16,7 +13,6 @@ use crate::{
     },
     controller::command,
     input::prompt::{PromptEvent, PromptInput},
-    ssh::{HANDSHAKE_BANNER, SshEvent, SshManager, SshStream},
     state::{AppState, ConfigSelection, UpLifecycle},
     transcript::TranscriptWriter,
 };
@@ -24,23 +20,23 @@ use async_channel::{Receiver, Sender, unbounded};
 use castra::{
     Error as CastraError,
     core::{
-        broker,
         diagnostics::{Diagnostic, Severity as DiagnosticSeverity},
-        events::{BootstrapPlanSsh, Event},
+        events::Event,
         operations,
-        options::{BrokerOptions, ConfigLoadOptions, DownOptions, UpOptions, VmLaunchMode},
+        options::{ConfigLoadOptions, DownOptions, UpOptions, VmLaunchMode},
         outcome::{DownOutcome, OperationOutput, UpOutcome},
         reporter::Reporter,
-        runtime::{BrokerHandle, BrokerLaunchRequest, BrokerLauncher},
     },
     load_project_config,
 };
 use castra_harness::TurnHandle;
-use castra_harness::{HarnessEvent, PromptBuilder, TurnRequest};
+use castra_harness::{HarnessEvent, TurnRequest, VizierInputFrame};
 use gpui::{
     AppContext, AsyncApp, Context, Entity, FocusHandle, Focusable, IntoElement, MouseDownEvent,
     Render, Task, WeakEntity, Window,
 };
+
+const BROKER_DEPRECATION_MESSAGE: &str = "Deprecated: bus/broker have been removed. Use the Codex harness vizier stream over SSH (see VIZIER_REMOTE_PROTOCOL.md).";
 
 #[derive(Default)]
 pub struct ShutdownState {
@@ -107,18 +103,15 @@ impl ShutdownState {
 
 pub struct ChatApp {
     state: AppState,
+    vizier_input_counter: u64,
     prompt: Entity<PromptInput>,
-    ssh_manager: SshManager,
-    ssh_events: Option<Receiver<SshEvent>>,
     harness_runner: HarnessRunner,
     shutdown: Arc<ShutdownState>,
-    workspace_root: PathBuf,
     codex_handle: Option<Arc<TurnHandle>>,
 }
 
 impl ChatApp {
     pub fn new(prompt: Entity<PromptInput>, shutdown: Arc<ShutdownState>) -> Self {
-        let (ssh_tx, ssh_rx) = unbounded();
         let workspace_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let (transcript_root, transcript_warning) = match resolve_transcript_workspace_root() {
             Ok(root) => (root, None),
@@ -169,25 +162,14 @@ impl ChatApp {
         if let Err(err) = state.refresh_config_catalog() {
             state.push_system_message(format!("Failed to load config catalog: {err}"));
         }
+
         Self {
             state,
+            vizier_input_counter: 0,
             prompt,
-            ssh_manager: SshManager::new(ssh_tx),
-            ssh_events: Some(ssh_rx),
             harness_runner: HarnessRunner::new(),
             shutdown,
-            workspace_root,
             codex_handle: None,
-        }
-    }
-
-    pub fn initialize(&mut self, cx: &mut Context<Self>) {
-        if let Some(receiver) = self.ssh_events.take() {
-            let async_app = cx.to_async();
-            let weak = cx.entity().downgrade();
-            async_app
-                .spawn(move |app: &mut AsyncApp| pump_ssh(receiver, weak, app.clone()))
-                .detach();
         }
     }
 
@@ -232,121 +214,33 @@ impl ChatApp {
         if trimmed.is_empty() {
             return Ok(());
         }
-
-        let plans = self.state.vizier_ssh_plans();
-        if let Err(err) = self.ensure_vizier_wrappers(&plans) {
-            self.state
-                .push_system_message(format!("Failed to stage vizier wrapper scripts: {err}"));
-        }
-
-        let bootstrap_scripts = self
-            .state
-            .vizier_bootstrap_scripts()
-            .into_iter()
-            .filter_map(|(vm, path)| match fs::read_to_string(&path) {
-                Ok(contents) => Some((vm, contents)),
-                Err(err) => {
-                    self.state.push_system_message(format!(
-                        "Unable to read bootstrap script for {vm} at {}: {err}",
-                        path.display()
-                    ));
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let endpoints = self.state.vizier_endpoints();
-        let prompt_full = PromptBuilder::new()
-            .with_operational_context(endpoints)
-            .with_bootstrap_scripts(bootstrap_scripts)
-            .build();
-
-        let request = if let Some(thread_id) = self.state.vizier_thread_id() {
-            let mut context = operational_context_section(&prompt_full);
-            if !context.ends_with('\n') {
-                context.push('\n');
-            }
-            context.push_str("# Mission Update\n");
-            context.push_str(trimmed);
-            context.push('\n');
-            TurnRequest::new(context).with_resume_thread(thread_id)
-        } else {
-            let mut composed = prompt_full;
-            composed.push_str("\n# Mission\n");
-            composed.push_str(trimmed);
-            composed.push('\n');
-            TurnRequest::new(composed)
-        };
-
-        match self.harness_runner.run(request) {
-            Ok(job) => {
-                self.state.set_vizier_activity_status("COORDINATING");
-                cx.notify();
-                let async_app = cx.to_async();
-                let weak = cx.entity().downgrade();
-                async_app
-                    .spawn(move |app: &mut AsyncApp| pump_vizier(job, weak, app.clone()))
-                    .detach();
-                Ok(())
-            }
-            Err(err) => Err(err.to_string()),
-        }
+        self.dispatch_vizier_remote(trimmed, cx)
     }
 
-    fn ensure_vizier_wrappers(&self, plans: &[(String, BootstrapPlanSsh)]) -> Result<(), String> {
-        if plans.is_empty() {
-            return Ok(());
-        }
+    fn next_vizier_input_id(&mut self) -> String {
+        let id = self.vizier_input_counter;
+        self.vizier_input_counter = self.vizier_input_counter.wrapping_add(1);
+        format!("ui-{id}")
+    }
 
-        let runtime = match self.state.runtime_paths() {
-            Some(paths) => paths.clone(),
-            None => return Ok(()),
+    fn dispatch_vizier_remote(
+        &mut self,
+        message: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(vm) = self.state.vizier_primary_vm() else {
+            return Err("Vizier tunnel not yet available.".to_string());
         };
 
-        let scripts_root = runtime.state_root().join("vizier");
-        fs::create_dir_all(&scripts_root).map_err(|err| {
-            format!(
-                "unable to create vizier script directory {}: {err}",
-                scripts_root.display()
-            )
-        })?;
+        let frame_id = self.next_vizier_input_id();
+        let frame = VizierInputFrame::new(frame_id, message.to_string());
 
-        let vm_commands_src = self.workspace_root.join("vm_commands.sh");
-        if !vm_commands_src.is_file() {
-            return Err(format!(
-                "vm_commands.sh not found at {}",
-                vm_commands_src.display()
-            ));
-        }
+        self.state.set_vizier_activity_status("EXECUTING");
+        cx.notify();
 
-        let vm_commands_dst = scripts_root.join("vm_commands.sh");
-        fs::copy(&vm_commands_src, &vm_commands_dst).map_err(|err| {
-            format!(
-                "failed to stage vm_commands.sh into {}: {err}",
-                vm_commands_dst.display()
-            )
-        })?;
-        set_executable(&vm_commands_dst).map_err(|err| {
-            format!(
-                "failed to set executable bit on {}: {err}",
-                vm_commands_dst.display()
-            )
-        })?;
-
-        for (vm, plan) in plans {
-            let script_path = scripts_root.join(format!("{vm}.sh"));
-            let script_contents = build_wrapper_script(plan);
-            write_if_changed(&script_path, &script_contents)
-                .map_err(|err| format!("failed to write {}: {err}", script_path.display()))?;
-            set_executable(&script_path).map_err(|err| {
-                format!(
-                    "failed to set executable bit on {}: {err}",
-                    script_path.display()
-                )
-            })?;
-        }
-
-        Ok(())
+        self.harness_runner
+            .send_vizier_input(vm, frame)
+            .map_err(|err| err.to_string())
     }
 
     fn dispatch_codex(&mut self, vm: String, payload: String, cx: &mut Context<Self>) {
@@ -514,8 +408,6 @@ impl ChatApp {
             return;
         }
 
-        self.ssh_manager.reset();
-
         let ConfigSelection {
             path: config_path,
             display_name,
@@ -555,15 +447,18 @@ impl ChatApp {
                 .detach();
         }
 
-        let options = build_up_options(&config_path);
-        let launcher = Arc::new(UiBrokerLauncher::default());
+        let _options = build_up_options(&config_path);
         let background = cx.background_spawn({
             let sender = event_tx.clone();
-            let launcher = Arc::clone(&launcher);
             async move {
                 let mut reporter = UiEventReporter::new(sender);
-                let launcher_ref: &dyn BrokerLauncher = launcher.as_ref();
-                operations::up_with_launcher(options, launcher_ref, Some(&mut reporter))
+                reporter.report(Event::Message {
+                    severity: DiagnosticSeverity::Warning,
+                    text: BROKER_DEPRECATION_MESSAGE.to_string(),
+                });
+                Err(CastraError::PreflightFailed {
+                    message: BROKER_DEPRECATION_MESSAGE.to_string(),
+                })
             }
         });
 
@@ -590,18 +485,9 @@ impl ChatApp {
                     .iter()
                     .filter(|vm| vm.changed)
                     .count();
-                let broker_changed = output.value.broker.changed;
-                if vm_changes > 0 || broker_changed {
-                    let mut components = Vec::new();
-                    if vm_changes > 0 {
-                        components.push(format!("{vm_changes} VM(s)"));
-                    }
-                    if broker_changed {
-                        components.push("broker".to_string());
-                    }
+                if vm_changes > 0 {
                     self.state.push_system_message(format!(
-                        "Recovered stale {} before launching.",
-                        components.join(" and ")
+                        "Recovered stale {vm_changes} VM(s) before launching."
                     ));
                 }
                 Ok(())
@@ -613,61 +499,8 @@ impl ChatApp {
     }
 
     fn handle_up_event(&mut self, event: Event, cx: &mut Context<Self>) {
-        match &event {
-            Event::BootstrapPlanned {
-                vm, ssh: Some(ssh), ..
-            } => {
-                self.ssh_manager.register_plan(vm, ssh);
-            }
-            Event::BootstrapCompleted { vm, .. } => {
-                let _ = self.ssh_manager.ensure_connection(vm);
-            }
-            _ => {}
-        }
-
         if let Some(message) = self.state.handle_up_event(&event) {
             self.state.push_system_message(message);
-        }
-        cx.notify();
-    }
-
-    fn handle_ssh_event(&mut self, event: SshEvent, cx: &mut Context<Self>) {
-        match event {
-            SshEvent::Connecting { vm, command } => {
-                let label = vm.to_uppercase();
-                self.state
-                    .push_system_message(format!("{label}: establishing SSH bridge ({command})"));
-            }
-            SshEvent::Connected { vm } => {
-                let label = vm.to_uppercase();
-                self.state
-                    .push_system_message(format!("{label}: SSH bridge established."));
-            }
-            SshEvent::Output { vm, stream, line } => {
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed == HANDSHAKE_BANNER {
-                    return;
-                }
-                let speaker = match stream {
-                    SshStream::Stdout => format!("SSH→{}", vm.to_uppercase()),
-                    SshStream::Stderr => format!("SSH!→{}", vm.to_uppercase()),
-                };
-                self.state.push_message(speaker, line);
-            }
-            SshEvent::ConnectionFailed { vm, error } => {
-                let label = vm.to_uppercase();
-                self.state
-                    .push_system_message(format!("{label}: SSH bridge error — {error}"));
-            }
-            SshEvent::Disconnected { vm, exit_status } => {
-                let label = vm.to_uppercase();
-                let status_text = match exit_status {
-                    Some(code) => format!("exit status {code}"),
-                    None => "terminated".to_string(),
-                };
-                self.state
-                    .push_system_message(format!("{label}: SSH bridge closed ({status_text})."));
-            }
         }
         cx.notify();
     }
@@ -677,6 +510,7 @@ impl ChatApp {
         cx.notify();
     }
 
+    #[allow(dead_code)]
     fn handle_vizier_event(&mut self, event: HarnessEvent, cx: &mut Context<Self>) {
         self.state.apply_vizier_event(&event);
         cx.notify();
@@ -752,18 +586,9 @@ impl ChatApp {
                     .iter()
                     .filter(|vm| vm.changed)
                     .count();
-                let broker_changed = output.value.broker.changed;
-                if vm_changes > 0 || broker_changed {
-                    let mut parts = Vec::new();
-                    if vm_changes > 0 {
-                        parts.push(format!("{vm_changes} VM(s)"));
-                    }
-                    if broker_changed {
-                        parts.push("broker".to_string());
-                    }
+                if vm_changes > 0 {
                     self.state.push_system_message(format!(
-                        "Shutdown complete: {} terminated.",
-                        parts.join(" and ")
+                        "Shutdown complete: {vm_changes} VM(s) terminated."
                     ));
                 } else {
                     self.state
@@ -792,119 +617,6 @@ impl ChatApp {
             self.state.push_system_message(rendered);
         }
     }
-}
-
-fn write_if_changed(path: &Path, contents: &str) -> io::Result<()> {
-    if let Ok(existing) = fs::read(path) {
-        if existing == contents.as_bytes() {
-            return Ok(());
-        }
-    }
-    fs::write(path, contents)
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = fs::metadata(path)?;
-    let mut perms = metadata.permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(path, perms)
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path) -> io::Result<()> {
-    Ok(())
-}
-
-fn build_wrapper_script(plan: &BootstrapPlanSsh) -> String {
-    let mut script = String::new();
-    script.push_str("#!/usr/bin/env bash\n");
-    script.push_str("set -euo pipefail\n\n");
-    script.push_str("SCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n");
-
-    let target = format!("{}@{}", plan.user, plan.host);
-    script.push_str(&format!("export SSH_TARGET={}\n", shell_quote(&target)));
-    script.push_str(&format!("export SSH_PORT={}\n", plan.port));
-
-    if let Some(extra) = format_extra_opts(plan) {
-        script.push_str("export SSH_STRICT=1\n");
-        script.push_str(&format!("export SSH_EXTRA_OPTS={}\n", shell_quote(&extra)));
-    } else {
-        script.push_str("export SSH_STRICT=0\n");
-        script.push_str("unset SSH_EXTRA_OPTS\n");
-    }
-
-    script.push_str("\nexec \"${SCRIPT_DIR}/vm_commands.sh\" \"$@\"\n");
-    script
-}
-
-fn format_extra_opts(plan: &BootstrapPlanSsh) -> Option<String> {
-    let mut tokens = Vec::new();
-
-    if let Some(identity) = plan.identity.as_ref() {
-        tokens.push("-i".to_string());
-        tokens.push(format_shell_token(identity.to_string_lossy().as_ref()));
-    }
-
-    for opt in &plan.options {
-        tokens.push("-o".to_string());
-        tokens.push(format_shell_token(opt));
-    }
-
-    if tokens.is_empty() {
-        None
-    } else {
-        Some(tokens.join(" "))
-    }
-}
-
-fn format_shell_token(token: &str) -> String {
-    if token.is_empty() {
-        return "\"\"".to_string();
-    }
-
-    if token
-        .chars()
-        .all(|ch| matches!(ch, '0'..='9' | 'a'..='z' | 'A'..='Z' | '_' | '-' | '.' | '/' | ':' | '@' | '='))
-    {
-        return token.to_string();
-    }
-
-    let mut escaped = String::from("\"");
-    for ch in token.chars() {
-        match ch {
-            '\\' | '"' | '$' | '`' => {
-                escaped.push('\\');
-                escaped.push(ch);
-            }
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped.push('"');
-    escaped
-}
-
-fn shell_quote(value: &str) -> String {
-    if value.is_empty() {
-        return "''".to_string();
-    }
-
-    let mut quoted = String::with_capacity(value.len() + 2);
-    quoted.push('\'');
-    for ch in value.chars() {
-        if ch == '\'' {
-            quoted.push_str("'\\''");
-        } else {
-            quoted.push(ch);
-        }
-    }
-    quoted.push('\'');
-    quoted
 }
 
 impl Render for ChatApp {
@@ -1025,23 +737,6 @@ async fn pump_events(
     }
 }
 
-async fn pump_ssh(
-    receiver: async_channel::Receiver<SshEvent>,
-    weak: WeakEntity<ChatApp>,
-    mut app: AsyncApp,
-) {
-    while let Ok(event) = receiver.recv().await {
-        if weak
-            .update(&mut app, |chat, cx| {
-                chat.handle_ssh_event(event.clone(), cx)
-            })
-            .is_err()
-        {
-            break;
-        }
-    }
-}
-
 async fn pump_codex(
     receiver: Receiver<HarnessEvent>,
     handle: Arc<TurnHandle>,
@@ -1064,22 +759,6 @@ async fn pump_codex(
     let _ = weak.update(&mut app, |chat, cx| {
         chat.finish_codex_turn(cx);
     });
-}
-
-async fn pump_vizier(job: HarnessJob, weak: WeakEntity<ChatApp>, mut app: AsyncApp) {
-    let (receiver, handle) = job.into_parts();
-    let _handle = handle;
-
-    while let Ok(event) = receiver.recv().await {
-        if weak
-            .update(&mut app, |chat, cx| {
-                chat.handle_vizier_event(event.clone(), cx)
-            })
-            .is_err()
-        {
-            break;
-        }
-    }
 }
 
 async fn await_completion(
@@ -1145,10 +824,6 @@ fn summarize_up(outcome: &UpOutcome) -> String {
         outcome.launched_vms.len()
     ));
 
-    if let Some(broker) = &outcome.broker {
-        parts.push(format!("broker listening on :{}", broker.config.port));
-    }
-
     if !outcome.bootstraps.is_empty() {
         let mut success = 0usize;
         let mut noop = 0usize;
@@ -1189,16 +864,6 @@ fn format_diagnostic(diagnostic: &Diagnostic) -> String {
     text
 }
 
-fn operational_context_section(prompt: &str) -> String {
-    if let Some((_, rest)) = prompt.split_once("\n\n# Operational Context\n") {
-        format!("# Operational Context\n{rest}")
-    } else if let Some(index) = prompt.find("# Operational Context\n") {
-        prompt[index..].to_string()
-    } else {
-        "# Operational Context\n- No active VMs reported\n".to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1230,56 +895,5 @@ impl UiEventReporter {
 impl Reporter for UiEventReporter {
     fn report(&mut self, event: Event) {
         let _ = self.sender.send_blocking(event);
-    }
-}
-
-#[derive(Default, Clone)]
-struct UiBrokerLauncher;
-
-impl BrokerLauncher for UiBrokerLauncher {
-    fn launch(&self, request: &BrokerLaunchRequest<'_>) -> castra::Result<Box<dyn BrokerHandle>> {
-        let options = BrokerOptions {
-            port: request.port,
-            pidfile: request.pidfile.clone(),
-            logfile: request.logfile.clone(),
-            handshake_dir: request.handshake_dir.clone(),
-        };
-
-        UiBrokerHandle::spawn(options)
-    }
-}
-
-struct UiBrokerHandle {
-    join: Option<thread::JoinHandle<()>>,
-}
-
-impl UiBrokerHandle {
-    fn spawn(options: BrokerOptions) -> castra::Result<Box<dyn BrokerHandle>> {
-        let handle = thread::Builder::new()
-            .name("castra-broker".into())
-            .spawn(move || {
-                if let Err(err) = broker::run(&options) {
-                    eprintln!("Broker exited: {err}");
-                }
-            })
-            .map_err(|err| castra::Error::PreflightFailed {
-                message: format!("Failed to spawn broker thread: {err}"),
-            })?;
-
-        let boxed: Box<UiBrokerHandle> = Box::new(UiBrokerHandle { join: Some(handle) });
-        Ok(boxed as Box<dyn BrokerHandle>)
-    }
-}
-
-impl BrokerHandle for UiBrokerHandle {
-    fn pid(&self) -> Option<u32> {
-        Some(std::process::id())
-    }
-
-    fn abort(&mut self) -> std::io::Result<()> {
-        if let Some(handle) = self.join.take() {
-            drop(handle);
-        }
-        Ok(())
     }
 }

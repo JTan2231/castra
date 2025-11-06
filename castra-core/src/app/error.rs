@@ -10,6 +10,7 @@ pub fn exit_code(err: &Error) -> ExitCode {
         Error::ReadConfig { .. } => ExitCode::from(74),
         Error::ParseConfig { .. } => ExitCode::from(65),
         Error::InvalidConfig { .. } => ExitCode::from(65),
+        Error::DeprecatedConfig { .. } => ExitCode::from(65),
         Error::ExplicitConfigMissing { .. } => ExitCode::from(66),
         Error::ConfigDiscoveryFailed { .. } => ExitCode::from(66),
         Error::NoActiveWorkspaces => ExitCode::from(66),
@@ -21,8 +22,8 @@ pub fn exit_code(err: &Error) -> ExitCode {
         Error::LaunchFailed { .. } => ExitCode::from(70),
         Error::ShutdownFailed { .. } => ExitCode::from(70),
         Error::BootstrapFailed { .. } => ExitCode::from(70),
-        Error::BusPublishFailed { .. } => ExitCode::from(70),
         Error::LogReadFailed { .. } => ExitCode::from(74),
+        Error::Deprecated { .. } => ExitCode::from(64),
     }
 }
 
@@ -96,17 +97,25 @@ mod tests {
             ExitCode::from(70)
         );
         assert_eq!(
-            exit_code(&Error::BusPublishFailed {
-                message: "oops".into()
-            }),
-            ExitCode::from(70)
-        );
-        assert_eq!(
             exit_code(&Error::LogReadFailed {
                 path: "log".into(),
                 source: io::Error::new(io::ErrorKind::Other, "err")
             }),
             ExitCode::from(74)
+        );
+        assert_eq!(
+            exit_code(&Error::DeprecatedConfig {
+                path: "config".into(),
+                details: "remove [broker]".into(),
+                doc: "docs/migration/brokerless-core.md",
+            }),
+            ExitCode::from(65)
+        );
+        assert_eq!(
+            exit_code(&Error::Deprecated {
+                message: "deprecated".to_string()
+            }),
+            ExitCode::from(64)
         );
     }
 }

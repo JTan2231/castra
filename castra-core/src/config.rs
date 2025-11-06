@@ -15,12 +15,12 @@ const DEFAULT_OVERLAY_SUBDIR: &str = "overlays";
 const DEFAULT_OVERLAY_SUFFIX: &str = "overlay";
 const DEFAULT_OVERLAY_EXTENSION: &str = "qcow2";
 
-pub const DEFAULT_BROKER_PORT: u16 = 7070;
 pub const DEFAULT_GRACEFUL_SHUTDOWN_WAIT_SECS: u64 = 20;
 pub const DEFAULT_SIGTERM_WAIT_SECS: u64 = 10;
 pub const DEFAULT_SIGKILL_WAIT_SECS: u64 = 5;
 pub const DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS: u64 = 120;
 
+pub const BROKERLESS_MIGRATION_DOC: &str = "docs/migration/brokerless-core.md";
 #[derive(Debug, Clone)]
 pub struct BaseImageSource {
     path: PathBuf,
@@ -65,14 +65,17 @@ pub struct ProjectConfig {
     pub project_root: PathBuf,
     pub version: String,
     pub project_name: String,
+    pub features: ProjectFeatures,
     pub vms: Vec<VmDefinition>,
     pub state_root: PathBuf,
     pub workflows: Workflows,
-    pub broker: BrokerConfig,
     pub lifecycle: LifecycleConfig,
     pub bootstrap: BootstrapConfig,
     pub warnings: Vec<String>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProjectFeatures;
 
 #[derive(Debug, Clone)]
 pub struct LifecycleConfig {
@@ -180,7 +183,7 @@ pub struct BootstrapVerifyConfig {
 }
 
 impl ProjectConfig {
-    pub fn port_conflicts(&self) -> (Vec<PortConflict>, Option<BrokerCollision>) {
+    pub fn port_conflicts(&self) -> Vec<PortConflict> {
         let mut map: HashMap<u16, Vec<&VmDefinition>> = HashMap::new();
         for vm in &self.vms {
             for forward in &vm.port_forwards {
@@ -188,28 +191,13 @@ impl ProjectConfig {
             }
         }
 
-        let duplicates = map
-            .into_iter()
+        map.into_iter()
             .filter(|(_, vms)| vms.len() > 1)
             .map(|(port, vms)| PortConflict {
                 port,
                 vm_names: vms.iter().map(|vm| vm.name.clone()).collect(),
             })
-            .collect();
-
-        let broker_collision = if self.vms.iter().any(|vm| {
-            vm.port_forwards
-                .iter()
-                .any(|pf| pf.host == self.broker.port)
-        }) {
-            Some(BrokerCollision {
-                port: self.broker.port,
-            })
-        } else {
-            None
-        };
-
-        (duplicates, broker_collision)
+            .collect()
     }
 }
 
@@ -288,19 +276,9 @@ pub struct Workflows {
 }
 
 #[derive(Debug, Clone)]
-pub struct BrokerConfig {
-    pub port: u16,
-}
-
-#[derive(Debug, Clone)]
 pub struct PortConflict {
     pub port: u16,
     pub vm_names: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BrokerCollision {
-    pub port: u16,
 }
 
 pub fn load_project_config(path: &Path) -> Result<ProjectConfig, Error> {
@@ -313,6 +291,23 @@ pub fn load_project_config(path: &Path) -> Result<ProjectConfig, Error> {
         path: path.to_path_buf(),
         source,
     })?;
+
+    let legacy_keys = find_legacy_broker_keys(&value);
+    if !legacy_keys.is_empty() {
+        let details = if legacy_keys.len() == 1 {
+            format!("remove {} from castra.toml", legacy_keys[0])
+        } else {
+            format!(
+                "remove legacy keys from castra.toml: {}",
+                legacy_keys.join(", ")
+            )
+        };
+        return Err(Error::DeprecatedConfig {
+            path: path.to_path_buf(),
+            details,
+            doc: BROKERLESS_MIGRATION_DOC,
+        });
+    }
 
     let mut warnings = detect_unknown_fields(&value);
 
@@ -338,7 +333,6 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
         "project",
         "vms",
         "workflows",
-        "broker",
         "lifecycle",
         "bootstrap",
     ];
@@ -350,10 +344,23 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
             if let toml::Value::Table(project_table) = project {
                 warn_table(
                     project_table,
-                    &["name", "state_dir"],
+                    &["name", "state_dir", "features"],
                     "[project]",
                     &mut warnings,
                 );
+
+                if let Some(features) = project_table.get("features") {
+                    if let toml::Value::Table(features_table) = features {
+                        warn_table(
+                            features_table,
+                            &["enable_vm_vizier"],
+                            "[project.features]",
+                            &mut warnings,
+                        );
+                    } else {
+                        warnings.push("Expected [project.features] to be a table.".to_string());
+                    }
+                }
             } else {
                 warnings.push("Expected [project] to be a table.".to_string());
             }
@@ -552,14 +559,6 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
             }
         }
 
-        if let Some(broker) = table.get("broker") {
-            if let toml::Value::Table(broker_table) = broker {
-                warn_table(broker_table, &["port"], "[broker]", &mut warnings);
-            } else {
-                warnings.push("Expected [broker] to be a table.".to_string());
-            }
-        }
-
         if let Some(lifecycle) = table.get("lifecycle") {
             if let toml::Value::Table(lifecycle_table) = lifecycle {
                 warn_table(
@@ -600,6 +599,16 @@ fn detect_unknown_fields(value: &toml::Value) -> Vec<String> {
     }
 
     warnings
+}
+
+fn find_legacy_broker_keys(value: &toml::Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let toml::Value::Table(table) = value {
+        if table.contains_key("broker") {
+            keys.push("[broker]".to_string());
+        }
+    }
+    keys
 }
 
 fn warn_table(
@@ -887,8 +896,6 @@ struct RawConfig {
     #[serde(default)]
     workflows: RawWorkflows,
     #[serde(default)]
-    broker: Option<RawBroker>,
-    #[serde(default)]
     lifecycle: Option<RawLifecycle>,
     #[serde(default)]
     bootstrap: Option<RawBootstrap>,
@@ -899,6 +906,26 @@ struct RawProject {
     name: Option<String>,
     #[serde(default)]
     state_dir: Option<PathBuf>,
+    #[serde(default)]
+    features: RawProjectFeatures,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawProjectFeatures {
+    #[serde(default)]
+    enable_vm_vizier: Option<bool>,
+}
+
+impl RawProjectFeatures {
+    fn into_features(self, warnings: &mut Vec<String>) -> ProjectFeatures {
+        if self.enable_vm_vizier.is_some() {
+            warnings.push(
+                "[project.features] enable_vm_vizier is deprecated and ignored; in-VM Vizier is always enabled."
+                    .to_string(),
+            );
+        }
+        ProjectFeatures
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1020,11 +1047,6 @@ struct RawWorkflows {
 }
 
 #[derive(Debug, Deserialize)]
-struct RawBroker {
-    port: Option<u16>,
-}
-
-#[derive(Debug, Deserialize)]
 struct RawLifecycle {
     #[serde(default)]
     graceful_shutdown_wait_secs: Option<u64>,
@@ -1127,7 +1149,6 @@ impl RawConfig {
             project,
             vms,
             workflows,
-            broker,
             lifecycle,
             bootstrap: bootstrap_raw,
         } = self;
@@ -1147,7 +1168,7 @@ impl RawConfig {
             ));
         }
 
-        let project = project.ok_or_else(|| {
+        let raw_project = project.ok_or_else(|| {
             invalid_config(
                 path,
                 "Missing required table `[project]`. Example:\n\
@@ -1156,12 +1177,14 @@ impl RawConfig {
             )
         })?;
 
-        let project_name = project.name.ok_or_else(|| {
+        let project_name = raw_project.name.ok_or_else(|| {
             invalid_config(
                 path,
                 "Missing required field `project.name`. Example: `name = \"devbox\"`.",
             )
         })?;
+
+        let features = raw_project.features.into_features(warnings);
 
         let project_root = path.parent().map(Path::to_path_buf).unwrap_or_else(|| {
             warnings.push(
@@ -1171,7 +1194,7 @@ impl RawConfig {
             PathBuf::from(".")
         });
 
-        let state_root = project
+        let state_root = raw_project
             .state_dir
             .map(|dir| resolve_path(&project_root, dir))
             .unwrap_or_else(|| default_state_root(&project_name, path));
@@ -1607,10 +1630,6 @@ impl RawConfig {
             init: workflows.init,
         };
 
-        let broker = BrokerConfig {
-            port: broker.and_then(|b| b.port).unwrap_or(DEFAULT_BROKER_PORT),
-        };
-
         let lifecycle = match lifecycle {
             Some(raw) => raw.into_config(path)?,
             None => LifecycleConfig::default(),
@@ -1621,10 +1640,10 @@ impl RawConfig {
             project_root,
             version,
             project_name,
+            features,
             vms: expanded_vms,
             state_root,
             workflows,
-            broker,
             lifecycle,
             bootstrap: bootstrap_config,
             warnings: warnings.clone(),
@@ -1854,9 +1873,8 @@ memory = "2048 MiB"
         assert_eq!(vm.memory.bytes(), Some(2048 * 1024 * 1024));
         assert!(config.warnings.is_empty());
 
-        let (conflicts, broker_collision) = config.port_conflicts();
+        let conflicts = config.port_conflicts();
         assert!(conflicts.is_empty());
-        assert!(broker_collision.is_none());
         assert_eq!(
             config.state_root,
             dir.path().join(".castra"),

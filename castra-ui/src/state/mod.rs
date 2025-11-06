@@ -8,13 +8,10 @@ use std::time::{Duration, Instant};
 
 use castra::core::{
     diagnostics::Severity,
-    events::{
-        BootstrapPlanSsh, BootstrapStatus, BootstrapStepKind, BootstrapStepStatus,
-        BootstrapTrigger, Event,
-    },
+    events::{BootstrapStatus, BootstrapStepKind, BootstrapStepStatus, BootstrapTrigger, Event},
 };
 use castra_harness::{
-    CommandStatus, FileDiff, FileDiffKind, HarnessEvent, PatchStatus, TodoEntry, VmEndpoint,
+    CommandStatus, FileDiff, FileDiffKind, HarnessEvent, PatchStatus, TodoEntry, VizierRemoteEvent,
 };
 use chrono::{DateTime, Local};
 use gpui::{ListAlignment, ListOffset, ListState, Pixels, SharedString, px};
@@ -62,6 +59,30 @@ impl TokenUsageTotals {
             self.cached,
             self.completion
         )
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct VizierVmStatus {
+    status: String,
+    detail: Option<String>,
+}
+
+impl VizierVmStatus {
+    fn new<S: Into<String>>(status: S, detail: Option<String>) -> Self {
+        Self {
+            status: status.into(),
+            detail,
+        }
+    }
+
+    fn status(&self) -> &str {
+        &self.status
+    }
+
+    fn set<S: Into<String>>(&mut self, status: S, detail: Option<String>) {
+        self.status = status.into();
+        self.detail = detail;
     }
 }
 
@@ -1013,10 +1034,7 @@ impl Default for UpLifecycle {
 pub struct UpState {
     lifecycle: UpLifecycle,
     vm_fleet: VmFleetState,
-    ssh_plans: BTreeMap<String, BootstrapPlanSsh>,
-    bootstrap_scripts: BTreeMap<String, PathBuf>,
     steward_vms: BTreeSet<String>,
-    broker_port: Option<u16>,
     last_error: Option<String>,
     runtime_paths: Option<RuntimePaths>,
     shutdown_in_progress: bool,
@@ -1027,10 +1045,7 @@ impl Default for UpState {
         Self {
             lifecycle: UpLifecycle::Idle,
             vm_fleet: VmFleetState::default(),
-            ssh_plans: BTreeMap::new(),
-            bootstrap_scripts: BTreeMap::new(),
             steward_vms: BTreeSet::new(),
-            broker_port: None,
             last_error: None,
             runtime_paths: None,
             shutdown_in_progress: false,
@@ -1055,10 +1070,7 @@ impl UpState {
             started_at: Local::now(),
         };
         self.vm_fleet.reset();
-        self.ssh_plans.clear();
-        self.bootstrap_scripts.clear();
         self.steward_vms.clear();
-        self.broker_port = None;
         self.last_error = None;
         self.runtime_paths = None;
         self.shutdown_in_progress = false;
@@ -1106,10 +1118,6 @@ impl UpState {
         &mut self.vm_fleet
     }
 
-    pub fn set_broker_port(&mut self, port: u16) {
-        self.broker_port = Some(port);
-    }
-
     pub fn note_error<T: Into<String>>(&mut self, message: T) {
         self.last_error = Some(message.into());
     }
@@ -1127,78 +1135,6 @@ impl UpState {
 
     pub fn clear_runtime_paths(&mut self) {
         self.runtime_paths = None;
-    }
-
-    pub fn record_ssh_plan(&mut self, vm: &str, ssh: &BootstrapPlanSsh) {
-        self.ssh_plans.insert(vm.to_string(), ssh.clone());
-    }
-
-    pub fn ssh_plan_snapshot(&self) -> Vec<(String, BootstrapPlanSsh)> {
-        self.ssh_plans
-            .iter()
-            .map(|(vm, plan)| (vm.clone(), plan.clone()))
-            .collect()
-    }
-
-    pub fn record_bootstrap_script(&mut self, vm: &str, script_path: &PathBuf) {
-        self.bootstrap_scripts
-            .insert(vm.to_string(), script_path.clone());
-    }
-
-    pub fn clear_bootstrap_script(&mut self, vm: &str) {
-        self.bootstrap_scripts.remove(vm);
-    }
-
-    pub fn bootstrap_script_snapshot(&self) -> Vec<(String, PathBuf)> {
-        self.bootstrap_scripts
-            .iter()
-            .map(|(vm, path)| (vm.clone(), path.clone()))
-            .collect()
-    }
-
-    pub fn vizier_script_root(&self) -> Option<PathBuf> {
-        self.runtime_paths
-            .as_ref()
-            .map(|paths| paths.state_root().join("vizier"))
-    }
-
-    pub fn vizier_endpoints(&self) -> Vec<VmEndpoint> {
-        let mut endpoints = Vec::new();
-        let script_root = self.vizier_script_root();
-
-        for (vm, plan) in &self.ssh_plans {
-            let mut endpoint = VmEndpoint::new(vm.clone(), plan.user.clone(), plan.host.clone())
-                .with_port(plan.port);
-
-            if let Some(identity) = plan.identity.as_ref() {
-                endpoint = endpoint.with_auth_hint(format!("-i {}", identity.display()));
-            }
-
-            if let Some(status) = self.vm_status_label(vm) {
-                endpoint = endpoint.with_status(status);
-            }
-
-            if let Some(root) = script_root.as_ref() {
-                let script_path = root.join(format!("{vm}.sh"));
-                if script_path.exists() {
-                    let canonical = script_path
-                        .canonicalize()
-                        .unwrap_or_else(|_| script_path.clone());
-                    endpoint = endpoint.with_wrapper_script(canonical.display().to_string());
-                }
-            }
-
-            endpoints.push(endpoint);
-        }
-        endpoints
-    }
-
-    fn vm_status_label(&self, vm: &str) -> Option<String> {
-        self.vm_fleet
-            .virtual_machines()
-            .iter()
-            .find(|machine| machine.name().eq_ignore_ascii_case(vm))
-            .map(|machine| machine.phase().label().to_string())
     }
 
     pub fn note_steward_vm(&mut self, vm: &str) {
@@ -1238,7 +1174,6 @@ impl UpState {
     pub fn mark_shutdown_complete(&mut self) {
         self.shutdown_in_progress = false;
         self.clear_runtime_paths();
-        self.ssh_plans.clear();
         self.steward_vms.clear();
     }
 
@@ -1261,9 +1196,6 @@ impl UpState {
                 }
                 if counts.failed > 0 {
                     parts.push(format!("{} failed", counts.failed));
-                }
-                if let Some(port) = self.broker_port {
-                    parts.push(format!("broker on :{port}"));
                 }
                 if let Some(error) = &self.last_error {
                     parts.push(format!("last error: {error}"));
@@ -1352,6 +1284,9 @@ pub struct AppState {
     ui: UiState,
     config_catalog: ConfigCatalogState,
     vizier_thread_id: Option<String>,
+    vizier_protocol_version: Option<String>,
+    vizier_vm_versions: BTreeMap<String, String>,
+    vizier_statuses: BTreeMap<String, VizierVmStatus>,
     vizier_activity_status: Option<String>,
     codex_thread_id: Option<String>,
     config_path: Option<PathBuf>,
@@ -1379,6 +1314,9 @@ impl AppState {
             ui: UiState::default(),
             config_catalog: ConfigCatalogState::new(quickstart_path),
             vizier_thread_id: None,
+            vizier_protocol_version: None,
+            vizier_vm_versions: BTreeMap::new(),
+            vizier_statuses: BTreeMap::new(),
             vizier_activity_status: None,
             codex_thread_id: None,
             config_path: None,
@@ -1530,24 +1468,80 @@ impl AppState {
 
     fn refresh_vizier_status(&mut self) {
         let _ = self.ensure_vizier_agent();
-        let mut parts = Vec::new();
+        let mut labels = Vec::new();
 
-        if let Some(steward) = self.up.steward_status() {
-            parts.push(steward);
+        if let Some(remote_status) = self.aggregate_vizier_status() {
+            labels.push(remote_status);
+        } else if let Some(activity) = self.vizier_activity_status.clone() {
+            labels.push(activity);
+        } else {
+            labels.push(String::from("ONLINE"));
         }
 
-        if let Some(activity) = self.vizier_activity_status.clone() {
-            if !activity.eq_ignore_ascii_case("ONLINE") || parts.is_empty() {
-                parts.push(activity);
+        if let Some(steward) = self.up.steward_status() {
+            labels.push(steward);
+        }
+
+        let status = labels.join(" • ");
+        let _ = self.roster.set_agent_status_by_id(VIZIER_AGENT_ID, status);
+    }
+
+    fn aggregate_vizier_status(&self) -> Option<String> {
+        if self.vizier_statuses.is_empty() {
+            return None;
+        }
+
+        let mut aggregate: Option<String> = None;
+        for entry in self.vizier_statuses.values() {
+            let normalized = entry.status().trim().to_ascii_uppercase();
+            if normalized == "ERROR" || normalized == "FAILED" {
+                return Some("ERROR".to_string());
+            }
+            if normalized == "EXECUTING" || normalized == "RUNNING" {
+                aggregate = Some("EXECUTING".to_string());
+                continue;
+            }
+            if aggregate.is_none() && !normalized.is_empty() {
+                aggregate = Some(normalized);
             }
         }
 
-        if parts.is_empty() {
-            parts.push("ONLINE".to_string());
-        }
+        aggregate.map(|status| {
+            if status.is_empty() {
+                "ONLINE".to_string()
+            } else {
+                status
+            }
+        })
+    }
 
-        let status = parts.join(" • ");
-        let _ = self.roster.set_agent_status_by_id(VIZIER_AGENT_ID, status);
+    fn update_vizier_vm_status<S: Into<String>>(
+        &mut self,
+        vm: &str,
+        status: S,
+        detail: Option<String>,
+    ) {
+        let key = vm.to_string();
+        let normalized = status.into().trim().to_ascii_uppercase();
+        self.vizier_statuses
+            .entry(key)
+            .and_modify(|entry| entry.set(normalized.clone(), detail.clone()))
+            .or_insert_with(|| VizierVmStatus::new(normalized, detail));
+        self.refresh_vizier_status();
+    }
+
+    fn clear_vizier_statuses(&mut self) {
+        self.vizier_statuses.clear();
+        self.refresh_vizier_status();
+    }
+
+    fn record_vizier_protocol_version<S: Into<String>>(&mut self, version: S) {
+        self.vizier_protocol_version = Some(version.into());
+    }
+
+    fn record_vizier_vm_version<S: Into<String>>(&mut self, vm: &str, version: S) {
+        self.vizier_vm_versions
+            .insert(vm.to_string(), version.into());
     }
 
     pub fn set_vizier_activity_status<S: Into<String>>(&mut self, status: S) {
@@ -1560,20 +1554,16 @@ impl AppState {
         self.refresh_vizier_status();
     }
 
-    pub fn vizier_endpoints(&self) -> Vec<VmEndpoint> {
-        self.up.vizier_endpoints()
-    }
-
-    pub fn vizier_ssh_plans(&self) -> Vec<(String, BootstrapPlanSsh)> {
-        self.up.ssh_plan_snapshot()
-    }
-
-    pub fn vizier_bootstrap_scripts(&self) -> Vec<(String, PathBuf)> {
-        self.up.bootstrap_script_snapshot()
-    }
-
+    #[allow(dead_code)]
     pub fn vizier_thread_id(&self) -> Option<String> {
         self.vizier_thread_id.clone()
+    }
+
+    pub fn vizier_primary_vm(&self) -> Option<String> {
+        if let Some((vm, _)) = self.vizier_statuses.iter().next() {
+            return Some(vm.clone());
+        }
+        self.vizier_vm_versions.keys().next().cloned()
     }
 
     pub fn set_vizier_thread_id<S: Into<String>>(&mut self, id: S) {
@@ -1687,88 +1677,180 @@ impl AppState {
             HarnessEvent::Failure { message } => {
                 self.push_system_message(format!("Codex failure: {message}"));
             }
+            HarnessEvent::VizierRemote { .. } => {}
         }
         if let Some((prompt, cached, completion)) = record_usage {
             self.codex_usage.add(prompt, cached, completion);
         }
     }
 
+    #[allow(dead_code)]
     pub fn apply_vizier_event(&mut self, event: &HarnessEvent) {
-        let mut record_usage = None;
         match event {
             HarnessEvent::ThreadStarted { thread_id } => {
                 self.set_vizier_thread_id(thread_id.clone());
                 self.set_vizier_activity_status("COORDINATING");
-                self.push_system_message(format!("Vizier steward ready ({thread_id})"));
-            }
-            HarnessEvent::AgentMessage { text } => {
-                self.push_message("VIZIER", text.clone());
-                self.set_vizier_activity_status("ONLINE");
-            }
-            HarnessEvent::Reasoning { text } => {
-                self.push_message("VIZIER⋯", text.clone());
-                self.set_vizier_activity_status("COORDINATING");
-            }
-            HarnessEvent::CommandProgress {
-                command,
-                output,
-                status,
-                exit_code,
-            } => {
-                let status_label = match status {
-                    CommandStatus::InProgress => {
-                        self.set_vizier_activity_status("EXECUTING");
-                        "running"
-                    }
-                    CommandStatus::Completed => {
-                        self.set_vizier_activity_status("ONLINE");
-                        "completed"
-                    }
-                    CommandStatus::Failed => {
-                        self.set_vizier_activity_status("ERROR");
-                        "failed"
-                    }
-                };
-                let mut message = format!("Vizier command {status_label}: {command}");
-                if let Some(code) = exit_code {
-                    message.push_str(&format!(" (exit {code})"));
-                }
-                self.push_message("VIZIER·SYS", message);
-                if !output.is_empty() {
-                    self.push_message("VIZIER·CMD", output.clone());
-                }
-            }
-            HarnessEvent::FileChange { changes, status } => {
-                let status_label = match status {
-                    PatchStatus::Completed => "applied",
-                    PatchStatus::Failed => "failed",
-                };
-                let summary = render_file_changes(changes);
-                self.push_system_message(format!("Vizier file changes {status_label}: {summary}"));
-                self.set_vizier_activity_status("COORDINATING");
-            }
-            HarnessEvent::TodoList { items } => {
-                let summary = render_todo_list(items);
-                self.push_system_message(format!("Vizier TODO: {summary}"));
-                self.set_vizier_activity_status("COORDINATING");
-            }
-            HarnessEvent::Usage {
-                prompt_tokens,
-                cached_tokens,
-                completion_tokens,
-            } => {
-                record_usage = Some((*prompt_tokens, *cached_tokens, *completion_tokens));
-                self.push_system_message(format!(
-                    "Vizier usage — prompt: {prompt_tokens}, cached: {cached_tokens}, completion: {completion_tokens}"
-                ));
             }
             HarnessEvent::Failure { message } => {
                 self.push_system_message(format!("Vizier failure: {message}"));
                 self.set_vizier_activity_status("ERROR");
             }
+            HarnessEvent::VizierRemote { event } => {
+                self.apply_vizier_remote_frame(event);
+            }
+            _ => {}
         }
-        if let Some((prompt, cached, completion)) = record_usage {
-            self.vizier_usage.add(prompt, cached, completion);
+    }
+
+    fn apply_vizier_remote_frame(&mut self, event: &VizierRemoteEvent) {
+        match event {
+            VizierRemoteEvent::Handshake {
+                vm,
+                protocol_version,
+                vm_vizier_version,
+                log_path,
+                capabilities,
+            } => {
+                self.record_vizier_protocol_version(protocol_version.clone());
+                self.record_vizier_vm_version(vm, vm_vizier_version.clone());
+                let mut parts = vec![
+                    format!("protocol {protocol_version}"),
+                    format!("vizier {vm_vizier_version}"),
+                ];
+                if let Some(path) = log_path {
+                    parts.push(format!("log {path}"));
+                }
+                if let Some(ms) = capabilities.echo_latency_hint_ms {
+                    parts.push(format!("echo ≤{ms}ms"));
+                }
+                if capabilities.supports_reconnect.unwrap_or(false) {
+                    parts.push("reconnect".to_string());
+                }
+                if capabilities.supports_system_events.unwrap_or(false) {
+                    parts.push("system-events".to_string());
+                }
+                let detail = parts.join(", ");
+                self.update_vizier_vm_status(vm, "ONLINE", Some(detail.clone()));
+                self.push_system_message(format!("VM[{vm}] vizier handshake ({detail})"));
+                if let Some(path) = log_path {
+                    self.push_system_message(format!("VM[{vm}] vizier logs at {path}"));
+                }
+            }
+            VizierRemoteEvent::Output {
+                vm,
+                stream,
+                message,
+            } => {
+                let speaker = if stream.eq_ignore_ascii_case("stderr") {
+                    format!("VM[{vm}]!")
+                } else {
+                    format!("VM[{vm}]")
+                };
+                self.push_message(speaker, message.clone());
+            }
+            VizierRemoteEvent::Status { vm, status, detail } => {
+                self.update_vizier_vm_status(vm, status.clone(), detail.clone());
+                let mut text = format!("VM[{vm}] status {}", status.trim().to_ascii_uppercase());
+                if let Some(detail) = detail {
+                    if !detail.is_empty() {
+                        text.push_str(": ");
+                        text.push_str(detail);
+                    }
+                }
+                self.push_system_message(text);
+            }
+            VizierRemoteEvent::System {
+                vm,
+                category,
+                message,
+            } => {
+                self.push_system_message(format!("VM[{vm}] {category}: {message}"));
+            }
+            VizierRemoteEvent::Usage {
+                vm,
+                prompt_tokens,
+                cached_tokens,
+                completion_tokens,
+            } => {
+                self.vizier_usage
+                    .add(*prompt_tokens, *cached_tokens, *completion_tokens);
+                self.push_system_message(format!(
+                    "Vizier usage ({vm}) — prompt: {prompt_tokens}, cached: {cached_tokens}, completion: {completion_tokens}"
+                ));
+            }
+            VizierRemoteEvent::Ack { vm, id } => {
+                self.push_system_message(format!("VM[{vm}] ack {id}"));
+            }
+            VizierRemoteEvent::Control { vm, event, reason } => {
+                let mut text = format!("VM[{vm}] control {event}");
+                if let Some(reason) = reason {
+                    if !reason.is_empty() {
+                        text.push_str(" — ");
+                        text.push_str(reason);
+                    }
+                }
+                self.push_system_message(text);
+            }
+            VizierRemoteEvent::HandshakeFailed {
+                vm,
+                protocol_version,
+                vm_vizier_version,
+                message,
+                remediation_hint,
+            } => {
+                let mut detail = message.clone();
+                if let Some(version) = protocol_version {
+                    detail.push_str(&format!(" (protocol {version})"));
+                }
+                if let Some(vizier_version) = vm_vizier_version {
+                    detail.push_str(&format!(" vizier {vizier_version}"));
+                }
+                self.update_vizier_vm_status(vm, "ERROR", Some(detail.clone()));
+                let mut system_message = format!("VM[{vm}] handshake failed: {detail}");
+                if let Some(hint) = remediation_hint {
+                    if !hint.is_empty() {
+                        system_message.push_str(" • ");
+                        system_message.push_str(hint);
+                    }
+                }
+                self.push_system_message(system_message);
+                self.push_toast(format!("VM[{vm}] handshake failed"));
+            }
+            VizierRemoteEvent::Error {
+                vm,
+                scope,
+                message,
+                raw,
+            } => {
+                self.update_vizier_vm_status(vm, "ERROR", Some(message.clone()));
+                let mut text = format!("VM[{vm}] error ({scope}): {message}");
+                if let Some(raw) = raw {
+                    if !raw.is_empty() {
+                        text.push_str(" [raw: ");
+                        text.push_str(raw);
+                        text.push(']');
+                    }
+                }
+                self.push_system_message(text);
+            }
+            VizierRemoteEvent::ReconnectAttempt {
+                vm,
+                attempt,
+                wait_ms,
+            } => {
+                self.push_toast(format!(
+                    "VM[{vm}] reconnect attempt #{attempt} (backoff {wait_ms} ms)"
+                ));
+                self.update_vizier_vm_status(vm, "RECONNECTING", None);
+            }
+            VizierRemoteEvent::ReconnectSucceeded { vm } => {
+                self.push_toast(format!("VM[{vm}] tunnel re-established"));
+                self.update_vizier_vm_status(vm, "ONLINE", None);
+            }
+            VizierRemoteEvent::Disconnected { vm } => {
+                self.push_toast(format!("VM[{vm}] tunnel disconnected"));
+                self.update_vizier_vm_status(vm, "DISCONNECTED", None);
+            }
         }
     }
 
@@ -1792,6 +1874,9 @@ impl AppState {
             let _ = self.roster.switch_to(vizier_index);
         }
         self.clear_vizier_thread();
+        self.vizier_protocol_version = None;
+        self.vizier_vm_versions.clear();
+        self.clear_vizier_statuses();
         self.set_vizier_activity_status("RUNNING");
         Ok(())
     }
@@ -1802,6 +1887,9 @@ impl AppState {
         if let Some(path) = self.config_path.clone() {
             self.catalog_clear_launch_failure(&path);
         }
+        self.vizier_protocol_version = None;
+        self.vizier_vm_versions.clear();
+        self.clear_vizier_statuses();
         self.set_vizier_activity_status("ONLINE");
     }
 
@@ -1812,6 +1900,9 @@ impl AppState {
         if let Some(path) = self.config_path.clone() {
             self.catalog_note_launch_failure(&path, reason_string.clone());
         }
+        self.vizier_protocol_version = None;
+        self.vizier_vm_versions.clear();
+        self.clear_vizier_statuses();
         self.set_vizier_activity_status("ERROR");
     }
 
@@ -1830,6 +1921,9 @@ impl AppState {
 
     pub fn mark_shutdown_complete(&mut self) {
         self.up.mark_shutdown_complete();
+        self.vizier_protocol_version = None;
+        self.vizier_vm_versions.clear();
+        self.clear_vizier_statuses();
         self.clear_vizier_activity_status();
         self.config_catalog.set_launching(false);
     }
@@ -1869,23 +1963,10 @@ impl AppState {
                 Some(format!("[{tag}] {text}"))
             }
             Event::BootstrapPlanned {
-                vm,
-                action,
-                reason,
-                ssh,
-                script_path,
-                ..
+                vm, action, reason, ..
             } => {
                 let attention = if action.is_error() { Error } else { Progress };
                 let detail = format!("Plan {} ({reason})", action.describe());
-                if let Some(ssh) = ssh {
-                    self.up.record_ssh_plan(vm, ssh);
-                }
-                if let Some(script_path) = script_path {
-                    self.up.record_bootstrap_script(vm, script_path);
-                } else {
-                    self.up.clear_bootstrap_script(vm);
-                }
                 self.up.note_steward_vm(vm);
                 self.up
                     .vm_fleet_mut()
@@ -1981,14 +2062,13 @@ impl AppState {
                 Some(format!("{vm}: {text}"))
             }
             Event::BrokerStarted { pid, port } => {
-                self.up.set_broker_port(*port);
-                Some(format!("Broker started (pid {pid}) on port {port}"))
+                Some(format!("Vizier bridge ready (pid {pid}) on port {port}"))
             }
             Event::BrokerStopped { changed } => {
                 if *changed {
-                    Some("Broker stopped".to_string())
+                    Some("Vizier bridge stopped".to_string())
                 } else {
-                    Some("Broker already offline".to_string())
+                    Some("Vizier bridge already offline".to_string())
                 }
             }
             _ => None,
@@ -2101,7 +2181,9 @@ mod tests {
     impl EnvVarGuard {
         fn set_path(key: &'static str, value: &Path) -> Self {
             let original = std::env::var(key).ok();
-            std::env::set_var(key, value);
+            unsafe {
+                std::env::set_var(key, value);
+            }
             Self { key, original }
         }
     }
@@ -2109,9 +2191,13 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(ref value) = self.original {
-                std::env::set_var(self.key, value);
+                unsafe {
+                    std::env::set_var(self.key, value);
+                }
             } else {
-                std::env::remove_var(self.key);
+                unsafe {
+                    std::env::remove_var(self.key);
+                }
             }
         }
     }

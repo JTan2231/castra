@@ -39,6 +39,14 @@ pub enum Error {
     },
     #[error("Configuration validation failed for {path}: {message}")]
     InvalidConfig { path: PathBuf, message: String },
+    #[error(
+        "Deprecated configuration detected in {path}: {details}. See {doc} for migration guidance."
+    )]
+    DeprecatedConfig {
+        path: PathBuf,
+        details: String,
+        doc: &'static str,
+    },
     #[error("The configuration path {path} does not exist or is not readable.")]
     ExplicitConfigMissing { path: PathBuf },
     #[error(
@@ -74,12 +82,12 @@ pub enum Error {
     ShutdownFailed { vm: String, message: String },
     #[error("Failed to bootstrap VM `{vm}`: {message}")]
     BootstrapFailed { vm: String, message: String },
-    #[error("Failed to publish bus frame: {message}")]
-    BusPublishFailed { message: String },
     #[error("Failed to read logs at {path}: {source}")]
     LogReadFailed {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
+    #[error("Deprecated: {message}")]
+    Deprecated { message: String },
 }

@@ -75,8 +75,9 @@ fn render_project_ports(project: &ProjectPortsOutcome, verbose: bool, view: Port
     if let Some(state_root) = &project.state_root {
         println!("State root: {}", state_root.display());
     }
-    println!("Broker endpoint: 127.0.0.1:{}", project.broker_port);
-    println!("(start the broker via `castra up` once available)");
+    println!(
+        "Vizier now manages orchestration inside each VM; legacy broker ports have been retired."
+    );
     if matches!(view, PortsView::Active) {
         println!("STATUS column reflects runtime state; stopped VMs show as inactive.");
     }
@@ -187,6 +188,5 @@ fn status_label(
         },
         PortForwardStatus::Active => "active".to_string(),
         PortForwardStatus::Conflicting => "conflict".to_string(),
-        PortForwardStatus::BrokerReserved => "broker-reserved".to_string(),
     }
 }

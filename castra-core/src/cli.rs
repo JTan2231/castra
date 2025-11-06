@@ -2,10 +2,38 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use clap::{Args, Parser, Subcommand};
+use std::sync::OnceLock;
 
 use castra::BootstrapMode;
 
 const VERSION: &str = env!("CASTRA_VERSION");
+
+fn cli_long_version() -> &'static str {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            format!(
+                "{}\nVizier remote protocol: {}",
+                env!("CASTRA_VERSION"),
+                castra_protocol::VIZIER_REMOTE_PROTOCOL_RANGE
+            )
+        })
+        .as_str()
+}
+
+/// Shared deprecation banner for legacy bus/broker commands.
+pub const BUS_BROKER_DEPRECATION_MESSAGE: &str = "Deprecated: bus/broker have been removed. Use the Codex harness vizier stream over SSH (see VIZIER_REMOTE_PROTOCOL.md).";
+
+/// Write the deprecation banner to the provided writer, appending a newline.
+pub fn write_bus_broker_deprecation<W: std::io::Write>(mut writer: W) -> std::io::Result<()> {
+    writer.write_all(BUS_BROKER_DEPRECATION_MESSAGE.as_bytes())?;
+    writer.write_all(b"\n")
+}
+
+/// Print the deprecation banner to stdout, ignoring I/O failures.
+pub fn print_bus_broker_deprecation() {
+    let _ = write_bus_broker_deprecation(std::io::stdout());
+}
 
 /// Top-level CLI definition for the `castra` tool.
 #[derive(Debug, Parser)]
@@ -13,6 +41,7 @@ const VERSION: &str = env!("CASTRA_VERSION");
     name = "castra",
     author = "Castra Project",
     version = VERSION,
+    long_version = cli_long_version(),
     about = "A user-friendly orchestrator for lightweight QEMU-based sandboxes.",
     long_about = "Castra helps you spin up reproducible, host-friendly QEMU environments.\n\
                   Explore the roadmap in the repo's todo_*.md files for features under active development."
@@ -42,13 +71,13 @@ pub enum Commands {
     Down(DownArgs),
     /// Inspect the state of managed virtual machines.
     Status(StatusArgs),
-    /// Display declared host/guest forwards and highlight conflicts and broker reservations.
+    /// Display declared host/guest forwards and highlight conflicts.
     Ports(PortsArgs),
     /// Tail orchestrator and guest logs.
     Logs(LogsArgs),
     /// Reclaim cached images and workspace state safely.
     Clean(CleanArgs),
-    /// Interact with the Castra message bus.
+    #[command(hide = true)]
     Bus(BusArgs),
     #[command(hide = true)]
     Broker(BrokerArgs),
@@ -96,14 +125,6 @@ pub struct UpArgs {
         help = "Bypass disk/CPU/memory safety checks during preflight (use with caution)"
     )]
     pub force: bool,
-
-    /// Launch only the broker listener without preparing or starting VMs.
-    #[arg(
-        long,
-        help = "Start the broker only; skips VM preparation, VM launch, and bootstrap steps.",
-        conflicts_with = "plan"
-    )]
-    pub broker_only: bool,
 
     /// Preview bootstrap inputs without launching VMs.
     #[arg(
@@ -378,8 +399,8 @@ pub struct CleanArgs {
     #[arg(long, help = "Skip deleting logs/ under the state root")]
     pub no_logs: bool,
 
-    /// Retain broker handshake artifacts.
-    #[arg(long, help = "Skip deleting broker handshakes/ under the state root")]
+    /// Retain legacy handshake artifacts.
+    #[arg(long, help = "Skip deleting legacy handshakes/ under the state root")]
     pub no_handshakes: bool,
 
     /// Override running-process safeguards.
@@ -398,9 +419,7 @@ pub struct BusArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum BusCommands {
-    /// Publish a JSON payload onto the bus.
     Publish(BusPublishArgs),
-    /// Tail bus logs for shared or per-VM streams.
     Tail(BusTailArgs),
 }
 
@@ -540,26 +559,7 @@ mod tests {
         };
         assert!(args.skip_discovery);
         assert!(args.force);
-        assert!(!args.broker_only);
         assert!(!args.plan);
-    }
-
-    #[test]
-    fn parse_up_broker_only_flag() {
-        let cli =
-            Cli::try_parse_from(["castra", "up", "--broker-only"]).expect("parse broker-only");
-        let Commands::Up(args) = cli.command.expect("up command present") else {
-            panic!("expected up command");
-        };
-        assert!(args.broker_only);
-        assert!(!args.plan);
-        assert!(!args.force);
-    }
-
-    #[test]
-    fn broker_only_conflicts_with_plan() {
-        let err = Cli::try_parse_from(["castra", "up", "--broker-only", "--plan"]).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -751,5 +751,23 @@ mod tests {
     fn command_reports_embedded_version_string() {
         let command = Cli::command();
         assert_eq!(command.get_version(), Some(env!("CASTRA_VERSION")));
+    }
+
+    #[test]
+    fn bus_broker_stub_writes_message() {
+        let mut buffer = Vec::new();
+        write_bus_broker_deprecation(&mut buffer).expect("write message");
+        assert_eq!(
+            buffer,
+            format!("{BUS_BROKER_DEPRECATION_MESSAGE}\n").as_bytes()
+        );
+    }
+
+    #[test]
+    fn bus_broker_stub_print_does_not_panic() {
+        let result = std::panic::catch_unwind(|| {
+            print_bus_broker_deprecation();
+        });
+        assert!(result.is_ok());
     }
 }

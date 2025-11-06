@@ -4,9 +4,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    BaseImageProvenance, BaseImageSource, BootstrapConfig, BootstrapMode, BrokerConfig,
-    DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, DEFAULT_BROKER_PORT, LifecycleConfig, MemorySpec,
-    PortConflict, ProjectConfig, VmBootstrapConfig, VmDefinition, Workflows,
+    BaseImageProvenance, BaseImageSource, BootstrapConfig, BootstrapMode,
+    DEFAULT_BOOTSTRAP_HANDSHAKE_WAIT_SECS, LifecycleConfig, MemorySpec, PortConflict,
+    ProjectConfig, ProjectFeatures, VmBootstrapConfig, VmDefinition, Workflows,
     default_alpine_base_image_path, default_overlay_base_path,
 };
 use crate::error::{Error, Result};
@@ -100,9 +100,6 @@ version = "0.2.0"
 [project]
 name = "{project_name}"
 # state_dir = ".castra/state"  # Uncomment to keep VM state alongside this config
-
-[broker]
-# port = 7070
 
 [lifecycle]
 # graceful_shutdown_wait_secs = 20
@@ -202,12 +199,10 @@ fn synthesize_default_project(search_root: PathBuf) -> ProjectConfig {
         project_root,
         version: "0.2.0".to_string(),
         project_name,
+        features: ProjectFeatures::default(),
         vms: vec![vm],
         state_root,
         workflows: Workflows { init: Vec::new() },
-        broker: BrokerConfig {
-            port: DEFAULT_BROKER_PORT,
-        },
         lifecycle: LifecycleConfig::default(),
         bootstrap: BootstrapConfig::default(),
         warnings: vec![],

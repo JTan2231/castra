@@ -1,6 +1,8 @@
 # Castra
 
-Castra is a friendly orchestration layer for lightweight QEMU-based sandboxes. It bootstraps reproducible development VMs with cached base images, a broker for host↔guest coordination, and a thin CLI that drives the core library APIs exposed under `castra::core`.
+Castra is a friendly orchestration layer for lightweight QEMU-based sandboxes. It bootstraps reproducible development VMs with cached base images and a thin CLI that drives the core library APIs exposed under `castra::core`. Legacy broker/bus coordination has been removed in favor of the Codex harness vizier stream.
+
+> Heads-up: the `castra bus` and `castra broker` commands have been removed. Migration notes, protocol guardrails, and troubleshooting tips live in `docs/migration/v0.10-brokerless-announcement.md`.
 
 The CLI is a veneer over the library. Projects that embed Castra can disable the `cli` feature flag to depend on the core APIs without pulling in presentation code (see `docs/library_usage.md`).
 
@@ -28,14 +30,15 @@ The binary is gated behind the `cli` feature (enabled by default). Library consu
 
 `castra --version` now prints the semantic version and the short git commit hash when the build runs inside a git checkout. When VCS metadata is unavailable the CLI falls back to the plain semantic version.
 
-## Broker-Only Mode
+## Vizier Launch Model
 
-Use `castra up --broker-only` to start just the TCP broker for bus testing. The flag prepares the workspace directories, verifies the broker port is free, and launches the listener without touching VM overlays or running bootstrap steps. If guests are already running, the command leaves them in place and surfaces a warning.
+`castra up` launches VMs and bootstraps the in-guest Vizier service. Prefer the Codex harness vizier stream for per-VM diagnostics and remote control. Each VM writes Vizier logs to `state/vizier/<vm>/service.log`; harness info logs call out the path along with protocol and RTT hints when tunnels connect.
 
 ## Documentation
 
 - `docs/library_usage.md` explains how to drive Castra from another crate.
 - `docs/RELEASING.md` captures the release checklist.
+- `docs/migration/v0.10-brokerless-announcement.md` highlights the broker deprecation and vizier remote cutover.
 
 ## Chat Transcripts
 
@@ -43,24 +46,6 @@ Launching `castra-ui` records every chat entry to `<workspace_root>/.castra/tran
 
 ## Status JSON
 
-Running `castra status` (and `castra down`/`castra ports`) without `--config` now inspects every active workspace discovered under `~/.castra/projects` and any local `.castra/` state roots. Results are grouped per project with headers such as `=== demo-workspace (demo-1234abcd) ===`; pass `--workspace <id>` to narrow the view to a single entry. `castra status --json` returns the same reachability view rendered by the table. The `reachable` flag stays `true` while the freshest guest handshake is at most 45 seconds old and flips to `false` once that cache ages out; the value is derived from on-disk records and never blocks on a live network probe. `last_handshake_age_ms` reports the age of that freshest handshake in milliseconds (omitted when no guest has connected).
+Running `castra status` (and `castra down`/`castra ports`) without `--config` now inspects every active workspace discovered under `~/.castra/projects` and any local `.castra/` state roots. Results are grouped per project with headers such as `=== demo-workspace (demo-1234abcd) ===`; pass `--workspace <id>` to narrow the view to a single entry. `castra status --json` returns the same reachability view rendered by the table. The `reachable` flag reports whether any VM in the project is currently running and never blocks on a live network probe.
 
-Every handshake produces both a deterministic broker log line and a JSON event appended to `<state_root>/handshakes/handshake-events.jsonl`. Each entry records the VM name, normalized capabilities, session outcome (`granted`, `denied`, or `timeout`), and an optional reason. The event timestamp matches the value used for reachability calculations.
-
-Example log lines emitted by the broker:
-
-```text
-[host-broker] 12:00:00 INFO handshake ts=1700000123 vm=devbox remote=127.0.0.1:41000 capabilities=[bus-v1] session_kind=guest session_outcome=granted
-[host-broker] 12:00:01 INFO handshake ts=1700000124 vm=host remote=127.0.0.1:41001 capabilities=[bus-v1] session_kind=guest session_outcome=denied reason=reserved-identity
-[host-broker] 12:00:05 INFO handshake ts=1700000128 vm=127.0.0.1:41002 remote=127.0.0.1:41002 capabilities=[-] session_kind=guest session_outcome=timeout reason=read-timeout
-```
-
-Corresponding JSON events:
-
-```json
-{"timestamp":1700000123,"vm":"devbox","capabilities":["bus-v1"],"session_kind":"guest","session_outcome":"granted","remote_addr":"127.0.0.1:41000"}
-{"timestamp":1700000124,"vm":"host","capabilities":["bus-v1"],"session_kind":"guest","session_outcome":"denied","reason":"reserved-identity","remote_addr":"127.0.0.1:41001"}
-{"timestamp":1700000128,"vm":"127.0.0.1:41002","capabilities":[],"session_kind":"guest","session_outcome":"timeout","reason":"read-timeout","remote_addr":"127.0.0.1:41002"}
-```
-
-Guests that attempt to impersonate the reserved `host` identity without presenting the `host-bus` capability are denied with `reason=reserved-identity`. Idle connections that fail to present a handshake before the socket deadline record `session_outcome=timeout` with `reason=read-timeout`.
+Vizier health and connectivity now flow through `vizier.remote.*` events emitted by the Codex harness. The legacy broker handshake directory (`<state_root>/handshakes`) is no longer produced; migrate tooling to the harness stream described in `vizier-move/VIZIER_REMOTE_PROTOCOL.md`.

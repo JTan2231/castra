@@ -241,7 +241,11 @@ memory = "2 GiB"
         assert_eq!(result.entries.len(), 1);
         let entry = &result.entries[0];
         assert_eq!(entry.display_name, "broken");
-        assert!(entry.error.as_ref().unwrap().contains("Invalid"));
+        let error_text = entry.error.as_ref().expect("error should be recorded");
+        assert!(
+            error_text.contains("could not be parsed"),
+            "expected parse failure message, got {error_text}"
+        );
     }
 
     #[test]

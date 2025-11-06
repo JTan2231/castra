@@ -29,6 +29,7 @@ serde_json = "1.0"
 ureq = { version = "2.9", default-features = true }
 time = { version = "0.3.36", features = ["formatting"] }
 gpui = "0.2.0"
+castra-protocol = { path = "../castra-protocol" }
 
 [dev-dependencies]
 regex = "1.10"

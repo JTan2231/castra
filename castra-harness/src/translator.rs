@@ -3,6 +3,8 @@ use crate::events::{
     TodoItem as CodexTodoItem,
 };
 
+use crate::vizier_remote::VizierRemoteEvent;
+
 use crate::session::SessionUpdate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +70,9 @@ pub enum HarnessEvent {
     },
     Failure {
         message: String,
+    },
+    VizierRemote {
+        event: VizierRemoteEvent,
     },
 }
 

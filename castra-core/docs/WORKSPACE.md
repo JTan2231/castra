@@ -1,6 +1,6 @@
 # Castra Workspaces
 
-Castra keeps every project’s ephemeral runtime state inside a workspace rooted at a `.castra` directory. The workspace holds broker metadata, cached base images, bootstrap staging areas, and process bookkeeping so that `castra up`, `status`, `down`, and `clean` can coordinate without leaking state across runs. This note documents how the workspace is picked, how `.castra`-prefixed paths resolve, and what lives under the directory during each phase of the lifecycle.
+Castra keeps every project’s ephemeral runtime state inside a workspace rooted at a `.castra` directory. The workspace holds cached base images, bootstrap staging areas, Vizier metadata, and process bookkeeping so that `castra up`, `status`, `down`, and `clean` can coordinate without leaking state across runs. This note documents how the workspace is picked, how `.castra`-prefixed paths resolve, and what lives under the directory during each phase of the lifecycle.
 
 When multiple workspaces are active, `castra status`, `castra ports`, and `castra down` (without `--config`) aggregate across all of them using the metadata recorded under `metadata/workspace.json`. Use `--workspace <id>` to target a single entry; IDs correspond to the `workspace.id` field captured in the metadata and rendered in the CLI headers.
 
@@ -29,11 +29,11 @@ Every workspace follows the same structure; paths in parentheses are created on 
 | `metadata/workspace.json` | Registry metadata written by `castra up` capturing project name, workspace ID, config origin, bootstrap policy, and invocation flags for multi-workspace discovery. |
 | `metadata/config_snapshot.toml` | Cached copy of the resolved `castra.toml` used when the original config is unavailable (for example, if the repo moved). |
 | `images/` | Cached base images. The default Alpine qcow2 is downloaded here on demand; additional qcows configured via `base_image` can also live here. |
-| `logs/` | Aggregated host-side logs. Each VM writes `<vm>.log` (QEMU stdout/stderr) and `<vm>-serial.log`; bootstrap runs append JSON to `logs/bootstrap/`; the bus command writes under `logs/bus/`. |
-| `handshakes/` | Broker ⇄ guest handshake JSON files (`runtime::broker_handshake_dir_from_root`). Used by `status` and bootstrap wait logic. |
+| `logs/` | Aggregated host-side logs. Each VM writes `<vm>.log` (QEMU stdout/stderr) and `<vm>-serial.log`; bootstrap runs append JSON to `logs/bootstrap/`. Legacy `logs/bus/` directories are pruned when encountered. |
+| `handshakes/` | Legacy broker ⇄ guest handshake JSON. No longer created on fresh runs; retained only for historical inspection. |
 | `bootstrap/` | Per-VM staging area where bootstrap scripts and payloads are copied before upload (`assemble_blueprint`). Cleaned between runs. |
 | `overlays/` | Default home for per-VM qcow2 layers derived from role names when configs omit an explicit `overlay`. Discarded after shutdown per Thread 13. |
-| `broker.pid`, `<vm>.pid` | PID files written by `start_broker` and `launch_vm`; used for liveness checks in `status`, `down`, and `clean`. |
+| `<vm>.pid` | PID files written by `launch_vm`. Legacy `broker.pid` files are removed on sight. |
 | `<vm>.qmp` (Unix) | QMP control sockets for cooperative shutdown, created alongside the pidfiles. |
 | Other ephemeral files | Overlay qcow2 images, staging manifests, and temporary scratch directories declared by VM definitions. |
 
@@ -41,8 +41,8 @@ Castra creates the workspace root, `logs/`, and `images/` up front during `prepa
 
 ## Lifecycle Touchpoints
 - **`castra init`** – Scaffolds a starter config that relies on the default Alpine qcow2 (downloaded on demand) and default overlay paths under `<state_root>/overlays/`, and it prints both the global workspace and the opt-in local override so operators know where state will accumulate.
-- **`castra up`** – Ensures the workspace exists, verifies host capacity, fetches the default qcow2 into `images/` if needed, and creates fresh overlays. Broker handshakes and bootstrap logs accumulate under `handshakes/` and `logs/bootstrap/`. Thread 13 work guarantees overlays are disposable after shutdown (`Event::EphemeralLayerDiscarded`).
-- **`castra status`** – Reads pidfiles, inspects QMP sockets, and parses the newest handshake JSON to render reachability and freshness.
+- **`castra up`** – Ensures the workspace exists, verifies host capacity, fetches the default qcow2 into `images/` if needed, and creates fresh overlays. Vizier telemetry replaces the old broker handshake artefacts; any lingering legacy files are pruned as part of the run. Thread 13 work guarantees overlays are disposable after shutdown (`Event::EphemeralLayerDiscarded`).
+- **`castra status`** – Reads pidfiles, inspects QMP sockets, and reports whether VMs are running. Vizier emits health via the harness stream; the legacy handshake directory is no longer consumed.
 - **`castra down`** – Walks pidfiles to coordinate cooperative shutdown, removes overlays, and reports reclaimed bytes. Shutdown remains bounded per VM while the workspace stays responsive.
   - **`castra clean`** – Deletes cached images, overlays, logs, and pidfiles under the workspace. `--workspace` targets the active state root; `--global` sweeps every child of `~/.castra/projects`. Diagnostics warn when live processes are detected unless `--force` is supplied.
 - **`castra bus` / `logs` / `ports`** – Consume metadata only from within the state root, so moving the workspace (via `state_dir`) keeps these commands working automatically.
@@ -54,7 +54,7 @@ Castra creates the workspace root, `logs/`, and `images/` up front during `prepa
 
 ## Maintenance & Troubleshooting
 - Always run `castra down` before manipulating the workspace manually; pidfiles and QMP sockets should disappear during shutdown. If they linger, `castra clean --workspace --force` will remove them after validating nothing is running.
-- When handshakes become stale or corrupted, removing `handshakes/*.json` (or running `castra clean`) lets guests re-register on the next boot.
+- When legacy handshakes become stale or corrupted, removing `handshakes/*.json` (or running `castra clean`) tidies the workspace; vizier-based health signals supersede them.
 - If you relocate a project, delete or move the old workspace to avoid orphaned directories under `~/.castra/projects`. Castra will derive a new hash based on the project’s new path.
 - For automation, prefer calling the library APIs (e.g., `core::project::config_state_root`) rather than hardcoding paths; this keeps tooling aligned with future schema changes in `.vizier` threads.
 

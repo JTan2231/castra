@@ -1,4 +1,4 @@
-//! Minimal embedding example demonstrating castra-core operations with a custom broker launcher.
+//! Minimal embedding example demonstrating castra-core operations with a custom vizier launcher.
 
 use std::env;
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ use castra::{
         options::{ConfigLoadOptions, UpOptions},
         outcome::UpOutcome,
         reporter::Reporter,
-        runtime::ProcessBrokerLauncher,
+        runtime::ProcessVizierLauncher,
     },
 };
 
@@ -38,7 +38,7 @@ fn main() -> Result<(), Error> {
 
 struct ExampleConfig {
     config_path: PathBuf,
-    launcher: ProcessBrokerLauncher,
+    launcher: ProcessVizierLauncher,
     plan: bool,
 }
 
@@ -92,9 +92,9 @@ fn parse_args() -> Result<ExampleConfig, Error> {
                 message: format!("CLI executable not found at {}", path.display()),
             });
         }
-        ProcessBrokerLauncher::new(path)
+        ProcessVizierLauncher::new(path)
     } else {
-        ProcessBrokerLauncher::from_env()?
+        ProcessVizierLauncher::from_env()?
     };
 
     Ok(ExampleConfig {
@@ -129,8 +129,8 @@ fn emit_diagnostics(diagnostics: &[Diagnostic]) {
 
 fn summarize_outcome(outcome: &UpOutcome) {
     println!(
-        "outcome: {} VM(s) launched; broker started: {}",
+        "outcome: {} VM(s) launched; vizier bootstrap runs: {}",
         outcome.launched_vms.len(),
-        outcome.broker.as_ref().map(|b| b.pid).unwrap_or_default()
+        outcome.bootstraps.len()
     );
 }

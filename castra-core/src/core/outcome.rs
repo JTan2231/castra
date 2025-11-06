@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::config::{BaseImageProvenance, BootstrapMode, BrokerConfig, PortForward};
+use crate::config::{BaseImageProvenance, BootstrapMode, PortForward};
 
 use super::diagnostics::Diagnostic;
 use super::events::{
     BootstrapPlanAction, BootstrapPlanSsh, BootstrapPlanVerify, BootstrapTrigger, CleanupKind,
-    Event, ShutdownOutcome,
+    Event, ShutdownOutcome, VizierPlanStatus,
 };
-use super::options::{BusLogTarget, PortsView};
+use super::options::PortsView;
 
 /// Result wrapper returned by high-level operations.
 pub type OperationResult<T> = crate::error::Result<OperationOutput<T>>;
@@ -63,7 +63,6 @@ pub struct UpOutcome {
     pub state_root: PathBuf,
     pub log_root: PathBuf,
     pub launched_vms: Vec<VmLaunchOutcome>,
-    pub broker: Option<BrokerLaunchOutcome>,
     pub bootstraps: Vec<BootstrapRunOutcome>,
     pub plans: Vec<BootstrapPlanOutcome>,
 }
@@ -79,18 +78,15 @@ pub struct VmLaunchOutcome {
 }
 
 #[derive(Debug)]
-pub struct BrokerLaunchOutcome {
-    pub pid: u32,
-    pub config: BrokerConfig,
-}
-
-#[derive(Debug)]
 pub struct BootstrapRunOutcome {
     pub vm: String,
     pub status: BootstrapRunStatus,
     pub stamp: Option<String>,
     pub log_path: Option<PathBuf>,
     pub ssh: Option<BootstrapPlanSsh>,
+    pub vizier_status: Option<VizierPlanStatus>,
+    pub vizier_log_path: Option<PathBuf>,
+    pub vizier_remediation: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +107,9 @@ pub struct BootstrapPlanOutcome {
     pub artifact_hash: Option<String>,
     pub metadata_path: Option<PathBuf>,
     pub warnings: Vec<String>,
+    pub vizier_status: Option<VizierPlanStatus>,
+    pub vizier_log_path: Option<PathBuf>,
+    pub vizier_remediation: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +123,6 @@ pub enum BootstrapRunStatus {
 #[derive(Debug)]
 pub struct DownOutcome {
     pub vm_results: Vec<VmShutdownOutcome>,
-    pub broker: BrokerShutdownOutcome,
 }
 
 #[derive(Debug, Clone)]
@@ -132,11 +130,6 @@ pub struct VmShutdownOutcome {
     pub name: String,
     pub changed: bool,
     pub outcome: ShutdownOutcome,
-}
-
-#[derive(Debug)]
-pub struct BrokerShutdownOutcome {
-    pub changed: bool,
 }
 
 /// Outcome of `status`.
@@ -151,21 +144,11 @@ pub struct ProjectStatusOutcome {
     pub project_path: PathBuf,
     pub project_name: String,
     pub config_version: String,
-    pub broker_port: u16,
-    pub broker_state: BrokerState,
     pub reachable: bool,
-    pub last_handshake_vm: Option<String>,
-    pub last_handshake_age_ms: Option<u64>,
     pub rows: Vec<VmStatusRow>,
     pub workspace_id: Option<String>,
     pub state_root: Option<PathBuf>,
     pub config_path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BrokerState {
-    Running { pid: i32 },
-    Offline,
 }
 
 #[derive(Debug, Clone)]
@@ -175,29 +158,7 @@ pub struct VmStatusRow {
     pub cpus: u32,
     pub memory: String,
     pub uptime: Option<Duration>,
-    pub broker_reachability: BrokerReachability,
-    pub handshake_age: Option<Duration>,
-    pub bus_subscribed: bool,
-    pub last_publish_age: Option<Duration>,
-    pub last_heartbeat_age: Option<Duration>,
     pub forwards: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BrokerReachability {
-    Offline,
-    Waiting,
-    Reachable,
-}
-
-impl BrokerReachability {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            BrokerReachability::Offline => "offline",
-            BrokerReachability::Waiting => "waiting",
-            BrokerReachability::Reachable => "reachable",
-        }
-    }
 }
 
 /// Outcome of `ports`.
@@ -213,7 +174,6 @@ pub struct ProjectPortsOutcome {
     pub project_path: PathBuf,
     pub project_name: String,
     pub config_version: String,
-    pub broker_port: u16,
     pub declared: Vec<PortForwardRow>,
     pub conflicts: Vec<PortConflictRow>,
     pub vm_details: Vec<VmPortDetail>,
@@ -236,7 +196,6 @@ pub enum PortForwardStatus {
     Declared,
     Active,
     Conflicting,
-    BrokerReserved,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,26 +227,6 @@ pub struct VmPortDetail {
 #[derive(Debug)]
 pub struct LogsOutcome {
     pub sections: Vec<LogSection>,
-    pub follower: Option<LogFollower>,
-}
-
-/// Outcome of `bus publish`.
-#[derive(Debug)]
-pub struct BusPublishOutcome {
-    pub log_path: PathBuf,
-    pub topic: String,
-}
-
-/// Outcome of `bus tail`.
-#[derive(Debug)]
-pub struct BusTailOutcome {
-    pub project_path: PathBuf,
-    pub project_name: String,
-    pub target: BusLogTarget,
-    pub log_label: String,
-    pub log_path: PathBuf,
-    pub entries: Vec<LogEntry>,
-    pub state: LogSectionState,
     pub follower: Option<LogFollower>,
 }
 

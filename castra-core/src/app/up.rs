@@ -7,7 +7,7 @@ use crate::cli::{BootstrapOverrideArg, UpArgs};
 use crate::core::diagnostics::Severity;
 use crate::core::events::{
     BootstrapPlanAction, BootstrapPlanSsh, BootstrapStatus, BootstrapStepKind, BootstrapStepStatus,
-    BootstrapTrigger, Event,
+    BootstrapTrigger, Event, VizierPlanStatus,
 };
 use crate::core::operations;
 use crate::core::options::{BootstrapOverrides, UpOptions, VmLaunchMode};
@@ -15,7 +15,7 @@ use crate::core::outcome::{BootstrapRunStatus, UpOutcome};
 use crate::core::project::format_config_warnings;
 use castra::PortProtocol;
 
-use crate::core::runtime::ProcessBrokerLauncher;
+use crate::core::runtime::ProcessVizierLauncher;
 
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
 
@@ -23,7 +23,6 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
     let UpArgs {
         skip_discovery,
         force,
-        broker_only,
         plan,
         qcow,
         bootstrap,
@@ -34,13 +33,12 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
         config: config_load_options(config_override, skip_discovery, "up")?,
         force,
         bootstrap: bootstrap_overrides,
-        broker_only,
         launch_mode: VmLaunchMode::Daemonize,
         plan,
         alpine_qcow_override: qcow,
     };
 
-    let launcher = ProcessBrokerLauncher::new(resolve_cli_executable()?);
+    let launcher = ProcessVizierLauncher::new(resolve_cli_executable()?);
     let output = operations::up_with_launcher(options, &launcher, None)?;
 
     let (config_warnings, other) = split_config_warnings(&output.diagnostics);
@@ -140,6 +138,7 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                 artifact_hash,
                 metadata_path,
                 warnings,
+                ..
             } => {
                 let mode_text = mode.as_str();
                 match action {
@@ -349,6 +348,25 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
         println!(
             "Bootstrap plan summary: {run} would run, {skip} would skip, {errors} would error."
         );
+
+        for plan in &outcome.plans {
+            if let Some(status) = plan.vizier_status {
+                let label = format_vizier_status(status);
+                if let Some(path) = plan.vizier_log_path.as_ref() {
+                    println!(
+                        "→ {}: vizier {} (logs → {})",
+                        plan.vm,
+                        label,
+                        path.display()
+                    );
+                } else {
+                    println!("→ {}: vizier {}", plan.vm, label);
+                }
+                if let Some(hint) = plan.vizier_remediation.as_ref() {
+                    println!("   hint: {}", hint);
+                }
+            }
+        }
     }
 
     if !outcome.bootstraps.is_empty() {
@@ -363,6 +381,18 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                 }
                 BootstrapRunStatus::Skipped => {
                     println!("→ {}: bootstrap skipped.", run.vm);
+                }
+            }
+
+            if let Some(status) = run.vizier_status {
+                let label = format_vizier_status(status);
+                if let Some(path) = run.vizier_log_path.as_ref() {
+                    println!("   vizier: {} (logs → {})", label, path.display());
+                } else {
+                    println!("   vizier: {}", label);
+                }
+                if let Some(hint) = run.vizier_remediation.as_ref() {
+                    println!("   vizier-hint: {}", hint);
                 }
             }
         }
@@ -411,11 +441,14 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
             println!("   logs: {}", log_parts.join("; "));
         }
     }
+}
 
-    if let Some(broker) = &outcome.broker {
-        let broker_log = outcome.log_root.join("broker.log");
-        println!("→ broker (pid {}):", broker.pid);
-        println!("   logs: host-broker → {}", broker_log.display());
+fn format_vizier_status(status: VizierPlanStatus) -> &'static str {
+    match status {
+        VizierPlanStatus::Start => "start",
+        VizierPlanStatus::Restart => "restart",
+        VizierPlanStatus::Healthy => "healthy",
+        VizierPlanStatus::Unavailable => "unavailable",
     }
 }
 
@@ -473,6 +506,9 @@ fn format_step_kind(kind: &BootstrapStepKind) -> &'static str {
         BootstrapStepKind::Transfer => "transfer",
         BootstrapStepKind::Apply => "apply",
         BootstrapStepKind::Verify => "verify",
+        BootstrapStepKind::VizierInstall => "vizier-install",
+        BootstrapStepKind::VizierEnable => "vizier-enable",
+        BootstrapStepKind::VizierHandshake => "vizier-handshake",
     }
 }
 

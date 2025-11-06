@@ -4,7 +4,6 @@ mod components;
 mod config_catalog;
 mod controller;
 mod input;
-mod ssh;
 mod state;
 mod transcript;
 
@@ -87,9 +86,7 @@ fn main() {
                                 chat.on_prompt_event(event, cx);
                             })
                             .detach();
-                            let mut chat = ChatApp::new(prompt.clone(), shutdown.clone());
-                            chat.initialize(cx);
-                            chat
+                            ChatApp::new(prompt.clone(), shutdown.clone())
                         })
                     },
                 )

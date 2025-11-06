@@ -342,40 +342,6 @@ ttyS0::respawn:/sbin/agetty --autologin root --noclear ttyS0 115200 vt100
 EOF
 }
 
-write_castra_bus_assets() {
-	local root="$1"
-
-	install -d -m 0755 "$root/usr/local/bin"
-	install -d -m 0755 "$root/etc/conf.d"
-	install -d -m 0755 "$root/etc/init.d"
-
-	install -m 0755 "$CAS_SRC_DIR/scripts/castra-bus-common.sh" "$root/usr/local/bin/castra-bus-common.sh"
-	install -m 0755 "$CAS_SRC_DIR/scripts/castra-bus-agent.sh" "$root/usr/local/bin/castra-bus-agent.sh"
-	install -m 0755 "$CAS_SRC_DIR/scripts/castra-bus-publish.sh" "$root/usr/local/bin/castra-bus-publish.sh"
-
-	cat >"$root/etc/conf.d/castra-handshake" <<EOF
-BROKER_HOST="${CASTRA_HANDSHAKE_HOST}"
-BROKER_PORT="${CASTRA_HANDSHAKE_PORT}"
-BROKER_VM_NAME="${CASTRA_VM_NAME}"
-EOF
-
-	cat >"$root/etc/init.d/castra-bus-agent" <<'EOF'
-#!/sbin/openrc-run
-command="/usr/local/bin/castra-bus-agent.sh"
-command_background="yes"
-pidfile="/run/castra-bus-agent.pid"
-
-depend() {
-	need net
-}
-
-start_pre() {
-	checkpath --directory /run --mode 0755
-}
-EOF
-	chmod 0755 "$root/etc/init.d/castra-bus-agent"
-}
-
 # Ensures that the specified device node exists.
 settle_dev_node() {
 	local dev="$1"
@@ -772,12 +738,11 @@ if [ "$CASTRA_ENABLE_CUSTOMIZATIONS" = 'yes' ]; then
 	_apk add --root . agetty util-linux-login
 	rewrite_castra_getty .
 
-	# einfo 'Ensuring bash is installed for Castra bus scripts'
+	einfo 'Ensuring bash is installed for vizier vm_commands helpers'
 	_apk add --root . bash
 
-	einfo 'Installing Castra bus scripts'
-	write_castra_bus_assets .
-	rc_add default castra-bus-agent
+	einfo 'Preparing vizier log directory'
+	install -d -m 0755 "./var/log/castra/vizier"
 
 	einfo 'Ensuring OpenSSH server is installed'
 	_apk add --root . openssh
