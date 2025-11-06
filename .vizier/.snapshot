@@ -21,32 +21,26 @@ CODE STATE (user-visible surfaces and behaviors)
 - Harness (castra-harness)
   - Remote execution scaffolding (runner.rs, session.rs, stream.rs) and translation into UI-facing events; discovery/metadata for SSH wrappers.
   - Vizier remote modules/config have been removed; public API no longer exposes vizier_remote types.
-  - Prompt seed reframed from “vizier” to “workspace coordinator”; vm_commands.sh is the endorsed remote runner interface.
+  - Prompt seed reframed from “workspace coordinator”; vm_commands.sh is the endorsed remote runner interface.
 
 - Protocol (castra-protocol)
   - Shared types for event/message exchange between core/UI/harness remain; protocol no longer references vizier.remote.
 
 - VM Command Wrapper
   - vm_commands.sh: remote runner helper for sending commands, listing runs, interrupting by PGID, and viewing output. Environment via SSH_TARGET (+ SSH_PORT/SSH_EXTRA_OPTS, optional SSH_STRICT=1).
-  - Run artifacts now live under /run/castra-agent/<RUN_ID>/ (previously /run/vizier/<RUN_ID>/). Use list/view-output to inspect. SESSION names use “agent-<RUN_ID>”.
+  - Run artifacts live under /run/castra-agent/<RUN_ID>/. Use list/view-output to inspect. SESSION names use “agent-<RUN_ID>”.
 
 - Examples & Docs
-  - examples/library_up.rs updated to use operations::up (no launcher shim) and vizier mentions removed.
+  - examples/library_up.rs uses operations::up (no launcher shim) and vizier mentions removed.
   - Docs (ARCHITECTURE_HIGH_LEVEL.md, BOOTSTRAP.md, WORKSPACE.md, event-contract-v1.md, castra-ui/docs) updated to remove vizier and describe direct SSH metadata and usage flows.
 
 NARRATIVE STATE (themes, tensions, direction)
 - Agent-first model is the North Star: UI owns agent SSH sessions; harness provides discovery/transport metadata; core focuses on VM bootstrap and emitting event contract v1.
-- Vizier removal W1–W2 are effectively landed (core no longer stages/controls vizier; harness has no vizier_remote); W3 continues: UI needs a concrete session manager to establish/manage SSH agent sessions end-to-end.
+- Vizier Removal arc is COMPLETE: vizier references are removed across core, UI, harness, protocol, docs, and tooling. Any remaining work now lives under general UX/operations threads (not “vizier removal”).
 - Observability and operational clarity: attention model work continues; message log should reflect focus and collapse noise.
-- Ephemerality is a feature: VMs and artifacts should cleanly disappear on shutdown/clean; vm_commands.sh run dirs are now under /run/castra-agent and must be cleaned up deterministically.
+- Ephemerality is a feature: VMs and artifacts should cleanly disappear on shutdown/clean; vm_commands.sh run dirs under /run/castra-agent must be cleaned up deterministically.
 
 ACTIVE THREADS (linked to TODOs; acceptance anchored to current code surfaces)
-- Vizier Removal (Thread 50)
-  • W1 — Core bootstrap refactor: LANDED. Acceptance met: no vizier fields/steps; docs and CLI texts updated; workspace builds without castra-vizier. (See v0.12.2 Core section.)
-  • W2 — Harness simplification: LANDED. Acceptance met: no vizier_remote module/types; API provides metadata; prompt updated. (Harness section.)
-  • W3 — UI agent lifecycle: IN PROGRESS. Acceptance remaining: session manager for direct SSH, reconnect UX, and component bindings; vizier strings removed already.
-  • W4 — Scripts/tooling cleanup: IN PROGRESS. vm_commands.sh run path migrated; ensure docs and any consumers are aligned; remove vestigial vizier subcommands (done) and verify cleanup paths.
-  • W5 — Docs and institution: IN PROGRESS. Most core/UI docs updated; ensure tutorials and references are consistent and point to agent-first workflows.
 - Operational clarity / Attention model — todo_operational_clarity_attention_model.md
   - Acceptance anchors: status_footer reflects focus/health; roster shows agent/session presence; message_log filters by attention state; contract v1 alignment.
 - Agent-first interaction model — todo_agent_first_interaction_model.md
@@ -70,6 +64,6 @@ KNOWN CONSTRAINTS
 - Correctness and clean teardown take precedence over raw performance.
 
 NEAR-TERM DIRECTION (what “done” looks like next)
-- Land W3 (UI session manager) with reconnect, attention-integrated status, and prompt_shell bound to SSH sessions.
-- Finish W4 (scripts/tooling cleanup) by validating vm_commands.sh usage in examples/docs and aligning any lingering paths.
+- Land UI session manager with reconnect, attention-integrated status, and prompt_shell bound to SSH sessions (non-vizier specific).
+- Validate vm_commands.sh usage in examples/docs and align any lingering paths.
 - Harden cooperative shutdown and ephemeral cleanup with user-visible confirmations and deterministic log retention windows under /run/castra-agent.
