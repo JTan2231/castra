@@ -13,4 +13,7 @@ Scope:
 
 Anchors: castra-ui/src/components/*; castra-core/src/core/events.rs; docs/AGENTS.md; castra-ui/AGENTS.md.
 
-Threads: Thread 21.
+Threads: Thread 21.Thread link: Thread 21 — Operational clarity (Attention model). Now sourced from vizier.remote.* events post-cutover (Snapshot v0.11.0). Acceptance: UI surfaces grouped, deduplicated signals derived solely from vizier.remote.* with no broker artifacts; noise budget defined (max N alerts/minute per VM by default) with user-tunable filters; zero impact on protocol golden tests.
+
+---
+

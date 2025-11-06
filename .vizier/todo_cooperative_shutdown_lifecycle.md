@@ -16,4 +16,7 @@ Acceptance Criteria
 
 Pointers
 - src/core/options.rs; src/core/runtime.rs; src/core/events.rs; src/core/reporter.rs; src/app/down.rs; docs/ (examples and sequencing)
+---Thread link: Thread 40 — Stabilization and polish. Context: Harness now owns SSH sessions to in-VM Vizier (vizier.remote.* live). Acceptance: graceful stop sequence propagates from UI→harness→VM Vizier with bounded timeouts; reconcilers do not respawn during intentional shutdown; status reflects draining state; logs clearly mark shutdown boundaries.
+
 ---
+

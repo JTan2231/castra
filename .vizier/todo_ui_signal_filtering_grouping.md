@@ -45,3 +45,7 @@ Snapshot v0.10.0-pre update
 
 ---
 
+Thread link: Thread 21 — Operational clarity (Attention model). Context: Stream source is vizier.remote.*; translator shim removed. Acceptance: status_footer and vm_fleet show consolidated health/attention states computed from vizier.remote.*; grouping by VM and cause; interactions to expand to raw events; defaults minimize churn while preserving first-fault visibility.
+
+---
+

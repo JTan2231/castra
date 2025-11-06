@@ -28,3 +28,7 @@ Anchors
 
 Thread links
 - Serves Thread 31 (Agent-first) and updates Thread 21 (Attention model). Coordinates with Thread 20 (unified stream) and Thread 30 (removing broker paraphernalia).
+Thread link: Thread 31 — Agent-first interaction model. Context: vizier.remote.* stable; focus on first meaningful interaction. Acceptance: from clean start, user can issue a natural-language intent that resolves to a safe, observable VM action with confirmation via vizier.remote events; rollback/abort affordance present; transcript captures intent→action mapping.
+
+---
+

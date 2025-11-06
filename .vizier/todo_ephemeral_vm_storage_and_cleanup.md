@@ -36,3 +36,7 @@ Pointers (anchors only)
 
 Notes
 - Keep implementation open; acceptable approaches include copy-on-write overlays or transient snapshots managed by the hypervisor. Ensure durability of host-side stamps/logs remains untouched.
+Thread link: Thread 40 — Stabilization and polish. Context: Brokerless cutover done; ensure VM runtime artifacts are cleaned post-run. Acceptance: ephemeral disks/sockets/PIDs removed or archived within T seconds after VM stop; a single UI affordance reveals retained logs and reasons if cleanup skipped; no leakage detected across repeated up/down cycles (test harness asserts zero leftovers).
+
+---
+
