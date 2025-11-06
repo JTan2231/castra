@@ -17,3 +17,13 @@ Threads: Thread 21.Thread link: Thread 21 — Operational clarity (Attention mod
 
 ---
 
+Pivot alignment (Vizier removal):
+- Source of truth updated: attention levels derive from UI-managed agent sessions and harness-provided metadata, not vizier.remote.*.
+- Acceptance clarified: status_footer and roster reflect agent session health/latency; no broker/vizier artifacts anywhere in visuals or docs.
+- Remove old context lines referencing vizier.remote.*; Thread link stays the same (Thread 21) but cites Snapshot v0.12 (agent-first).
+
+Updated context (replace prior vizier.remote paragraph):
+Thread link: Thread 21 — Operational clarity (Attention model). Context: UI owns per-agent SSH sessions; harness supplies discovery metadata. Acceptance: grouped/deduped signals computed from agent sessions; attention budget and filters documented; critical events never suppressed.
+
+---
+

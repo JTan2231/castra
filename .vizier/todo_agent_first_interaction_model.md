@@ -32,3 +32,12 @@ Thread link: Thread 31 — Agent-first interaction model. Context: vizier.remote
 
 ---
 
+Pivot alignment (Vizier removal):
+- Remove vizier.remote context from Thread link; explicitly state first-message roundtrip is over direct SSH-managed agent session.
+- Clarify that vm_fleet is deprecated in favor of roster_sidebar as the primary selection surface.
+
+Thread link (revised):
+- Thread 31 — Agent-first interaction model. Acceptance: from clean start, user issues an intent and sees confirmation via agent session transcript/log; abort affordance present; transcript captures intent→action mapping.
+
+---
+

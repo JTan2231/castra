@@ -20,3 +20,11 @@ Pointers
 
 ---
 
+Pivot alignment (Vizier removal):
+- Context updated: UI owns agent sessions; core performs shutdown sequencing; no in-VM Vizier involvement.
+- Acceptance unchanged for sequencing/signals; add note that UI surfaces shutdown boundaries via agent session logs/indicators, not vizier.* events.
+
+Thread link (revised): Thread 40 — Post-removal stabilization and polish. Acceptance: graceful stop sequence is observable end-to-end with bounded timeouts; reconcilers do not respawn during intentional shutdown; diagnostics clearly mark shutdown.
+
+---
+

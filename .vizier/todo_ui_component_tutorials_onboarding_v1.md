@@ -48,3 +48,12 @@ Validation
 Dependencies
 - Event Contract v1 doc exists (T20) or is sufficiently stubbed.
 - Attention Model doc exists (T21) or is sufficiently stubbed.
+Pivot alignment (Vizier removal):
+- Docs should describe mapping between UI components and agent sessions + harness metadata, not vizier.remote events.
+- Update cross-links to reference agent session manager docs (castra-ui state/controller) and remove any vizier references.
+- First Up tutorial: call out how agent session connects, where to see connection state and retries.
+
+Validation note updated accordingly.
+
+---
+

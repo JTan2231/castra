@@ -1,42 +1,22 @@
-SNAPSHOT v0.12.0 — Castra pivot: Vizier removal underway
+SNAPSHOT v0.12.1 — TODOs rebased onto Vizier-less model
 
-Edits since previous snapshot
-- Strategic pivot: deprecate and remove in-VM Vizier and vizier.remote streams across core, harness, and UI. Prior brokerless vizier.remote architecture is now legacy.
-- Initiative scaffolded: implementation plan recorded under vizier-removal/IMPLEMENTATION_PLAN.md; workstreams defined for core bootstrap, harness simplification, UI agent lifecycle, scripts/tooling, and documentation.
-- Threads updated: New thread opened for Vizier Removal; stabilizing/polish thread reframed to focus on post-removal observability.
+Diff vs v0.12.0
+- Rebased product-level threads and acceptance on agent-owned sessions (no vizier.remote as a signal source) in several TODOs.
+- No scope/priorities changed; vizier-removal workstreams remain W1→W5.
 
-Active threads (intent + acceptance)
-- Thread 50 — Vizier Removal (new):
-  - Intent: Eliminate castra-vizier, vizier.remote protocols, and dependent glue; reassign responsibilities per plan (core: VM/bootstrap only; harness: metadata; UI: direct agent SSH sessions).
-  - Acceptance: Workspace builds without castra-vizier; no code/docs mention Vizier outside legacy notes; UI establishes direct agent sessions and basic interaction works; tests/docs updated.
-- Thread 21 — Operational clarity (Attention model): unchanged in goal; will rebase on UI-owned agent sessions instead of vizier.remote events. Acceptance unchanged but source of signals shifts to UI agent sessions and harness metadata.
-- Thread 40 — Post-removal stabilization (renamed):
-  - Evidence: Removing Vizier risks gaps in observability (logs, status) and lifecycle edges.
-  - Acceptance: Replacement diagnostics are discoverable from UI; bootstrap/event ordering remains coherent; no dangling CLI or script affordances; latency/health surfaces appropriate to new model.
-- Thread 31 — Agent-first interaction model: now unblocked by Thread 50; focuses on first meaningful interaction over direct SSH-managed sessions. Acceptance: first-message roundtrip with health and usage surfaced in UI.
+Threads touched
+- Thread 21 — Operational clarity (Attention model): source of truth now UI-managed agent sessions + harness metadata; status/footer/roster acceptance updated accordingly.
+- Thread 31 — Agent-first interaction model: first-message roundtrip explicitly over SSH agent sessions; vm_fleet deprecated in favor of roster.
+- Thread 40 — Post-removal stabilization: shutdown lifecycle observability notes routed through agent sessions, not vizier.*.
+- Thread 50 — Vizier Removal: workstreams unchanged (Core bootstrap W1; Harness simplification W2; UI agent lifecycle W3; Scripts/tooling W4; Docs W5). Open questions remain active.
 
-Landed threads
-- Thread 30 — Busless architecture cutover (Core): LANDED (historical context only).
-- Thread 12 — Post-boot bootstrap pipeline: LANDED (subject to minor edits to remove Vizier-specific statuses).
-- Thread 20 — Harness ↔ In-VM Vizier integration: RETIRED (superseded by Thread 50).
+Unaffected threads
+- Ephemeral VM storage & cleanup: still valid; independent of Vizier.
+- CLI/Core removal of VM-selection surfaces: aligned with agent-first; no further edits needed beyond existing TODO.
+- Core library composability: clarified it emits core events independent of vizier.remote; otherwise unchanged.
 
-Current code state (observable surfaces)
-- Core: Still stages and monitors in-VM Vizier (legacy) as of v0.11; pivot aims to remove these paths and fields from bootstrap outcomes and CLI surfaces.
-- Harness: Currently emits vizier.remote.* via SSH and owns session lifecycle (legacy). To be simplified to metadata helpers; vizier_remote module slated for deletion.
-- UI: Consumes vizier.remote.* directly (legacy). Will migrate to owning per-agent SSH sessions and state; components (roster, vm_fleet, status_footer) will be refit to agent sessions.
-- Protocol/docs: vizier.remote protocol and tests exist (legacy); new authoritative docs will move away from Vizier framing.
+Why this change
+- Ensure all guidance and acceptance criteria reflect the pivot: UI now owns agent SSH sessions; harness provides discovery metadata; core remains VM/bootstrap-only.
 
-Narrative themes
-- Consolidate responsibilities: core boots VMs, harness curates metadata, UI talks to agents directly. Vizier is removed to reduce complexity and tighten feedback loops.
-
-Direction of travel
-- Execute vizier-removal workstreams (Thread 50) in sequence: core → harness → UI → scripts/docs; maintain operational clarity (Thread 40) and evolve attention model (Thread 21) atop UI-managed agent sessions.
-
-Cross-links
-- Plan: vizier-removal/IMPLEMENTATION_PLAN.md (source of truth for scope and sequencing).
-- Thread 50: touches castra-vizier crate; castra-core/src/core/bootstrap.rs; castra-core/src/app/up.rs; castra-harness/src/vizier_remote/* (to delete); castra-ui/src/state/* and components/*; vm_commands.sh; docs/*.
-- Threads 21/31: castra-ui agent session manager and components; harness metadata surfaces.
-- Thread 40: castra-core/src/core/runtime.rs; vm_commands.sh; UI diagnostics components.
-
-Editorial housekeeping
-- Treat vizier.remote code paths as legacy; avoid adding new dependencies there. Prefer minimal, diff-like removals with product-level acceptance tests replacing Vizier-era goldens.
+Next steps
+- Execute W1→W5; then close or merge open questions into concrete acceptance in affected TODOs.

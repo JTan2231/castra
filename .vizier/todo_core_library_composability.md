@@ -13,4 +13,11 @@ Scope:
 
 Anchors: castra-core/src/lib.rs; castra-core/src/core/runtime.rs; castra-core/src/core/events.rs; castra-core/src/app/*; examples/.
 
-Threads: Thread 20; supports Threads 2, 12, 13.
+Threads: Thread 20; supports Threads 2, 12, 13.Pivot alignment (Vizier removal):
+- Update thread references: serves Thread 40 (Post-removal stabilization) and Thread 50 (Vizier Removal), unblocks Thread 31 (Agent-first). Remove Thread 20/12/13 legacy mentions.
+- Clarify that examples demonstrate emitting core events independent of any vizier.remote protocol; consumers can bridge to UI-managed agent sessions as needed.
+
+Anchors unchanged. Acceptance unchanged.
+
+---
+

@@ -49,3 +49,17 @@ Thread link: Thread 21 — Operational clarity (Attention model). Context: Strea
 
 ---
 
+Pivot alignment (Vizier removal):
+- Replace all VM/vizier.remote references with agent session terminology.
+- Scope now explicitly per-agent with optional grouping by agent role.
+- Acceptance unchanged, with added constraint: grouping must never collapse first-fault errors originating from an agent session.
+
+Anchors update:
+- castra-ui/src/components/{message_log.rs,shell.rs,status_footer.rs}
+- castra-ui/src/state/* (agent-centric state)
+
+Thread link update:
+- Thread 21 — Operational clarity; input signals come from agent sessions + harness metadata (Snapshot v0.12).
+
+---
+
