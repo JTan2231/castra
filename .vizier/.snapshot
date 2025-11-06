@@ -1,22 +1,73 @@
-SNAPSHOT v0.12.1 — TODOs rebased onto Vizier-less model
+SNAPSHOT v0.12.1 — Authoritative project state (replaces prior diff-style notes)
 
-Diff vs v0.12.0
-- Rebased product-level threads and acceptance on agent-owned sessions (no vizier.remote as a signal source) in several TODOs.
-- No scope/priorities changed; vizier-removal workstreams remain W1→W5.
+PRODUCT PROMISE
+Castra provides a reliable, agent-first workflow to bring ephemeral VMs up, run work within them via agent sessions over SSH, surface live system events in a TUI, and tear everything down cleanly. Users should be able to: initialize a project, bootstrap VMs, connect agents, interact via the TUI, monitor status/logs, and shut down without residue.
 
-Threads touched
-- Thread 21 — Operational clarity (Attention model): source of truth now UI-managed agent sessions + harness metadata; status/footer/roster acceptance updated accordingly.
-- Thread 31 — Agent-first interaction model: first-message roundtrip explicitly over SSH agent sessions; vm_fleet deprecated in favor of roster.
-- Thread 40 — Post-removal stabilization: shutdown lifecycle observability notes routed through agent sessions, not vizier.*.
-- Thread 50 — Vizier Removal: workstreams unchanged (Core bootstrap W1; Harness simplification W2; UI agent lifecycle W3; Scripts/tooling W4; Docs W5). Open questions remain active.
+CODE STATE (user-visible surfaces and behaviors)
+- Core (castra-core)
+  - CLI entrypoint (src/main.rs, cli.rs): exposes commands for up, down, status, logs, clean, init. Options parsed via core::options; outcomes reported via core::reporter and core::events.
+  - Bootstrap & VM lifecycle (core/bootstrap.rs, app/up.rs, app/down.rs, app/clean.rs): brings up ephemeral VMs per castra.toml/bootstrap.toml; examples in examples/minimal-bootstrap and bootstrap-quickstart demonstrate expected configs and run.sh integration; app.env payload is applied during bootstrap.
+  - Event contract v1 (docs/event-contract-v1.md): core emits structured events for lifecycle, logs, diagnostics, and status; consumers (UI/harness) rely on these as the source of truth.
+  - Status and diagnostics (core/status.rs, core/diagnostics.rs): expose observable state (started, healthy, failed, shutting down) and error surfaces for users and higher layers.
+  - Workspace/project registry (core/workspace_registry.rs, core/project.rs): discovers and tracks the active workspace; aligns with docs/WORKSPACE.md. Config loading via src/config.rs.
+  - Operations and logs (core/operations/*, core/logs.rs): support clean and log streaming for visible resources.
 
-Unaffected threads
-- Ephemeral VM storage & cleanup: still valid; independent of Vizier.
-- CLI/Core removal of VM-selection surfaces: aligned with agent-first; no further edits needed beyond existing TODO.
-- Core library composability: clarified it emits core events independent of vizier.remote; otherwise unchanged.
+- UI (castra-ui — TUI)
+  - TUI entrypoint (src/main.rs) with controller and state; components: roster_sidebar, vm_fleet (deprecated in favor of roster), message_log, prompt_shell, status_footer.
+  - Agent-first interaction: UI owns agent SSH sessions for first-message roundtrip; prompt_shell drives agent interaction; message_log displays transcript of events and agent messages; status_footer reflects attention model; roster surfaces session presence/health. Reference docs in docs/components/* and reference/attention_model.md.
+  - Consumes event contract v1 (docs/dev/consuming_event_contract.md); configuration via config_catalog.rs.
 
-Why this change
-- Ensure all guidance and acceptance criteria reflect the pivot: UI now owns agent SSH sessions; harness provides discovery metadata; core remains VM/bootstrap-only.
+- Harness (castra-harness)
+  - Remote execution and streaming (src/runner.rs, stream.rs, events.rs): provides discovery metadata and transport for logs/events; used by UI to back agent sessions.
+  - Vizier remote tests (tests/vizier_remote.rs) exist as legacy coverage; harness is being simplified as part of vizier removal.
 
-Next steps
-- Execute W1→W5; then close or merge open questions into concrete acceptance in affected TODOs.
+- Protocol (castra-protocol)
+  - Shared types for event and message exchange between core/UI/harness.
+
+- Vizier (castra-vizier)
+  - Legacy binary present but slated for removal; project is migrating to a vizier-less model where UI owns SSH sessions and harness provides minimal remote execution metadata.
+
+- VM Command Wrapper
+  - vm_commands.sh: remote runner helper for sending commands, listing runs, and interrupting by PGID. Environment via SSH_TARGET (+ SSH_PORT/SSH_EXTRA_OPTS). Stdout/stderr live under /run/vizier/<RUN_ID>/ and are retrievable over SSH. This is the current operational surface for remote job control.
+
+- Examples & Docs
+  - examples/library_up.rs and examples/minimal-bootstrap, bootstrap-quickstart show end-to-end bootstrap flows.
+  - docs/ARCHITECTURE_HIGH_LEVEL.md, BOOTSTRAP.md, library_usage.md, and RELEASING.md describe expectations and flows.
+
+NARRATIVE STATE (themes, tensions, direction)
+- Agent-first model is the North Star: UI owns SSH agent sessions; harness provides discovery/transport; core focuses on VM bootstrap and emitting event contract v1.
+- Vizier removal is in progress across W1→W5; legacy references exist but surfaces should steadily converge on agent-owned sessions and roster-driven UI.
+- Observability and operational clarity: users must see who/what has focus (attention model), current system health, and actionable logs, without noise.
+- Ephemerality is a feature: VMs and artifacts should be easy to create and guaranteed to cleanly disappear on shutdown/clean.
+
+ACTIVE THREADS (linked to TODOs; acceptance anchored to current code surfaces)
+- Vizier Removal (W1–W5) — todo_vizier_removal_w1_core_bootstrap.md; todo_vizier_removal_w2_harness_simplification.md; todo_vizier_removal_w3_ui_agent_lifecycle.md; todo_vizier_removal_w4_scripts_tooling_cleanup.md; todo_vizier_removal_w5_docs_and_institution.md
+  - Acceptance anchors: UI uses agent-owned SSH sessions (roster/prompt_shell); harness exposes minimal remote runner; core/event contract v1 has no vizier.remote dependencies; vm_fleet references deprecated and replaced by roster; legacy tests/docs migrated or removed.
+- Operational clarity / Attention model — todo_operational_clarity_attention_model.md
+  - Acceptance anchors: status_footer reflects focus/health; roster shows agent/session presence; message_log filters by attention state; signals align with event-contract v1.
+- Agent-first interaction model — todo_agent_first_interaction_model.md
+  - Acceptance anchors: first-message roundtrip over SSH sessions; prompt_shell UX validates live agent responsiveness; transcript/story preserved in message_log.
+- Ephemeral VM storage & cleanup — todo_ephemeral_vm_storage_and_cleanup.md
+  - Acceptance anchors: down/clean leave no residual processes, storage, or sockets; logs available during session and properly garbage-collected after.
+- CLI/Core remove VM-selection surfaces — todo_cli_and_core_remove_vm_selection_surfaces.md
+  - Acceptance anchors: CLI avoids direct VM targeting UI now owns; options shape matches agent-first design.
+- Core library composability — todo_core_library_composability.md
+  - Acceptance anchors: castra-core emits events independent of vizier; library usage documented in examples/library_up.rs.
+- UI signal filtering & grouping — todo_ui_signal_filtering_grouping.md
+  - Acceptance anchors: message_log and roster present grouped, de-duplicated signals keyed by attention and session identity.
+- Cooperative shutdown lifecycle — todo_cooperative_shutdown_lifecycle.md
+  - Acceptance anchors: orderly teardown across UI→harness→core with user-visible progress; SIGINT/interrupt propagates via vm_commands.sh semantics.
+- UI onboarding/tutorials — todo_ui_component_tutorials_onboarding_v1.md
+  - Acceptance anchors: first_up tutorial shows bootstrap→connect→interact→shutdown using current agent-first model.
+
+KNOWN CONSTRAINTS
+- Must adhere to event-contract v1 shapes; consumers rely on these structures.
+- Remote execution currently mediated by vm_commands.sh; SSH-based semantics (PGID interrupt, run logs path) are stable and referenced by UI/harness flows.
+- Performance and resource ceilings not yet formalized; correctness and clean teardown take precedence.
+
+NEAR-TERM DIRECTION (what “done” looks like next)
+- Land Vizier removal W1→W3: core bootstrap free of vizier, harness simplified, UI roster/agent lifecycle authoritative. Replace vm_fleet with roster in all flows.
+- Align UI attention model and signal filtering with event-contract v1; status/footer and message_log reflect focused sessions accurately.
+- Harden cooperative shutdown and ephemeral cleanup with user-visible confirmations and deterministic log availability windows.
+
+This snapshot supersedes prior diff-based notes and is the single source of truth for current behavior and narrative direction.
