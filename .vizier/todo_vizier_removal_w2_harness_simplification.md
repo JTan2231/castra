@@ -18,4 +18,10 @@ Pointers
 - castra-harness/tests/vizier_remote.rs (delete or replace)
 
 Notes
-- Maintain behavioral parity for any non-Vizier telemetry promised to users.
+- Maintain behavioral parity for any non-Vizier telemetry promised to users.Status update (v0.12.2)
+- Outcome: LANDED. vizier_remote module and types removed from castra-harness; config no longer carries VizierRemoteConfig; public API exposes metadata and usage only.
+- Evidence: harness/src/{lib.rs,config.rs,translator.rs} remove vizier_* imports/variants; prompt reframed to “workspace coordinator”.
+- Acceptance: Met. Follow-ups: ensure any tests referencing vizier_remote are deleted/rewritten; confirm UI compiles against new HarnessEvent set.
+
+---
+

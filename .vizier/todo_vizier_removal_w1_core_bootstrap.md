@@ -20,4 +20,10 @@ Pointers
 - Root Cargo.toml membership
 
 Notes
-- Keep implementation open; sequence deletions to avoid transient compile breaks; if temporary cfg stubs are introduced, track them in vizier-removal transient checklist.
+- Keep implementation open; sequence deletions to avoid transient compile breaks; if temporary cfg stubs are introduced, track them in vizier-removal transient checklist.Status update (v0.12.2)
+- Outcome: LANDED. Core no longer stages/installs/probes Vizier; events/steps/plan fields removed; CLI/app output scrubbed; docs updated.
+- Evidence: git diff drops Vizier enums/steps (BootstrapStepKind::*Vizier*), removes VizierPlanStatus and broker events, simplifies operations::up, and updates BOOTSTRAP.md/ARCHITECTURE_HIGH_LEVEL.md/WORKSPACE.md. examples/library_up.rs now calls operations::up with no launcher.
+- Acceptance: Met. Leave thread open for one release to watch for regressions; then mark CLOSED.
+
+---
+
