@@ -26,9 +26,8 @@ use super::project::{
 };
 use super::reporter::Reporter;
 use super::runtime::{
-    CheckOutcome, ProcessVizierLauncher, ShutdownTimeouts, VizierLaunchRequest, VizierLauncher,
-    check_disk_space, check_host_capacity, ensure_ports_available, ensure_vm_assets, launch_vm,
-    prepare_runtime_context, shutdown_vm,
+    CheckOutcome, ShutdownTimeouts, check_disk_space, check_host_capacity, ensure_ports_available,
+    ensure_vm_assets, launch_vm, prepare_runtime_context, shutdown_vm,
 };
 use super::status as status_core;
 use super::workspace_registry::{WorkspaceHandle, WorkspaceRegistry, persist_workspace_metadata};
@@ -168,22 +167,12 @@ pub fn init(
 }
 
 pub fn up(options: UpOptions, reporter: Option<&mut dyn Reporter>) -> OperationResult<UpOutcome> {
-    let launcher = ProcessVizierLauncher::from_env()?;
-    up_internal(options, reporter, &launcher)
-}
-
-pub fn up_with_launcher(
-    options: UpOptions,
-    launcher: &dyn VizierLauncher,
-    reporter: Option<&mut dyn Reporter>,
-) -> OperationResult<UpOutcome> {
-    up_internal(options, reporter, launcher)
+    up_internal(options, reporter)
 }
 
 fn up_internal(
     options: UpOptions,
     reporter: Option<&mut dyn Reporter>,
-    launcher: &dyn VizierLauncher,
 ) -> OperationResult<UpOutcome> {
     let mut diagnostics = Vec::new();
     let mut events = Vec::new();
@@ -268,12 +257,6 @@ fn up_internal(
         )?;
 
         ensure_ports_available(&project)?;
-
-        let vizier_request = VizierLaunchRequest {
-            project: &project,
-            context: &context,
-        };
-        launcher.launch(&vizier_request)?;
 
         let mut preparations = Vec::new();
         for vm in &project.vms {

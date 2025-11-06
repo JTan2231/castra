@@ -11,18 +11,13 @@ const VERSION: &str = env!("CASTRA_VERSION");
 fn cli_long_version() -> &'static str {
     static VERSION: OnceLock<String> = OnceLock::new();
     VERSION
-        .get_or_init(|| {
-            format!(
-                "{}\nVizier remote protocol: {}",
-                env!("CASTRA_VERSION"),
-                castra_protocol::VIZIER_REMOTE_PROTOCOL_RANGE
-            )
-        })
+        .get_or_init(|| env!("CASTRA_VERSION").to_string())
         .as_str()
 }
 
 /// Shared deprecation banner for legacy bus/broker commands.
-pub const BUS_BROKER_DEPRECATION_MESSAGE: &str = "Deprecated: bus/broker have been removed. Use the Codex harness vizier stream over SSH (see VIZIER_REMOTE_PROTOCOL.md).";
+pub const BUS_BROKER_DEPRECATION_MESSAGE: &str =
+    "Deprecated: bus/broker have been removed. Connect directly to guest agent sessions over SSH using harness metadata.";
 
 /// Write the deprecation banner to the provided writer, appending a newline.
 pub fn write_bus_broker_deprecation<W: std::io::Write>(mut writer: W) -> std::io::Result<()> {

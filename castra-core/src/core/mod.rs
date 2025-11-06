@@ -17,7 +17,7 @@ pub mod workspace_registry;
 
 pub use diagnostics::{Diagnostic, Severity};
 pub use events::{CleanupKind, Event};
-pub use operations::{clean, down, init, logs, ports, status, up, up_with_launcher};
+pub use operations::{clean, down, init, logs, ports, status, up};
 pub use options::{
     CleanOptions, CleanScope, ConfigLoadOptions, ConfigSource, DownOptions, InitOptions,
     LogsOptions, PortsOptions, PortsView, ProjectSelector, StatusOptions, UpOptions, VmLaunchMode,
@@ -30,4 +30,3 @@ pub use outcome::{
     VmLaunchOutcome, VmPortDetail, VmShutdownOutcome,
 };
 pub use reporter::Reporter;
-pub use runtime::{ProcessVizierLauncher, VizierLaunchRequest, VizierLauncher};

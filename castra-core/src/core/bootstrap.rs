@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashMap};
-use std::env;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::panic;
@@ -8,11 +7,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::config::PortProtocol;
 #[cfg(test)]
@@ -21,7 +16,7 @@ use crate::config::{BootstrapMode, ProjectConfig, VmDefinition};
 use crate::core::diagnostics::{Diagnostic, Severity};
 use crate::core::events::{
     BootstrapPlanAction, BootstrapPlanSsh, BootstrapPlanVerify, BootstrapStatus, BootstrapStepKind,
-    BootstrapStepStatus, BootstrapTrigger, Event, VizierPlanStatus,
+    BootstrapStepStatus, BootstrapTrigger, Event,
 };
 #[cfg(test)]
 use crate::core::options::VmLaunchMode;
@@ -37,19 +32,6 @@ const STAGING_SUBDIR: &str = "bootstrap";
 const STAGED_SCRIPT_NAME: &str = "run.sh";
 const STAGED_PAYLOAD_DIR: &str = "payload";
 const DEFAULT_REMOTE_BASE: &str = "/tmp/castra-bootstrap";
-const VIZIER_STAGING_DIR: &str = "vizier";
-const VIZIER_INSTALL_ROOT: &str = "/opt/castra/vizier";
-const VIZIER_BIN_DIR: &str = "/opt/castra/vizier/bin";
-const VIZIER_CONFIG_DIR: &str = "/opt/castra/vizier/config";
-const VIZIER_LOG_ROOT: &str = "/var/log/castra/vizier";
-const VIZIER_WRAPPER_PATH: &str = "/usr/local/bin/castra-vizier";
-const VIZIER_SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/castra-vizier@.service";
-const VIZIER_BINARY_NAME: &str = "castra-vizier";
-const VIZIER_WRAPPER_FILENAME: &str = "castra-vizier-wrapper";
-const VIZIER_SYSTEMD_UNIT_NAME: &str = "castra-vizier@.service";
-const VIZIER_PROTOCOL_VERSION: &str = "1.0.0";
-const VIZIER_ECHO_LATENCY_HINT_MS: u64 = 150;
-const VIZIER_HOST_LOG_SUBDIR: &str = "vizier";
 const DEFAULT_SSH_USER: &str = "root";
 const DEFAULT_SSH_HOST: &str = "127.0.0.1";
 const DEFAULT_SSH_PORT: u16 = 22;
@@ -110,20 +92,13 @@ pub fn run_all(
             let tx_clone = event_tx.clone();
             let state_root = state_root.clone();
             let log_root = log_root.clone();
-            let project_root = project.project_root.clone();
             handles.push(scope.spawn(move || {
                 let mut local_diagnostics = Vec::new();
                 let mut emit_event = |event: Event| {
                     let _ = tx_clone.send(event);
                 };
-                let outcome = run_for_vm(
-                    &state_root,
-                    &log_root,
-                    &project_root,
-                    vm,
-                    &mut emit_event,
-                    &mut local_diagnostics,
-                );
+                let outcome =
+                    run_for_vm(&state_root, &log_root, vm, &mut emit_event, &mut local_diagnostics);
                 (index, outcome, local_diagnostics)
             }));
         }
@@ -177,7 +152,7 @@ pub fn plan_all(
     let mut plans = Vec::new();
 
     for vm in &project.vms {
-        let plan = plan_for_vm(vm, &project.state_root, &project.project_root);
+        let plan = plan_for_vm(vm);
         if plan.action.is_error() {
             diagnostics.push(
                 Diagnostic::new(
@@ -210,9 +185,6 @@ pub fn plan_all(
             artifact_hash: plan.artifact_hash.clone(),
             metadata_path: plan.metadata_path.clone(),
             warnings: plan.warnings.clone(),
-            vizier_status: plan.vizier_status,
-            vizier_log_path: plan.vizier_log_path.clone(),
-            vizier_remediation: plan.vizier_remediation.clone(),
         });
 
         plans.push(plan);
@@ -221,7 +193,7 @@ pub fn plan_all(
     Ok(plans)
 }
 
-fn plan_for_vm(vm: &VmDefinition, state_root: &Path, project_root: &Path) -> BootstrapPlanOutcome {
+fn plan_for_vm(vm: &VmDefinition) -> BootstrapPlanOutcome {
     let mode = vm.bootstrap.mode;
     match mode {
         BootstrapMode::Skip => {
@@ -242,9 +214,6 @@ fn plan_for_vm(vm: &VmDefinition, state_root: &Path, project_root: &Path) -> Boo
                 artifact_hash: None,
                 metadata_path: None,
                 warnings: Vec::new(),
-                vizier_status: None,
-                vizier_log_path: None,
-                vizier_remediation: None,
             };
         }
         _ => {}
@@ -279,9 +248,6 @@ fn plan_for_vm(vm: &VmDefinition, state_root: &Path, project_root: &Path) -> Boo
                 artifact_hash: None,
                 metadata_path: None,
                 warnings: Vec::new(),
-                vizier_status: None,
-                vizier_log_path: None,
-                vizier_remediation: None,
             };
         }
     };
@@ -313,19 +279,10 @@ fn plan_for_vm(vm: &VmDefinition, state_root: &Path, project_root: &Path) -> Boo
             artifact_hash: None,
             metadata_path: None,
             warnings: Vec::new(),
-            vizier_status: None,
-            vizier_log_path: None,
-            vizier_remediation: None,
         };
     }
 
-    let inputs = match resolve_blueprint_inputs(
-        vm,
-        &script_path,
-        configured_payload.as_ref(),
-        state_root,
-        project_root,
-    ) {
+    let inputs = match resolve_blueprint_inputs(vm, &script_path, configured_payload.as_ref()) {
         Ok(inputs) => inputs,
         Err(err) => {
             return BootstrapPlanOutcome {
@@ -348,9 +305,6 @@ fn plan_for_vm(vm: &VmDefinition, state_root: &Path, project_root: &Path) -> Boo
                 artifact_hash: None,
                 metadata_path: None,
                 warnings: Vec::new(),
-                vizier_status: None,
-                vizier_log_path: None,
-                vizier_remediation: None,
             };
         }
     };
@@ -385,23 +339,6 @@ fn plan_for_vm(vm: &VmDefinition, state_root: &Path, project_root: &Path) -> Boo
         BootstrapMode::Skip => unreachable!(),
     };
 
-    let (vizier_status, vizier_log_path, vizier_remediation) =
-        if let Some(vizier) = inputs.vizier.as_ref() {
-            let log_path = vizier.host_log_file.clone();
-            let remediation = format!(
-                "Inspect vizier logs at {} or restart with `systemctl restart castra-vizier@{}`.",
-                log_path.display(),
-                vm.name
-            );
-            (
-                Some(VizierPlanStatus::Start),
-                Some(log_path),
-                Some(remediation),
-            )
-        } else {
-            (None, None, None)
-        };
-
     BootstrapPlanOutcome {
         vm: vm.name.clone(),
         mode,
@@ -423,9 +360,6 @@ fn plan_for_vm(vm: &VmDefinition, state_root: &Path, project_root: &Path) -> Boo
         artifact_hash: Some(inputs.artifact_hash.clone()),
         metadata_path: inputs.metadata_path.clone(),
         warnings: inputs.warnings.clone(),
-        vizier_status,
-        vizier_log_path,
-        vizier_remediation,
     }
 }
 
@@ -440,7 +374,6 @@ fn trigger_for_mode(mode: BootstrapMode) -> Option<BootstrapTrigger> {
 fn run_for_vm(
     state_root: &Path,
     log_root: &Path,
-    project_root: &Path,
     vm: &VmDefinition,
     emit_event: &mut dyn FnMut(Event),
     diagnostics: &mut Vec<Diagnostic>,
@@ -457,9 +390,6 @@ fn run_for_vm(
                 stamp: None,
                 log_path: None,
                 ssh: None,
-                vizier_status: None,
-                vizier_log_path: None,
-                vizier_remediation: None,
             });
         }
         BootstrapMode::Auto | BootstrapMode::Always => {}
@@ -487,9 +417,6 @@ fn run_for_vm(
                 stamp: None,
                 log_path: None,
                 ssh: None,
-                vizier_status: None,
-                vizier_log_path: None,
-                vizier_remediation: None,
             });
         }
     };
@@ -518,21 +445,12 @@ fn run_for_vm(
             stamp: None,
             log_path: None,
             ssh: None,
-            vizier_status: None,
-            vizier_log_path: None,
-            vizier_remediation: None,
         });
     }
 
     let payload_source = vm.bootstrap.payload.as_ref().cloned();
 
-    let blueprint = assemble_blueprint(
-        state_root,
-        project_root,
-        vm,
-        &script_source,
-        payload_source.as_ref(),
-    )
+    let blueprint = assemble_blueprint(state_root, vm, &script_source, payload_source.as_ref())
     .map_err(|err| Error::BootstrapFailed {
         vm: vm.name.clone(),
         message: err,
@@ -548,7 +466,7 @@ fn run_for_vm(
         );
     }
 
-    let plan = plan_for_vm(vm, state_root, project_root);
+    let plan = plan_for_vm(vm);
     emit_event(Event::BootstrapPlanned {
         vm: plan.vm.clone(),
         mode: plan.mode,
@@ -566,9 +484,6 @@ fn run_for_vm(
         artifact_hash: plan.artifact_hash.clone(),
         metadata_path: plan.metadata_path.clone(),
         warnings: plan.warnings.clone(),
-        vizier_status: plan.vizier_status,
-        vizier_log_path: plan.vizier_log_path.clone(),
-        vizier_remediation: plan.vizier_remediation.clone(),
     });
 
     match plan.action {
@@ -584,9 +499,6 @@ fn run_for_vm(
                 stamp: None,
                 log_path: None,
                 ssh: None,
-                vizier_status: None,
-                vizier_log_path: None,
-                vizier_remediation: None,
             });
         }
         BootstrapPlanAction::Error => {
@@ -597,9 +509,6 @@ fn run_for_vm(
         }
     }
 
-    let mut vizier_status_run = plan.vizier_status;
-    let mut vizier_log_path_run = plan.vizier_log_path.clone();
-    let mut vizier_remediation_run = plan.vizier_remediation.clone();
 
     let handshake_path = state_root.join("handshakes").join(format!(
         "{}.json",
@@ -686,7 +595,7 @@ fn run_for_vm(
     emit_event(Event::Message {
         severity: Severity::Info,
         text: format!(
-            "→ {}: waiting for vizier handshake `{}` at {} (timeout {}s; freshness {}s).",
+            "→ {}: waiting for bootstrap handshake `{}` at {} (timeout {}s; freshness {}s).",
             vm.name,
             blueprint.handshake_identity,
             handshake_path.display(),
@@ -1062,143 +971,7 @@ fn run_for_vm(
         });
     }
 
-    if let Some(vizier) = blueprint.vizier.as_ref() {
-        vizier_log_path_run = Some(vizier.host_log_file.clone());
-        if let Err(err) = fs::create_dir_all(&vizier.host_log_dir) {
-            diagnostics.push(Diagnostic::new(
-                Severity::Warning,
-                format!(
-                    "Failed to prepare vizier log directory {}: {err}",
-                    vizier.host_log_dir.display()
-                ),
-            ));
-        }
-
-        let remediation_hint = format!(
-            "Inspect vizier logs at {} or run `systemctl status castra-vizier@{}` inside the VM.",
-            vizier.host_log_file.display(),
-            vizier.service_instance
-        );
-
-        let install_outcome = install_vizier_remote(&blueprint.ssh, vizier);
-        emit_event(Event::BootstrapStep {
-            vm: vm.name.clone(),
-            step: BootstrapStepKind::VizierInstall,
-            status: install_outcome.status,
-            duration_ms: elapsed_ms(install_outcome.duration),
-            detail: install_outcome.detail.clone(),
-        });
-        steps.push(StepLog::from_result(
-            BootstrapStepKind::VizierInstall,
-            install_outcome.status,
-            install_outcome.duration,
-            install_outcome.detail.clone(),
-        ));
-
-        let mut vizier_operational = matches!(install_outcome.status, BootstrapStepStatus::Success);
-        if !vizier_operational {
-            vizier_status_run = Some(VizierPlanStatus::Unavailable);
-            vizier_remediation_run = Some(remediation_hint.clone());
-            let detail = install_outcome
-                .detail
-                .clone()
-                .unwrap_or_else(|| "Vizier install failed.".to_string());
-            diagnostics.push(
-                Diagnostic::new(
-                    Severity::Error,
-                    format!("Vizier install failed for `{}`: {}", vm.name, detail),
-                )
-                .with_help(remediation_hint.clone()),
-            );
-        }
-
-        if vizier_operational {
-            let enable_outcome = enable_vizier_service(&blueprint.ssh, vizier);
-            emit_event(Event::BootstrapStep {
-                vm: vm.name.clone(),
-                step: BootstrapStepKind::VizierEnable,
-                status: enable_outcome.status,
-                duration_ms: elapsed_ms(enable_outcome.duration),
-                detail: enable_outcome.detail.clone(),
-            });
-            steps.push(StepLog::from_result(
-                BootstrapStepKind::VizierEnable,
-                enable_outcome.status,
-                enable_outcome.duration,
-                enable_outcome.detail.clone(),
-            ));
-
-            if !matches!(enable_outcome.status, BootstrapStepStatus::Success) {
-                vizier_operational = false;
-                vizier_status_run = Some(VizierPlanStatus::Unavailable);
-                vizier_remediation_run = Some(remediation_hint.clone());
-                let detail = enable_outcome
-                    .detail
-                    .clone()
-                    .unwrap_or_else(|| "Vizier enable failed.".to_string());
-                diagnostics.push(
-                    Diagnostic::new(
-                        Severity::Error,
-                        format!("Vizier enable failed for `{}`: {}", vm.name, detail),
-                    )
-                    .with_help(remediation_hint.clone()),
-                );
-            }
-        }
-
-        if vizier_operational {
-            let handshake_outcome = probe_vizier_handshake(&blueprint.ssh, vizier);
-            emit_event(Event::BootstrapStep {
-                vm: vm.name.clone(),
-                step: BootstrapStepKind::VizierHandshake,
-                status: handshake_outcome.status,
-                duration_ms: elapsed_ms(handshake_outcome.duration),
-                detail: handshake_outcome.detail.clone(),
-            });
-            steps.push(StepLog::from_result(
-                BootstrapStepKind::VizierHandshake,
-                handshake_outcome.status,
-                handshake_outcome.duration,
-                handshake_outcome.detail.clone(),
-            ));
-
-            if matches!(handshake_outcome.status, BootstrapStepStatus::Success) {
-                vizier_status_run = Some(VizierPlanStatus::Healthy);
-                vizier_remediation_run = Some(format!(
-                    "Vizier healthy; logs at {}.",
-                    vizier.host_log_file.display()
-                ));
-            } else {
-                vizier_status_run = Some(VizierPlanStatus::Unavailable);
-                vizier_remediation_run = Some(remediation_hint.clone());
-                let detail = handshake_outcome
-                    .detail
-                    .clone()
-                    .unwrap_or_else(|| "Vizier handshake probe failed.".to_string());
-                diagnostics.push(
-                    Diagnostic::new(
-                        Severity::Warning,
-                        format!("Vizier handshake failed for `{}`: {}", vm.name, detail),
-                    )
-                    .with_help(remediation_hint.clone()),
-                );
-            }
-        }
-    } else {
-        vizier_status_run = Some(VizierPlanStatus::Unavailable);
-        vizier_remediation_run =
-            Some("Vizier bundle missing; rebuild project assets and retry.".to_string());
-        diagnostics.push(
-            Diagnostic::new(
-                Severity::Error,
-                format!(
-                    "Vizier bundle was not prepared for `{}`; in-VM Vizier is now mandatory.",
-                    vm.name
-                ),
-            )
-            .with_help("Re-run `castra up` after ensuring vizier assets exist."),
-        );
-    }
+    // Vizier service management removed; UI now owns agent connectivity.
 
     let total_ms = elapsed_ms(start.elapsed());
     let final_status = match apply_outcome.completion {
@@ -1238,9 +1011,6 @@ fn run_for_vm(
         stamp: None,
         log_path: Some(log_path),
         ssh: Some(plan_ssh_from_config(&blueprint.ssh)),
-        vizier_status: vizier_status_run,
-        vizier_log_path: vizier_log_path_run,
-        vizier_remediation: vizier_remediation_run,
     })
 }
 
@@ -1273,7 +1043,7 @@ fn wait_for_handshake(
             return Err(Error::BootstrapFailed {
                 vm: vm.to_string(),
                 message: format!(
-                    "Timed out waiting for fresh vizier handshake `{}` at {} after {} seconds (freshness window {}s).",
+                    "Timed out waiting for fresh bootstrap handshake `{}` at {} after {} seconds (freshness window {}s).",
                     handshake_identity,
                     handshake_path.display(),
                     timeout.as_secs(),
@@ -1388,7 +1158,6 @@ struct BootstrapBlueprintInputs {
     artifact_hash: String,
     metadata_path: Option<PathBuf>,
     warnings: Vec<String>,
-    vizier: Option<VizierInputs>,
 }
 
 #[derive(Debug)]
@@ -1410,26 +1179,6 @@ struct BootstrapBlueprint {
     artifact_hash: String,
     metadata_path: Option<PathBuf>,
     warnings: Vec<String>,
-    vizier: Option<VizierBlueprint>,
-}
-
-#[derive(Debug)]
-struct VizierInputs {
-    bundle_hash: String,
-    binary_path: PathBuf,
-    config_contents: String,
-    wrapper_contents: String,
-    unit_contents: String,
-    host_log_dir: PathBuf,
-    host_log_file: PathBuf,
-}
-
-#[derive(Debug)]
-struct VizierBlueprint {
-    staged_root: PathBuf,
-    service_instance: String,
-    host_log_dir: PathBuf,
-    host_log_file: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -1498,13 +1247,11 @@ struct MetadataVerify {
 
 fn assemble_blueprint(
     state_root: &Path,
-    project_root: &Path,
     vm: &VmDefinition,
     script_source: &Path,
     payload_source: Option<&PathBuf>,
 ) -> std::result::Result<BootstrapBlueprint, String> {
-    let inputs =
-        resolve_blueprint_inputs(vm, script_source, payload_source, state_root, project_root)?;
+    let inputs = resolve_blueprint_inputs(vm, script_source, payload_source)?;
     let staging_root = state_root.join(STAGING_SUBDIR).join(&vm.name);
     let (staged_script, staged_payload, payload_bytes) = stage_local_assets(
         &inputs.script_source,
@@ -1528,15 +1275,7 @@ fn assemble_blueprint(
         artifact_hash,
         metadata_path,
         warnings,
-        vizier: vizier_inputs,
     } = inputs;
-
-    let vizier_blueprint = if let Some(vizier_inputs) = vizier_inputs {
-        let staged_root = staging_root.join(VIZIER_STAGING_DIR);
-        Some(stage_vizier_assets(&staged_root, vizier_inputs, &vm)?)
-    } else {
-        None
-    };
 
     Ok(BootstrapBlueprint {
         vm,
@@ -1556,7 +1295,6 @@ fn assemble_blueprint(
         artifact_hash,
         metadata_path,
         warnings,
-        vizier: vizier_blueprint,
     })
 }
 
@@ -1564,8 +1302,6 @@ fn resolve_blueprint_inputs(
     vm: &VmDefinition,
     script_source: &Path,
     payload_source: Option<&PathBuf>,
-    state_root: &Path,
-    project_root: &Path,
 ) -> std::result::Result<BootstrapBlueprintInputs, String> {
     let mut warnings = Vec::new();
 
@@ -1759,17 +1495,12 @@ fn resolve_blueprint_inputs(
         }
     }
 
-    let vizier_inputs = Some(prepare_vizier_inputs(&vm.name, state_root, project_root)?);
-
     let artifact_hash = compute_artifact_hash(
         script_source,
         payload_source_resolved.as_deref(),
         &env,
         &remote_dir,
         &verify,
-        vizier_inputs
-            .as_ref()
-            .map(|bundle| bundle.bundle_hash.as_str()),
     )?;
 
     Ok(BootstrapBlueprintInputs {
@@ -1788,7 +1519,6 @@ fn resolve_blueprint_inputs(
         artifact_hash,
         metadata_path,
         warnings,
-        vizier: vizier_inputs,
     })
 }
 
@@ -1952,257 +1682,6 @@ fn copy_payload_dir(source: &Path, dest: &Path) -> std::result::Result<u64, Stri
     Ok(total)
 }
 
-fn stage_vizier_assets(
-    staged_root: &Path,
-    inputs: VizierInputs,
-    vm: &str,
-) -> std::result::Result<VizierBlueprint, String> {
-    if staged_root.exists() {
-        fs::remove_dir_all(staged_root).map_err(|err| {
-            format!(
-                "Failed to clear vizier staging directory {}: {err}",
-                staged_root.display()
-            )
-        })?;
-    }
-
-    fs::create_dir_all(staged_root).map_err(|err| {
-        format!(
-            "Failed to create vizier staging directory {}: {err}",
-            staged_root.display()
-        )
-    })?;
-
-    let bin_dir = staged_root.join("bin");
-    let config_dir = staged_root.join("config");
-    let wrapper_dir = staged_root.join("wrapper");
-    let systemd_dir = staged_root.join("systemd");
-
-    for dir in [&bin_dir, &config_dir, &wrapper_dir, &systemd_dir] {
-        fs::create_dir_all(&dir).map_err(|err| {
-            format!(
-                "Failed to create vizier staging directory {}: {err}",
-                dir.display()
-            )
-        })?;
-    }
-
-    let VizierInputs {
-        bundle_hash: _bundle_hash,
-        binary_path,
-        config_contents,
-        wrapper_contents,
-        unit_contents,
-        host_log_dir,
-        host_log_file,
-    } = inputs;
-
-    let staged_binary = bin_dir.join(VIZIER_BINARY_NAME);
-    fs::copy(&binary_path, &staged_binary).map_err(|err| {
-        format!(
-            "Failed to stage vizier binary {} → {}: {err}",
-            binary_path.display(),
-            staged_binary.display()
-        )
-    })?;
-    set_executable_mode(&staged_binary, 0o755)?;
-
-    let staged_config = config_dir.join(format!("{vm}.json"));
-    fs::write(&staged_config, config_contents).map_err(|err| {
-        format!(
-            "Failed to write vizier config {}: {err}",
-            staged_config.display()
-        )
-    })?;
-
-    let staged_wrapper = wrapper_dir.join(VIZIER_WRAPPER_FILENAME);
-    fs::write(&staged_wrapper, wrapper_contents).map_err(|err| {
-        format!(
-            "Failed to write vizier wrapper {}: {err}",
-            staged_wrapper.display()
-        )
-    })?;
-    set_executable_mode(&staged_wrapper, 0o755)?;
-
-    let staged_unit = systemd_dir.join(VIZIER_SYSTEMD_UNIT_NAME);
-    fs::write(&staged_unit, unit_contents).map_err(|err| {
-        format!(
-            "Failed to write vizier systemd unit {}: {err}",
-            staged_unit.display()
-        )
-    })?;
-
-    Ok(VizierBlueprint {
-        staged_root: staged_root.to_path_buf(),
-        service_instance: vm.to_string(),
-        host_log_dir,
-        host_log_file,
-    })
-}
-
-#[cfg(unix)]
-fn set_executable_mode(path: &Path, mode: u32) -> std::result::Result<(), String> {
-    let perms = fs::Permissions::from_mode(mode);
-    fs::set_permissions(path, perms)
-        .map_err(|err| format!("Failed to set permissions on {}: {err}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn set_executable_mode(path: &Path, _mode: u32) -> std::result::Result<(), String> {
-    if path.exists() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Tried to set permissions on {}, but the path does not exist.",
-            path.display()
-        ))
-    }
-}
-
-fn prepare_vizier_inputs(
-    vm: &str,
-    state_root: &Path,
-    project_root: &Path,
-) -> std::result::Result<VizierInputs, String> {
-    let binary_path = locate_vizier_binary(project_root)?;
-    let remote_log_dir = format!("{}/{}", VIZIER_LOG_ROOT, vm);
-    let (host_log_dir, host_log_file) = host_vizier_log_paths(state_root, vm);
-
-    let config_contents = render_vizier_config(vm, &remote_log_dir)?;
-    let wrapper_contents = render_vizier_wrapper();
-    let unit_contents = render_vizier_unit();
-
-    let bundle_hash = compute_vizier_bundle_hash(
-        &binary_path,
-        &config_contents,
-        &wrapper_contents,
-        &unit_contents,
-    )?;
-
-    Ok(VizierInputs {
-        bundle_hash,
-        binary_path,
-        config_contents,
-        wrapper_contents,
-        unit_contents,
-        host_log_dir,
-        host_log_file,
-    })
-}
-
-fn host_vizier_log_paths(state_root: &Path, vm: &str) -> (PathBuf, PathBuf) {
-    let dir = state_root.join(VIZIER_HOST_LOG_SUBDIR).join(vm);
-    let file = dir.join("service.log");
-    (dir, file)
-}
-
-fn locate_vizier_binary(project_root: &Path) -> std::result::Result<PathBuf, String> {
-    if let Some(explicit) = env::var_os("CASTRA_VIZIER_BINARY") {
-        let candidate = PathBuf::from(explicit);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-        return Err(format!(
-            "Environment variable CASTRA_VIZIER_BINARY points to missing binary at {}.",
-            candidate.display()
-        ));
-    }
-
-    let mut search_roots = Vec::new();
-    if let Some(dir) = env::var_os("CARGO_TARGET_DIR") {
-        search_roots.push(PathBuf::from(dir));
-    }
-    search_roots.push(project_root.join("target"));
-
-    let mut candidates = Vec::new();
-    for root in &search_roots {
-        candidates.push(root.join("release").join(VIZIER_BINARY_NAME));
-        candidates.push(
-            root.join("release")
-                .join(format!("{VIZIER_BINARY_NAME}.exe")),
-        );
-        candidates.push(root.join("debug").join(VIZIER_BINARY_NAME));
-        candidates.push(root.join("debug").join(format!("{VIZIER_BINARY_NAME}.exe")));
-    }
-
-    for candidate in candidates {
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    Err(format!(
-        "Unable to locate vizier binary. Build it with `cargo build -p {VIZIER_BINARY_NAME} --release` or set CASTRA_VIZIER_BINARY."
-    ))
-}
-
-fn render_vizier_config(vm: &str, remote_log_dir: &str) -> std::result::Result<String, String> {
-    let config = json!({
-        "vm": vm,
-        "protocol_version": VIZIER_PROTOCOL_VERSION,
-        "vm_vizier_version": env!("CARGO_PKG_VERSION"),
-        "log_dir": remote_log_dir,
-        "capabilities": {
-            "echo_latency_hint_ms": VIZIER_ECHO_LATENCY_HINT_MS,
-            "supports_reconnect": true,
-            "supports_system_events": true,
-        }
-    });
-
-    serde_json::to_string_pretty(&config)
-        .map_err(|err| format!("Failed to serialize vizier config: {err}"))
-}
-
-fn render_vizier_wrapper() -> String {
-    format!(
-        "#!/bin/sh\nset -euo pipefail\n\nif [ \"$#\" -lt 1 ]; then\n  echo \"usage: castra-vizier <instance> [args...]\" >&2\n  exit 64\nfi\n\nINSTANCE=\"$1\"\nshift || true\n\nCONFIG_PATH=\"{VIZIER_CONFIG_DIR}/$INSTANCE.json\"\nLOG_DIR=\"{VIZIER_LOG_ROOT}/$INSTANCE\"\nLOG_FILE=\"$LOG_DIR/service.log\"\n\nmkdir -p \"$LOG_DIR\"\n\nexec {VIZIER_BIN_DIR}/{VIZIER_BINARY_NAME} --config \"$CONFIG_PATH\" \"$@\" >>\"$LOG_FILE\" 2>&1\n"
-    )
-}
-
-fn render_vizier_unit() -> String {
-    format!(
-        "[Unit]\nDescription=Castra Vizier for %i\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={VIZIER_WRAPPER_PATH} %i\nRestart=always\nRestartSec=2\nKillMode=process\nTimeoutStartSec=10\n\n[Install]\nWantedBy=multi-user.target\n"
-    )
-}
-
-fn compute_vizier_bundle_hash(
-    binary_path: &Path,
-    config_contents: &str,
-    wrapper_contents: &str,
-    unit_contents: &str,
-) -> std::result::Result<String, String> {
-    let mut hasher = Sha256::new();
-
-    let mut file = File::open(binary_path).map_err(|err| {
-        format!(
-            "Failed to open vizier binary {} for hashing: {err}",
-            binary_path.display()
-        )
-    })?;
-    let mut buffer = [0u8; 131_072];
-    loop {
-        let read = file.read(&mut buffer).map_err(|err| {
-            format!(
-                "Failed to hash vizier binary {}: {err}",
-                binary_path.display()
-            )
-        })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-
-    hasher.update(b"\0config\0");
-    hasher.update(config_contents.as_bytes());
-    hasher.update(b"\0wrapper\0");
-    hasher.update(wrapper_contents.as_bytes());
-    hasher.update(b"\0unit\0");
-    hasher.update(unit_contents.as_bytes());
-
-    Ok(hex::encode(hasher.finalize()))
-}
-
 fn calculate_payload_bytes(root: &Path) -> std::result::Result<u64, String> {
     let entries = collect_payload_entries(root)?;
     Ok(entries
@@ -2305,7 +1784,6 @@ fn compute_artifact_hash(
     env: &HashMap<String, String>,
     remote_dir: &str,
     verify: &BootstrapVerifyPlan,
-    vizier_hash: Option<&str>,
 ) -> std::result::Result<String, String> {
     let mut hasher = Sha256::new();
 
@@ -2392,12 +1870,6 @@ fn compute_artifact_hash(
     }
     hasher.update(b"\0");
 
-    if let Some(hash) = vizier_hash {
-        hasher.update(b"vizier_bundle\0");
-        hasher.update(hash.as_bytes());
-        hasher.update(b"\0");
-    }
-
     Ok(hex::encode(hasher.finalize()))
 }
 
@@ -2468,6 +1940,134 @@ struct ProcessOutput {
     command: String,
     stdout: String,
     stderr: String,
+}
+
+fn blueprint_remote_payload_summary(blueprint: &BootstrapBlueprint) -> Option<String> {
+    blueprint
+        .staged_payload
+        .as_ref()
+        .map(|_| format!("{} bytes", blueprint.payload_bytes))
+}
+
+fn execute_remote(blueprint: &BootstrapBlueprint) -> ApplyOutcome {
+    let start = Instant::now();
+    let run_id = generate_run_id();
+    let apply_script = build_apply_command(blueprint, &run_id);
+
+    match run_ssh_shell(&blueprint.ssh, apply_script) {
+        Ok(output) => {
+            let mut completion = ApplyCompletion::Success;
+            let mut detail_parts = vec![format!(
+                "Guest bootstrap script completed via `{}`.",
+                output.command
+            )];
+
+            for line in output.stdout.lines() {
+                let trimmed = line.trim();
+                if let Some(reason) = trimmed.strip_prefix(SENTINEL_ERROR_PREFIX) {
+                    return ApplyOutcome {
+                        command: CommandOutcome {
+                            status: BootstrapStepStatus::Failed,
+                            duration: start.elapsed(),
+                            detail: Some(format!(
+                                "Bootstrap script reported error: {}",
+                                reason.trim()
+                            )),
+                        },
+                        completion: ApplyCompletion::Success,
+                    };
+                }
+                if trimmed == SENTINEL_NOOP {
+                    completion = ApplyCompletion::NoOp;
+                    detail_parts.push("Bootstrap script reported no-op.".to_string());
+                }
+            }
+
+            if let Some(snippet) = summarize_output("stdout", &output.stdout) {
+                detail_parts.push(snippet);
+            }
+            if let Some(snippet) = summarize_output("stderr", &output.stderr) {
+                detail_parts.push(snippet);
+            }
+
+            ApplyOutcome {
+                command: CommandOutcome {
+                    status: BootstrapStepStatus::Success,
+                    duration: start.elapsed(),
+                    detail: Some(detail_parts.join(" ")),
+                },
+                completion,
+            }
+        }
+        Err(err) => ApplyOutcome {
+            command: CommandOutcome {
+                status: BootstrapStepStatus::Failed,
+                duration: start.elapsed(),
+                detail: Some(err),
+            },
+            completion: ApplyCompletion::Success,
+        },
+    }
+}
+
+fn verify_remote(blueprint: &BootstrapBlueprint) -> CommandOutcome {
+    let start = Instant::now();
+    let mut detail_parts = Vec::new();
+
+    if let Some(command) = blueprint.verify.command.as_ref() {
+        let verify_script = build_verify_command(blueprint, command);
+        match run_ssh_shell(&blueprint.ssh, verify_script) {
+            Ok(output) => {
+                append_command_detail(&mut detail_parts, "Verification command succeeded", &output)
+            }
+            Err(err) => {
+                return CommandOutcome {
+                    status: BootstrapStepStatus::Failed,
+                    duration: start.elapsed(),
+                    detail: Some(format!("Verification command failed: {err}")),
+                };
+            }
+        }
+    }
+
+    if let Some(path) = blueprint.verify.path.as_ref() {
+        let resolved_path = if blueprint.verify.path_is_relative {
+            format!("{}/{}", blueprint.remote_dir, path)
+        } else {
+            path.clone()
+        };
+        let script = format!("test -e {}", shell_quote(&resolved_path));
+        match run_ssh_shell(&blueprint.ssh, script) {
+            Ok(output) => append_command_detail(
+                &mut detail_parts,
+                "Verification path check succeeded",
+                &output,
+            ),
+            Err(err) => {
+                return CommandOutcome {
+                    status: BootstrapStepStatus::Failed,
+                    duration: start.elapsed(),
+                    detail: Some(format!(
+                        "Verification path check failed for {}: {err}",
+                        resolved_path
+                    )),
+                };
+            }
+        }
+        detail_parts.push(format!("Verified remote path {} exists.", resolved_path));
+    }
+
+    let detail = if detail_parts.is_empty() {
+        Some("No verification checks configured.".to_string())
+    } else {
+        Some(detail_parts.join(" "))
+    };
+
+    CommandOutcome {
+        status: BootstrapStepStatus::Success,
+        duration: start.elapsed(),
+        detail,
+    }
 }
 
 fn format_cli(program: &str, args: &[String]) -> String {
@@ -2659,268 +2259,6 @@ fn transfer_artifacts(blueprint: &BootstrapBlueprint) -> CommandOutcome {
         status: BootstrapStepStatus::Success,
         duration: start.elapsed(),
         detail: Some(detail_parts.join(" ")),
-    }
-}
-
-fn install_vizier_remote(ssh: &SshConfig, vizier: &VizierBlueprint) -> CommandOutcome {
-    let start = Instant::now();
-    let script = format!(
-        "set -euo pipefail;\n\
-         STAGING={staging};\n\
-         BIN_DIR={bin_dir};\n\
-         CONFIG_DIR={config_dir};\n\
-         WRAPPER={wrapper_path};\n\
-         UNIT_PATH={unit_path};\n\
-         INSTANCE={instance};\n\
-         install -d -m 755 \"$BIN_DIR\" \"$CONFIG_DIR\" {install_root} \"{log_root}/$INSTANCE\";\n\
-         install -m 755 \"$STAGING/bin/{binary}\" \"$BIN_DIR/{binary}\";\n\
-         install -m 644 \"$STAGING/config/$INSTANCE.json\" \"$CONFIG_DIR/$INSTANCE.json\";\n\
-         install -m 755 \"$STAGING/wrapper/{wrapper_filename}\" \"$WRAPPER\";\n\
-         install -m 644 \"$STAGING/systemd/{unit_name}\" \"$UNIT_PATH\";",
-        staging = shell_quote(&vizier.staged_root.display().to_string()),
-        bin_dir = shell_quote(VIZIER_BIN_DIR),
-        config_dir = shell_quote(VIZIER_CONFIG_DIR),
-        wrapper_path = shell_quote(VIZIER_WRAPPER_PATH),
-        unit_path = shell_quote(VIZIER_SYSTEMD_UNIT_PATH),
-        instance = shell_quote(&vizier.service_instance),
-        install_root = shell_quote(VIZIER_INSTALL_ROOT),
-        log_root = shell_quote(VIZIER_LOG_ROOT),
-        binary = VIZIER_BINARY_NAME,
-        wrapper_filename = VIZIER_WRAPPER_FILENAME,
-        unit_name = VIZIER_SYSTEMD_UNIT_NAME,
-    );
-
-    match run_ssh_shell(ssh, script) {
-        Ok(output) => CommandOutcome {
-            status: BootstrapStepStatus::Success,
-            duration: start.elapsed(),
-            detail: Some(format!(
-                "Installed vizier assets via `{}`. {}",
-                output.command,
-                summarize_output("stdout", &output.stdout).unwrap_or_default()
-            )),
-        },
-        Err(err) => CommandOutcome {
-            status: BootstrapStepStatus::Failed,
-            duration: start.elapsed(),
-            detail: Some(format!("Vizier install failed: {err}")),
-        },
-    }
-}
-
-fn enable_vizier_service(ssh: &SshConfig, vizier: &VizierBlueprint) -> CommandOutcome {
-    let start = Instant::now();
-    let script = format!(
-        "set -euo pipefail; systemctl daemon-reload; systemctl enable --now castra-vizier@{instance}.service;",
-        instance = shell_quote(&vizier.service_instance),
-    );
-
-    match run_ssh_shell(ssh, script) {
-        Ok(output) => CommandOutcome {
-            status: BootstrapStepStatus::Success,
-            duration: start.elapsed(),
-            detail: Some(format!(
-                "Enabled vizier service `{}`. {}",
-                output.command,
-                summarize_output("stdout", &output.stdout).unwrap_or_default()
-            )),
-        },
-        Err(err) => CommandOutcome {
-            status: BootstrapStepStatus::Failed,
-            duration: start.elapsed(),
-            detail: Some(format!("Vizier service enable failed: {err}")),
-        },
-    }
-}
-
-fn probe_vizier_handshake(ssh: &SshConfig, vizier: &VizierBlueprint) -> CommandOutcome {
-    let start = Instant::now();
-    let config_path = format!("{}/{}.json", VIZIER_CONFIG_DIR, vizier.service_instance);
-    let command = format!(
-        "{} --probe --config {}",
-        shell_quote(&format!("{}/{}", VIZIER_BIN_DIR, VIZIER_BINARY_NAME)),
-        shell_quote(&config_path)
-    );
-    let args = [String::from("sh"), String::from("-lc"), command];
-
-    match run_ssh_command_capture(ssh, &args) {
-        Ok(output) => {
-            let line = output
-                .stdout
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .map(|line| line.to_string())
-                .unwrap_or_default();
-
-            #[derive(Deserialize)]
-            struct VizierHandshakeFrame {
-                #[serde(rename = "type")]
-                frame_type: String,
-                protocol_version: String,
-                vm_vizier_version: String,
-                #[allow(dead_code)]
-                vm: String,
-            }
-
-            match serde_json::from_str::<VizierHandshakeFrame>(&line) {
-                Ok(frame) if frame.frame_type == "handshake" => CommandOutcome {
-                    status: BootstrapStepStatus::Success,
-                    duration: start.elapsed(),
-                    detail: Some(format!(
-                        "Vizier handshake OK (protocol {}, vizier {}).",
-                        frame.protocol_version, frame.vm_vizier_version
-                    )),
-                },
-                Ok(frame) => CommandOutcome {
-                    status: BootstrapStepStatus::Failed,
-                    duration: start.elapsed(),
-                    detail: Some(format!(
-                        "Unexpected vizier frame `{}` during handshake.",
-                        frame.frame_type
-                    )),
-                },
-                Err(err) => CommandOutcome {
-                    status: BootstrapStepStatus::Failed,
-                    duration: start.elapsed(),
-                    detail: Some(format!("Failed to parse vizier handshake: {err}")),
-                },
-            }
-        }
-        Err(err) => CommandOutcome {
-            status: BootstrapStepStatus::Failed,
-            duration: start.elapsed(),
-            detail: Some(format!("Vizier handshake probe failed: {err}")),
-        },
-    }
-}
-
-fn blueprint_remote_payload_summary(blueprint: &BootstrapBlueprint) -> Option<String> {
-    blueprint
-        .staged_payload
-        .as_ref()
-        .map(|_| format!("{} bytes", blueprint.payload_bytes))
-}
-
-fn execute_remote(blueprint: &BootstrapBlueprint) -> ApplyOutcome {
-    let start = Instant::now();
-    let run_id = generate_run_id();
-    let apply_script = build_apply_command(blueprint, &run_id);
-
-    println!("APPLY SCRIPT: {}", apply_script);
-
-    match run_ssh_shell(&blueprint.ssh, apply_script) {
-        Ok(output) => {
-            let mut completion = ApplyCompletion::Success;
-            let mut detail_parts = vec![format!(
-                "Guest bootstrap script completed via `{}`.",
-                output.command
-            )];
-
-            for line in output.stdout.lines() {
-                let trimmed = line.trim();
-                if let Some(reason) = trimmed.strip_prefix(SENTINEL_ERROR_PREFIX) {
-                    return ApplyOutcome {
-                        command: CommandOutcome {
-                            status: BootstrapStepStatus::Failed,
-                            duration: start.elapsed(),
-                            detail: Some(format!(
-                                "Bootstrap script reported error: {}",
-                                reason.trim()
-                            )),
-                        },
-                        completion: ApplyCompletion::Success,
-                    };
-                }
-                if trimmed == SENTINEL_NOOP {
-                    completion = ApplyCompletion::NoOp;
-                    detail_parts.push("Bootstrap script reported no-op.".to_string());
-                }
-            }
-
-            if let Some(snippet) = summarize_output("stdout", &output.stdout) {
-                detail_parts.push(snippet);
-            }
-            if let Some(snippet) = summarize_output("stderr", &output.stderr) {
-                detail_parts.push(snippet);
-            }
-
-            ApplyOutcome {
-                command: CommandOutcome {
-                    status: BootstrapStepStatus::Success,
-                    duration: start.elapsed(),
-                    detail: Some(detail_parts.join(" ")),
-                },
-                completion,
-            }
-        }
-        Err(err) => ApplyOutcome {
-            command: CommandOutcome {
-                status: BootstrapStepStatus::Failed,
-                duration: start.elapsed(),
-                detail: Some(err),
-            },
-            completion: ApplyCompletion::Success,
-        },
-    }
-}
-
-fn verify_remote(blueprint: &BootstrapBlueprint) -> CommandOutcome {
-    let start = Instant::now();
-    let mut detail_parts = Vec::new();
-
-    if let Some(command) = blueprint.verify.command.as_ref() {
-        let verify_script = build_verify_command(blueprint, command);
-        match run_ssh_shell(&blueprint.ssh, verify_script) {
-            Ok(output) => {
-                append_command_detail(&mut detail_parts, "Verification command succeeded", &output)
-            }
-            Err(err) => {
-                return CommandOutcome {
-                    status: BootstrapStepStatus::Failed,
-                    duration: start.elapsed(),
-                    detail: Some(format!("Verification command failed: {err}")),
-                };
-            }
-        }
-    }
-
-    if let Some(path) = blueprint.verify.path.as_ref() {
-        let resolved_path = if blueprint.verify.path_is_relative {
-            format!("{}/{}", blueprint.remote_dir, path)
-        } else {
-            path.clone()
-        };
-        let script = format!("test -e {}", shell_quote(&resolved_path));
-        match run_ssh_shell(&blueprint.ssh, script) {
-            Ok(output) => append_command_detail(
-                &mut detail_parts,
-                "Verification path check succeeded",
-                &output,
-            ),
-            Err(err) => {
-                return CommandOutcome {
-                    status: BootstrapStepStatus::Failed,
-                    duration: start.elapsed(),
-                    detail: Some(format!(
-                        "Verification path check failed for {}: {err}",
-                        resolved_path
-                    )),
-                };
-            }
-        }
-        detail_parts.push(format!("Verified remote path {} exists.", resolved_path));
-    }
-
-    let detail = if detail_parts.is_empty() {
-        Some("No verification checks configured.".to_string())
-    } else {
-        Some(detail_parts.join(" "))
-    };
-
-    CommandOutcome {
-        status: BootstrapStepStatus::Success,
-        duration: start.elapsed(),
-        detail,
     }
 }
 
@@ -3254,9 +2592,6 @@ fn format_step(kind: BootstrapStepKind) -> String {
         BootstrapStepKind::Transfer => "transfer",
         BootstrapStepKind::Apply => "apply",
         BootstrapStepKind::Verify => "verify",
-        BootstrapStepKind::VizierInstall => "vizier-install",
-        BootstrapStepKind::VizierEnable => "vizier-enable",
-        BootstrapStepKind::VizierHandshake => "vizier-handshake",
     }
     .to_string()
 }
@@ -3380,11 +2715,6 @@ mod tests {
                 unsafe { env::remove_var(self.key) };
             }
         }
-    }
-
-    fn install_stub_vizier(dir: &Path) -> io::Result<EnvVarGuard> {
-        let vizier = write_executable(dir, "castra-vizier", "#!/bin/sh\nexit 0\n")?;
-        Ok(EnvVarGuard::set("CASTRA_VIZIER_BINARY", &vizier))
     }
 
     fn write_executable(dir: &Path, name: &str, body: &str) -> io::Result<PathBuf> {
@@ -3512,7 +2842,6 @@ mod tests {
         let base_image_path = workspace.join("base.img");
         fs::write(&base_image_path, b"base-image")?;
 
-        let _vizier_guard = install_stub_vizier(workspace)?;
 
         let vm = VmDefinition {
             name: "devbox".to_string(),
@@ -3694,7 +3023,7 @@ mod tests {
         write_executable(
             &bin_dir,
             "ssh",
-            "#!/bin/sh\nlog=\"$MOCK_SSH_LOG\"\necho \"$@\" >> \"$log\"\nmode=\"$MOCK_SSH_MODE\"\nif printf '%s' \"$@\" | grep -q '\\--probe'; then\n  echo '{\"type\":\"handshake\",\"protocol_version\":\"1.0.0\",\"vm_vizier_version\":\"0.10.0\",\"vm\":\"devbox\"}'\n  exit 0\nfi\nif printf '%s' \"$@\" | grep -q './run.sh'; then\n  if [ \"$mode\" = noop ]; then\n    echo 'Castra:noop'\n  elif [ \"$mode\" = error ]; then\n    echo 'Castra:error:script aborted'\n  fi\nfi\nif [ \"$mode\" = fail_connect ] && printf '%s' \"$@\" | grep -q ' true'; then\n  exit 1\nfi\nexit 0\n",
+            "#!/bin/sh\nlog=\"$MOCK_SSH_LOG\"\necho \"$@\" >> \"$log\"\nmode=\"$MOCK_SSH_MODE\"\nif printf '%s' \"$@\" | grep -q '\\--probe'; then\n  echo '{\"type\":\"handshake\",\"protocol_version\":\"1.0.0\",\"vm\":\"devbox\"}'\n  exit 0\nfi\nif printf '%s' \"$@\" | grep -q './run.sh'; then\n  if [ \"$mode\" = noop ]; then\n    echo 'Castra:noop'\n  elif [ \"$mode\" = error ]; then\n    echo 'Castra:error:script aborted'\n  fi\nfi\nif [ \"$mode\" = fail_connect ] && printf '%s' \"$@\" | grep -q ' true'; then\n  exit 1\nfi\nexit 0\n",
         )?;
         write_executable(
             &bin_dir,
@@ -3702,7 +3031,6 @@ mod tests {
             "#!/bin/sh\nlog=\"$MOCK_SCP_LOG\"\necho \"$@\" >> \"$log\"\nexit 0\n",
         )?;
         write_executable(&bin_dir, "qemu-system-x86_64", "#!/bin/sh\nexit 0\n")?;
-        let _vizier_guard = install_stub_vizier(&bin_dir)?;
         let _path_guard = PathGuard::prepend(&bin_dir);
 
         unsafe {

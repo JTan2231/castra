@@ -30,13 +30,14 @@ use castra::{
     load_project_config,
 };
 use castra_harness::TurnHandle;
-use castra_harness::{HarnessEvent, TurnRequest, VizierInputFrame};
+use castra_harness::{HarnessEvent, TurnRequest};
 use gpui::{
     AppContext, AsyncApp, Context, Entity, FocusHandle, Focusable, IntoElement, MouseDownEvent,
     Render, Task, WeakEntity, Window,
 };
 
-const BROKER_DEPRECATION_MESSAGE: &str = "Deprecated: bus/broker have been removed. Use the Codex harness vizier stream over SSH (see VIZIER_REMOTE_PROTOCOL.md).";
+const BROKER_DEPRECATION_MESSAGE: &str =
+    "Deprecated: bus/broker have been removed. Connect directly to guest agent sessions via vm_commands.sh wrappers.";
 
 #[derive(Default)]
 pub struct ShutdownState {
@@ -103,7 +104,6 @@ impl ShutdownState {
 
 pub struct ChatApp {
     state: AppState,
-    vizier_input_counter: u64,
     prompt: Entity<PromptInput>,
     harness_runner: HarnessRunner,
     shutdown: Arc<ShutdownState>,
@@ -165,7 +165,6 @@ impl ChatApp {
 
         Self {
             state,
-            vizier_input_counter: 0,
             prompt,
             harness_runner: HarnessRunner::new(),
             shutdown,
@@ -207,40 +206,6 @@ impl ChatApp {
         self.state.push_toast(format!("Focused VM: {}", label));
         self.ensure_prompt_focus(window, cx);
         cx.notify();
-    }
-
-    fn dispatch_vizier(&mut self, message: &str, cx: &mut Context<Self>) -> Result<(), String> {
-        let trimmed = message.trim();
-        if trimmed.is_empty() {
-            return Ok(());
-        }
-        self.dispatch_vizier_remote(trimmed, cx)
-    }
-
-    fn next_vizier_input_id(&mut self) -> String {
-        let id = self.vizier_input_counter;
-        self.vizier_input_counter = self.vizier_input_counter.wrapping_add(1);
-        format!("ui-{id}")
-    }
-
-    fn dispatch_vizier_remote(
-        &mut self,
-        message: &str,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        let Some(vm) = self.state.vizier_primary_vm() else {
-            return Err("Vizier tunnel not yet available.".to_string());
-        };
-
-        let frame_id = self.next_vizier_input_id();
-        let frame = VizierInputFrame::new(frame_id, message.to_string());
-
-        self.state.set_vizier_activity_status("EXECUTING");
-        cx.notify();
-
-        self.harness_runner
-            .send_vizier_input(vm, frame)
-            .map_err(|err| err.to_string())
     }
 
     fn dispatch_codex(&mut self, vm: String, payload: String, cx: &mut Context<Self>) {
@@ -363,10 +328,11 @@ impl ChatApp {
         self.state.push_user_entry(text);
         cx.notify();
 
-        if let Err(message) = self.dispatch_vizier(trimmed, cx) {
+        if let Some(vm) = self.state.focused_vm_name() {
+            self.dispatch_codex(vm, trimmed.to_string(), cx);
+        } else {
             self.state
-                .push_system_message(format!("Vizier dispatch failed: {message}"));
-            self.state.set_vizier_activity_status("ERROR");
+                .push_system_message("Select a VM before dispatching work.".to_string());
             cx.notify();
         }
     }
@@ -507,12 +473,6 @@ impl ChatApp {
 
     fn handle_codex_event(&mut self, event: HarnessEvent, cx: &mut Context<Self>) {
         self.state.apply_harness_event(&event);
-        cx.notify();
-    }
-
-    #[allow(dead_code)]
-    fn handle_vizier_event(&mut self, event: HarnessEvent, cx: &mut Context<Self>) {
-        self.state.apply_vizier_event(&event);
         cx.notify();
     }
 

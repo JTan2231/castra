@@ -6,7 +6,7 @@ use crate::config::{BaseImageProvenance, BootstrapMode, PortForward};
 use super::diagnostics::Diagnostic;
 use super::events::{
     BootstrapPlanAction, BootstrapPlanSsh, BootstrapPlanVerify, BootstrapTrigger, CleanupKind,
-    Event, ShutdownOutcome, VizierPlanStatus,
+    Event, ShutdownOutcome,
 };
 use super::options::PortsView;
 
@@ -84,9 +84,6 @@ pub struct BootstrapRunOutcome {
     pub stamp: Option<String>,
     pub log_path: Option<PathBuf>,
     pub ssh: Option<BootstrapPlanSsh>,
-    pub vizier_status: Option<VizierPlanStatus>,
-    pub vizier_log_path: Option<PathBuf>,
-    pub vizier_remediation: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,9 +104,6 @@ pub struct BootstrapPlanOutcome {
     pub artifact_hash: Option<String>,
     pub metadata_path: Option<PathBuf>,
     pub warnings: Vec<String>,
-    pub vizier_status: Option<VizierPlanStatus>,
-    pub vizier_log_path: Option<PathBuf>,
-    pub vizier_remediation: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

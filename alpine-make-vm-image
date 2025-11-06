@@ -738,11 +738,11 @@ if [ "$CASTRA_ENABLE_CUSTOMIZATIONS" = 'yes' ]; then
 	_apk add --root . agetty util-linux-login
 	rewrite_castra_getty .
 
-	einfo 'Ensuring bash is installed for vizier vm_commands helpers'
+	einfo 'Ensuring bash is installed for vm_commands helpers'
 	_apk add --root . bash
 
-	einfo 'Preparing vizier log directory'
-	install -d -m 0755 "./var/log/castra/vizier"
+	einfo 'Preparing castra agent run directory'
+	install -d -m 0755 "./var/run/castra-agent"
 
 	einfo 'Ensuring OpenSSH server is installed'
 	_apk add --root . openssh

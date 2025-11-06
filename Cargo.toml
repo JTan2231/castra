@@ -2,7 +2,5 @@
 resolver = "3"
 members = [
 "castra-core", "castra-harness",
-"castra-protocol",
 "castra-ui",
-"castra-vizier",
 ]

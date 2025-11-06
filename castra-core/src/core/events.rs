@@ -125,12 +125,6 @@ pub enum Event {
         metadata_path: Option<PathBuf>,
         /// Non-fatal warnings associated with the plan.
         warnings: Vec<String>,
-        /// Planned Vizier status when the feature is enabled.
-        vizier_status: Option<VizierPlanStatus>,
-        /// Host-side log path for Vizier service output.
-        vizier_log_path: Option<PathBuf>,
-        /// Suggested remediation when Vizier health checks fail during planning.
-        vizier_remediation: Option<String>,
     },
     /// Host-side bootstrap pipeline started for a VM.
     BootstrapStarted {
@@ -176,18 +170,6 @@ pub enum Event {
         /// Error message describing the failure cause.
         error: String,
     },
-    /// The broker process started listening.
-    BrokerStarted {
-        /// OS process identifier.
-        pid: u32,
-        /// Port used for the broker.
-        port: u16,
-    },
-    /// The broker process was stopped. `changed` indicates whether any action was taken.
-    BrokerStopped {
-        /// Whether a change occurred (`true` if the broker was terminated, `false` if it was already offline).
-        changed: bool,
-    },
     /// Progress emitted during cleanup operations.
     CleanupProgress {
         /// Path targeted by the cleanup step.
@@ -213,7 +195,7 @@ pub enum BootstrapTrigger {
 /// Kind of step recorded during bootstrap execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootstrapStepKind {
-    /// Waiting for a fresh vizier handshake to confirm guest reachability.
+    /// Waiting for a fresh bootstrap handshake to confirm guest reachability.
     WaitHandshake,
     /// Establishing SSH connectivity with the guest.
     Connect,
@@ -223,12 +205,6 @@ pub enum BootstrapStepKind {
     Apply,
     /// Verifying the bootstrap outcome using remote checks or runner signals.
     Verify,
-    /// Installing vizier binaries and configuration into the guest VM.
-    VizierInstall,
-    /// Enabling and starting the vizier system service.
-    VizierEnable,
-    /// Probing vizier handshake health.
-    VizierHandshake,
 }
 
 /// Result of executing a bootstrap step.
@@ -240,14 +216,6 @@ pub enum BootstrapStepStatus {
     Skipped,
     /// Step failed; details provided alongside the event.
     Failed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VizierPlanStatus {
-    Start,
-    Restart,
-    Healthy,
-    Unavailable,
 }
 
 /// Final bootstrap completion disposition for a VM.

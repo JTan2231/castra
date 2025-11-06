@@ -1,6 +1,6 @@
 # Castra Architecture (High-Level)
 
-Castra is a CLI-forward orchestration harness that wraps QEMU-based guests with reproducible state roots, a cached base image pipeline, and a structured observability surface. This document walks the repository from the user experience down to the runtime that manipulates QEMU processes and the vizier-managed host/guest channel.
+Castra is a CLI-forward orchestration harness that wraps QEMU-based guests with reproducible state roots, a cached base image pipeline, and a structured observability surface. This document walks the repository from the user experience down to the runtime that manipulates QEMU processes and the direct SSH session helpers exposed by the harness/UI.
 
 ## System Overview
 
@@ -63,7 +63,7 @@ The runtime (`src/core/runtime.rs`) bridges higher-level operations to actual ho
 
 - **Context preparation** – `prepare_runtime_context` creates the state root (logs, images), locates QEMU binaries, and chooses accelerators.
 - **Preflight checks** – `check_host_capacity`, `check_disk_space`, and `ensure_ports_available` enforce headroom and exclusive port usage before launch.
-- **Vizier integration** – `VizierLauncher` abstractions allow the runtime to delegate SSH/vizier bootstrapping to an external shim (e.g. the harness). Legacy broker processes are no longer started from the core runtime.
+- **Session metadata** – bootstrap events surface resolved SSH details (user, host, port, identity options). The harness/UI reuse that metadata to drive direct agent sessions; no in-guest steward or external shim is required.
 - **VM launch** – `launch_vm` builds the QEMU command (daemonized, virtio devices, serial log, QMP socket on Unix) and records pidfiles/logs. It emits `Event::VmLaunched` when successful.
 - **Cooperative shutdown** – `shutdown_vm` enforces the event ordering captured in `.vizier/.snapshot`: it attempts QMP ACPI (or marks channel unavailable), tracks deadlines (`ShutdownTimeouts`), escalates via SIGTERM/SIGKILL as needed, and emits `ShutdownComplete(outcome, total_ms, changed)` with granular reasons (`CooperativeTimeoutReason`).
 - **State inspection** – helpers like `inspect_vm_state` power `status`, `ports`, and `clean` by reading pidfiles and checking process liveness. Legacy broker pidfiles are ignored and pruned.
@@ -120,7 +120,7 @@ Unix-specific QMP interactions handle cooperative ACPI powerdown; on non-Unix pl
 
 ### `castra bus` / `castra broker`
 
-- These commands have been removed. The harness owns Vizier tunnels and event publication; refer to `vizier-move/VIZIER_REMOTE_PROTOCOL.md` for current transport details.
+- These commands have been removed. The harness owns session metadata and event publication; direct SSH helpers replace the vizier tunnel workflow described in legacy docs.
 
 ## Cross-Cutting Concerns
 

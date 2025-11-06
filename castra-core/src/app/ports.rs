@@ -76,7 +76,7 @@ fn render_project_ports(project: &ProjectPortsOutcome, verbose: bool, view: Port
         println!("State root: {}", state_root.display());
     }
     println!(
-        "Vizier now manages orchestration inside each VM; legacy broker ports have been retired."
+        "Agent orchestration now occurs over direct SSH sessions; legacy broker ports remain retired."
     );
     if matches!(view, PortsView::Active) {
         println!("STATUS column reflects runtime state; stopped VMs show as inactive.");

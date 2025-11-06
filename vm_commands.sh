@@ -9,9 +9,6 @@ Usage:
   vm_commands.sh interrupt <pgid>
   vm_commands.sh list
   vm_commands.sh view-output <run_id> [stdout|stderr|both]
-  vm_commands.sh vizier-logs [--follow] [--lines <n>] [--since <ts>] <instance>
-  vm_commands.sh vizier-status <instance>
-  vm_commands.sh vizier-restart <instance>
 
 Environment:
   SSH_TARGET      Remote ssh target (e.g. user@host). Required.
@@ -117,8 +114,8 @@ if [[ $# -eq 0 ]]; then
 fi
 
 CMD="$*"
-RUN_DIR="/run/vizier/${RUN_ID}"
-SESSION="vizier-${RUN_ID}"
+RUN_DIR="/run/castra-agent/${RUN_ID}"
+SESSION="agent-${RUN_ID}"
 
 mkdir -p "$RUN_DIR"
 chmod 700 "$RUN_DIR"
@@ -268,7 +265,7 @@ list_runs() {
 set -euo pipefail
 shopt -s nullglob
 printf '%s\t%s\t%s\t%s\n' "RUN_ID" "PGID" "STATUS" "COMMAND"
-for dir in /run/vizier/*; do
+for dir in /run/castra-agent/*; do
     [[ -d "$dir" ]] || continue
     run_id="$(basename "$dir")"
     pgid="$(cat "$dir/pgid" 2>/dev/null || echo '-')"
@@ -303,10 +300,10 @@ set -euo pipefail
 
 RUN_ID="$1"
 STREAM="$2"
-RUN_DIR="/run/vizier/${RUN_ID}"
+RUN_DIR="/run/castra-agent/${RUN_ID}"
 
 if [[ ! -d "$RUN_DIR" ]]; then
-    echo "Run directory not found for $RUN_ID under /run/vizier." >&2
+    echo "Run directory not found for $RUN_ID under /run/castra-agent." >&2
     exit 1
 fi
 
@@ -344,122 +341,6 @@ esac
 EOF
 }
 
-require_vizier_instance() {
-    local instance="$1"
-    if [[ -z "$instance" ]]; then
-        echo "Vizier instance is required (typically the VM name)." >&2
-        exit 1
-    fi
-    if [[ "$instance" == -* ]]; then
-        echo "Vizier instance must not begin with '-'." >&2
-        exit 1
-    fi
-}
-
-vizier_logs() {
-    local -a journal_args=(--no-pager)
-    local lines_set=0
-    local instance=""
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --follow|-f)
-                journal_args+=(-f)
-                shift
-                ;;
-            --lines|-n)
-                shift
-                if [[ $# -eq 0 ]]; then
-                    echo "--lines requires a numeric argument." >&2
-                    exit 1
-                fi
-                journal_args+=(-n "$1")
-                lines_set=1
-                shift
-                ;;
-            --since)
-                shift
-                if [[ $# -eq 0 ]]; then
-                    echo "--since requires an argument." >&2
-                    exit 1
-                fi
-                journal_args+=(--since "$1")
-                shift
-                ;;
-            --until)
-                shift
-                if [[ $# -eq 0 ]]; then
-                    echo "--until requires an argument." >&2
-                    exit 1
-                fi
-                journal_args+=(--until "$1")
-                shift
-                ;;
-            --)
-                shift
-                if [[ $# -eq 0 ]]; then
-                    echo "Expected vizier instance after --." >&2
-                    exit 1
-                fi
-                instance="$1"
-                shift
-                if [[ $# -gt 0 ]]; then
-                    echo "Unexpected arguments: $*" >&2
-                    exit 1
-                fi
-                break
-                ;;
-            --*)
-                echo "Unknown flag for vizier-logs: $1" >&2
-                exit 1
-                ;;
-            *)
-                if [[ -n "$instance" ]]; then
-                    echo "Multiple vizier instances provided: $instance and $1" >&2
-                    exit 1
-                fi
-                instance="$1"
-                shift
-                ;;
-        esac
-    done
-
-    require_vizier_instance "$instance"
-
-    if [[ $lines_set -eq 0 ]]; then
-        journal_args+=(-n 200)
-    fi
-
-    journal_args+=(-u "castra-vizier@${instance}.service")
-
-    ssh_invoke sudo journalctl "${journal_args[@]}"
-}
-
-vizier_status() {
-    if [[ $# -ne 1 ]]; then
-        echo "vizier-status requires exactly one argument: <instance>." >&2
-        usage
-        exit 1
-    fi
-
-    local instance="$1"
-    require_vizier_instance "$instance"
-
-    ssh_invoke sudo systemctl status --no-pager "castra-vizier@${instance}.service"
-}
-
-vizier_restart() {
-    if [[ $# -ne 1 ]]; then
-        echo "vizier-restart requires exactly one argument: <instance>." >&2
-        usage
-        exit 1
-    fi
-
-    local instance="$1"
-    require_vizier_instance "$instance"
-
-    ssh_invoke sudo systemctl restart "castra-vizier@${instance}.service"
-}
 
 if [[ $# -lt 1 ]]; then
     usage
@@ -490,15 +371,6 @@ case "$action" in
         ;;
     view-output)
         view_output "$@"
-        ;;
-    vizier-logs)
-        vizier_logs "$@"
-        ;;
-    vizier-status)
-        vizier_status "$@"
-        ;;
-    vizier-restart)
-        vizier_restart "$@"
         ;;
     *)
         usage

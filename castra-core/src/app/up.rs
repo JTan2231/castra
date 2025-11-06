@@ -7,15 +7,13 @@ use crate::cli::{BootstrapOverrideArg, UpArgs};
 use crate::core::diagnostics::Severity;
 use crate::core::events::{
     BootstrapPlanAction, BootstrapPlanSsh, BootstrapStatus, BootstrapStepKind, BootstrapStepStatus,
-    BootstrapTrigger, Event, VizierPlanStatus,
+    BootstrapTrigger, Event,
 };
 use crate::core::operations;
 use crate::core::options::{BootstrapOverrides, UpOptions, VmLaunchMode};
 use crate::core::outcome::{BootstrapRunStatus, UpOutcome};
 use crate::core::project::format_config_warnings;
 use castra::PortProtocol;
-
-use crate::core::runtime::ProcessVizierLauncher;
 
 use super::common::{config_load_options, emit_diagnostics, split_config_warnings};
 
@@ -38,8 +36,7 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
         alpine_qcow_override: qcow,
     };
 
-    let launcher = ProcessVizierLauncher::new(resolve_cli_executable()?);
-    let output = operations::up_with_launcher(options, &launcher, None)?;
+    let output = operations::up(options, None)?;
 
     let (config_warnings, other) = split_config_warnings(&output.diagnostics);
     if let Some(message) = format_config_warnings(&config_warnings) {
@@ -69,12 +66,6 @@ pub fn handle_up(args: UpArgs, config_override: Option<&PathBuf>) -> Result<()> 
     }
 
     Ok(())
-}
-
-fn resolve_cli_executable() -> Result<PathBuf> {
-    std::env::current_exe().map_err(|err| Error::PreflightFailed {
-        message: format!("Unable to resolve castra CLI executable: {err}"),
-    })
 }
 
 fn build_bootstrap_overrides(inputs: &[BootstrapOverrideArg]) -> Result<BootstrapOverrides> {
@@ -317,9 +308,6 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                     vm, duration, error
                 );
             }
-            Event::BrokerStarted { pid, port } => {
-                println!("→ broker: launched on 127.0.0.1:{port} (pid {pid}).");
-            }
             Event::Message { severity, text } => match severity {
                 Severity::Info => println!("{}", text),
                 Severity::Warning => eprintln!("Warning: {}", text),
@@ -349,24 +337,6 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
             "Bootstrap plan summary: {run} would run, {skip} would skip, {errors} would error."
         );
 
-        for plan in &outcome.plans {
-            if let Some(status) = plan.vizier_status {
-                let label = format_vizier_status(status);
-                if let Some(path) = plan.vizier_log_path.as_ref() {
-                    println!(
-                        "→ {}: vizier {} (logs → {})",
-                        plan.vm,
-                        label,
-                        path.display()
-                    );
-                } else {
-                    println!("→ {}: vizier {}", plan.vm, label);
-                }
-                if let Some(hint) = plan.vizier_remediation.as_ref() {
-                    println!("   hint: {}", hint);
-                }
-            }
-        }
     }
 
     if !outcome.bootstraps.is_empty() {
@@ -384,17 +354,6 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                 }
             }
 
-            if let Some(status) = run.vizier_status {
-                let label = format_vizier_status(status);
-                if let Some(path) = run.vizier_log_path.as_ref() {
-                    println!("   vizier: {} (logs → {})", label, path.display());
-                } else {
-                    println!("   vizier: {}", label);
-                }
-                if let Some(hint) = run.vizier_remediation.as_ref() {
-                    println!("   vizier-hint: {}", hint);
-                }
-            }
         }
     }
 
@@ -443,12 +402,21 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
     }
 }
 
-fn format_vizier_status(status: VizierPlanStatus) -> &'static str {
+fn format_step_kind(kind: &BootstrapStepKind) -> &'static str {
+    match kind {
+        BootstrapStepKind::WaitHandshake => "wait-handshake",
+        BootstrapStepKind::Connect => "connect",
+        BootstrapStepKind::Transfer => "transfer",
+        BootstrapStepKind::Apply => "apply",
+        BootstrapStepKind::Verify => "verify",
+    }
+}
+
+fn format_step_status(status: &BootstrapStepStatus) -> &'static str {
     match status {
-        VizierPlanStatus::Start => "start",
-        VizierPlanStatus::Restart => "restart",
-        VizierPlanStatus::Healthy => "healthy",
-        VizierPlanStatus::Unavailable => "unavailable",
+        BootstrapStepStatus::Success => "success",
+        BootstrapStepStatus::Skipped => "skipped",
+        BootstrapStepStatus::Failed => "failed",
     }
 }
 
@@ -472,15 +440,15 @@ fn format_duration_ms(ms: u64) -> String {
 fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
-    let mut index = 0usize;
-    while value >= 1024.0 && index < UNITS.len() - 1 {
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
         value /= 1024.0;
-        index += 1;
+        unit += 1;
     }
-    if index == 0 {
-        format!("{bytes} {}", UNITS[index])
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
     } else {
-        format!("{value:.1} {}", UNITS[index])
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -496,27 +464,6 @@ fn format_bootstrap_trigger(trigger: &BootstrapTrigger) -> &'static str {
     match trigger {
         BootstrapTrigger::Auto => "auto",
         BootstrapTrigger::Always => "always",
-    }
-}
-
-fn format_step_kind(kind: &BootstrapStepKind) -> &'static str {
-    match kind {
-        BootstrapStepKind::WaitHandshake => "wait-handshake",
-        BootstrapStepKind::Connect => "connect",
-        BootstrapStepKind::Transfer => "transfer",
-        BootstrapStepKind::Apply => "apply",
-        BootstrapStepKind::Verify => "verify",
-        BootstrapStepKind::VizierInstall => "vizier-install",
-        BootstrapStepKind::VizierEnable => "vizier-enable",
-        BootstrapStepKind::VizierHandshake => "vizier-handshake",
-    }
-}
-
-fn format_step_status(status: &BootstrapStepStatus) -> &'static str {
-    match status {
-        BootstrapStepStatus::Success => "success",
-        BootstrapStepStatus::Skipped => "skipped",
-        BootstrapStepStatus::Failed => "failed",
     }
 }
 

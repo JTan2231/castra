@@ -22,7 +22,7 @@
 
 ## Event flow at a glance
 - castra-core streams JSON events (e.g. `bootstrap.step`, `vm.state`, `operation.summary`) that map directly into UI render state.  
-- Harness-managed Vizier tunnels emit `vizier.remote.*` frames and are always enabled. The UI consumes them through `HarnessEvent::VizierRemote`; no feature flags or environment toggles are required.  
+- Harness surfaces SSH metadata (host, port, identity hints, wrapper paths) for each VM. The UI and `vm_commands.sh` wrappers use that data to manage direct agent sessions; no in-guest steward is required.  
 - Roster badges mirror `agent.status` updates; VM cards hydrate from `vm.lifecycle` and `bootstrap.*` events, including the `ephemeral` flag exposed by Event Contract v1.  
 - Message log renders every `message` event with severity styling from the attention model, balancing signal vs noise.  
 - Status footer presents aggregate `operation.progress` data (active counts, last attention bump) so operators know when to intervene.  

@@ -112,16 +112,6 @@ fn render_message_row(
                 Some(hsla(160., 0.45, 0.1, 0.38))
             },
         ),
-        MessageKind::VizierCommand => (
-            rgb(0xcbb3ff),
-            rgb(0xdcc8ff),
-            rgb(0xcbb3ff),
-            if collapsed {
-                Some(hsla(260., 0.55, 0.19, 0.42))
-            } else {
-                Some(hsla(260., 0.4, 0.14, 0.36))
-            },
-        ),
         MessageKind::User => (
             rgb(0xffa7c4),
             rgb(0xffc0d4),

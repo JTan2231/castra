@@ -1,4 +1,4 @@
-//! Minimal embedding example demonstrating castra-core operations with a custom vizier launcher.
+//! Minimal embedding example demonstrating castra-core operations.
 
 use std::env;
 use std::path::PathBuf;
@@ -12,14 +12,12 @@ use castra::{
         options::{ConfigLoadOptions, UpOptions},
         outcome::UpOutcome,
         reporter::Reporter,
-        runtime::ProcessVizierLauncher,
     },
 };
 
 fn main() -> Result<(), Error> {
     let ExampleConfig {
         config_path,
-        launcher,
         plan,
     } = parse_args()?;
 
@@ -28,7 +26,7 @@ fn main() -> Result<(), Error> {
     options.plan = plan;
 
     let mut reporter = StdoutReporter;
-    let output = operations::up_with_launcher(options, &launcher, Some(&mut reporter))?;
+    let output = operations::up(options, Some(&mut reporter))?;
 
     emit_diagnostics(&output.diagnostics);
     summarize_outcome(&output.value);
@@ -38,14 +36,12 @@ fn main() -> Result<(), Error> {
 
 struct ExampleConfig {
     config_path: PathBuf,
-    launcher: ProcessVizierLauncher,
     plan: bool,
 }
 
 fn parse_args() -> Result<ExampleConfig, Error> {
     let mut args = env::args().skip(1);
     let mut config_override: Option<PathBuf> = None;
-    let mut cli_override: Option<PathBuf> = None;
     let mut plan = true;
 
     while let Some(arg) = args.next() {
@@ -55,12 +51,6 @@ fn parse_args() -> Result<ExampleConfig, Error> {
                     message: "--config requires a path".to_string(),
                 })?;
                 config_override = Some(PathBuf::from(value));
-            }
-            "--cli" => {
-                let value = args.next().ok_or_else(|| Error::PreflightFailed {
-                    message: "--cli requires a path".to_string(),
-                })?;
-                cli_override = Some(PathBuf::from(value));
             }
             "--execute" => plan = false,
             "--plan" => plan = true,
@@ -86,20 +76,8 @@ fn parse_args() -> Result<ExampleConfig, Error> {
             ),
         })?;
 
-    let launcher = if let Some(path) = cli_override {
-        if !path.is_file() {
-            return Err(Error::PreflightFailed {
-                message: format!("CLI executable not found at {}", path.display()),
-            });
-        }
-        ProcessVizierLauncher::new(path)
-    } else {
-        ProcessVizierLauncher::from_env()?
-    };
-
     Ok(ExampleConfig {
         config_path,
-        launcher,
         plan,
     })
 }
@@ -129,7 +107,7 @@ fn emit_diagnostics(diagnostics: &[Diagnostic]) {
 
 fn summarize_outcome(outcome: &UpOutcome) {
     println!(
-        "outcome: {} VM(s) launched; vizier bootstrap runs: {}",
+        "outcome: {} VM(s) launched; bootstrap runs: {}",
         outcome.launched_vms.len(),
         outcome.bootstraps.len()
     );

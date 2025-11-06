@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::vizier_remote::VizierRemoteConfig;
-
 /// Configuration for spawning and supervising Codex.
 #[derive(Clone, Debug)]
 pub struct HarnessConfig {
@@ -13,7 +11,6 @@ pub struct HarnessConfig {
     env: BTreeMap<String, String>,
     persist_history: bool,
     history_root: Option<PathBuf>,
-    vizier_remote: VizierRemoteConfig,
 }
 
 impl HarnessConfig {
@@ -26,7 +23,6 @@ impl HarnessConfig {
             env: BTreeMap::new(),
             persist_history: false,
             history_root: None,
-            vizier_remote: VizierRemoteConfig::default(),
         }
     }
 
@@ -116,14 +112,6 @@ impl HarnessConfig {
         for (key, value) in other {
             self.env.insert(key.clone(), value.clone());
         }
-    }
-
-    pub fn vizier_remote(&self) -> &VizierRemoteConfig {
-        &self.vizier_remote
-    }
-
-    pub fn vizier_remote_mut(&mut self) -> &mut VizierRemoteConfig {
-        &mut self.vizier_remote
     }
 }
 

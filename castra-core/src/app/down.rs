@@ -178,13 +178,6 @@ fn render_down(events: &[Event]) {
                     format_bytes(*reclaimed_bytes)
                 ),
             },
-            Event::BrokerStopped { changed } => {
-                if !changed {
-                    println!("→ broker: already stopped.");
-                } else {
-                    println!("→ broker: stopped.");
-                }
-            }
             _ => {}
         }
     }

@@ -920,7 +920,7 @@ impl RawProjectFeatures {
     fn into_features(self, warnings: &mut Vec<String>) -> ProjectFeatures {
         if self.enable_vm_vizier.is_some() {
             warnings.push(
-                "[project.features] enable_vm_vizier is deprecated and ignored; in-VM Vizier is always enabled."
+                "[project.features] enable_vm_vizier is deprecated and ignored; the Vizier service has been removed."
                     .to_string(),
             );
         }

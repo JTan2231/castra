@@ -4,7 +4,6 @@ use async_channel::Receiver;
 
 use castra_harness::{
     CodexSession, HarnessConfig, HarnessError, HarnessEvent, TurnHandle, TurnRequest,
-    VizierInputFrame,
 };
 
 pub struct HarnessRunner {
@@ -34,16 +33,6 @@ impl HarnessRunner {
         Ok(HarnessJob { receiver, handle })
     }
 
-    pub fn send_vizier_input<S: Into<String>>(
-        &self,
-        _vm: S,
-        _frame: VizierInputFrame,
-    ) -> Result<(), HarnessError> {
-        Err(HarnessError::process_failure(
-            None,
-            "vizier remote input dispatch is not yet implemented",
-        ))
-    }
 }
 
 impl HarnessJob {
