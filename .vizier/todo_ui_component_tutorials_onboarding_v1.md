@@ -57,3 +57,15 @@ Validation note updated accordingly.
 
 ---
 
+Update — Tutorial includes runner usage
+
+- Add steps demonstrating:
+  • Export SSH_TARGET and run `./vm_commands.sh send --wait "echo hello"` with expected RUN_ID/PGID output and streaming logs.
+  • Use `./vm_commands.sh list` and `view-output <RUN_ID>` to inspect results.
+  • Map these to the UI prompt_shell interactions, showing parity between manual runner commands and in-UI actions.
+
+Acceptance: A new subsection in docs/tutorials/first_up.md walks through these commands with copy-pasteable examples and screenshots of the UI reflecting the same operations.
+
+
+---
+

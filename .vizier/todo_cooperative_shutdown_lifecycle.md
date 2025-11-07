@@ -28,3 +28,13 @@ Thread link (revised): Thread 40 — Post-removal stabilization and polish. Acce
 
 ---
 
+Update — Surface shutdown via runner semantics
+
+- Explicitly require that during shutdown, any in-flight vm_commands.sh sessions receive SIGINT (PGID) first; UI marks sessions as "draining" and appends a shutdown boundary in transcript.
+- Acceptance addition: `vm_commands.sh list` transitions STATUS from running→stopped per RUN_ID during `down`; `view-output` shows stopped_at populated. CLI remains responsive while waits proceed.
+
+Pointers: vm_commands.sh; castra-core/src/app/down.rs; castra-ui/src/components/status_footer.rs.
+
+
+---
+

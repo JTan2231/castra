@@ -41,3 +41,15 @@ Thread link (revised):
 
 ---
 
+Update — Align first interaction to vm_commands.sh runner
+
+- Clarify that the first-message roundtrip is executed over harness-managed SSH using vm_commands.sh send/interrupt primitives. Acceptance now requires:
+  • From a clean start, the prompt_shell routes a message to the selected agent, which results in a vm_commands.sh send invocation; UI surfaces RUN_ID and live stdout via --wait where applicable.
+  • Abort affordance maps to interrupt by PGID via vm_commands.sh; UI reflects aborted state with transcript entry and attention handoff.
+  • Transcript captures intent→command mapping and RUN_ID/PGID for audit.
+
+Anchors: castra-ui/src/components/prompt_shell.rs; castra-harness/src/runner.rs; vm_commands.sh.
+
+
+---
+

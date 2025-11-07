@@ -1,4 +1,4 @@
-SNAPSHOT v0.12.2 — Authoritative project state (incremental over v0.12.1)
+SNAPSHOT v0.12.3 — Authoritative project state (incremental over v0.12.2)
 
 PRODUCT PROMISE
 Castra provides a reliable, agent-first workflow to bring ephemeral VMs up, run work within them via agent sessions over SSH, surface live system events in a TUI, and tear everything down cleanly. Users can: initialize a project, bootstrap VMs, connect agents, interact via the TUI, monitor status/logs, and shut down without residue.
@@ -23,12 +23,14 @@ CODE STATE (user-visible surfaces and behaviors)
   - Vizier remote modules/config have been removed; public API no longer exposes vizier_remote types.
   - Prompt seed reframed from “workspace coordinator”; vm_commands.sh is the endorsed remote runner interface.
 
-- Protocol (castra-protocol)
-  - Shared types for event/message exchange between core/UI/harness remain; protocol no longer references vizier.remote.
+- Shared protocol/types
+  - There is no separate castra-protocol crate in this repo snapshot; shared event/message shapes are defined within each crate and aligned to docs/event-contract-v1.md.
 
 - VM Command Wrapper
   - vm_commands.sh: remote runner helper for sending commands, listing runs, interrupting by PGID, and viewing output. Environment via SSH_TARGET (+ SSH_PORT/SSH_EXTRA_OPTS, optional SSH_STRICT=1).
-  - Run artifacts live under /run/castra-agent/<RUN_ID>/. Use list/view-output to inspect. SESSION names use “agent-<RUN_ID>”.
+  - send supports --wait to stream output and return the command exit code. list prints a tabular header with RUN_ID/PGID/STATUS/COMMAND. view-output shows stdout/stderr per RUN_ID.
+  - Run artifacts live under /run/castra-agent/<RUN_ID>/. Returned metadata includes RUN_ID, SESSION (agent-<RUN_ID>), and PGID when available. interrupt sends SIGINT to the process group by PGID.
+  - launch_subagent is a thin convenience wrapper that shells out to a codex exec prompt via send.
 
 - Examples & Docs
   - examples/library_up.rs uses operations::up (no launcher shim) and vizier mentions removed.
@@ -36,7 +38,7 @@ CODE STATE (user-visible surfaces and behaviors)
 
 NARRATIVE STATE (themes, tensions, direction)
 - Agent-first model is the North Star: UI owns agent SSH sessions; harness provides discovery/transport metadata; core focuses on VM bootstrap and emitting event contract v1.
-- Vizier Removal arc is COMPLETE: vizier references are removed across core, UI, harness, protocol, docs, and tooling. Any remaining work now lives under general UX/operations threads (not “vizier removal”).
+- Vizier Removal arc is COMPLETE: vizier references are removed across core, UI, harness, docs, and tooling. Any remaining work now lives under general UX/operations threads (not “vizier removal”).
 - Observability and operational clarity: attention model work continues; message log should reflect focus and collapse noise.
 - Ephemerality is a feature: VMs and artifacts should cleanly disappear on shutdown/clean; vm_commands.sh run dirs under /run/castra-agent must be cleaned up deterministically.
 
@@ -44,7 +46,7 @@ ACTIVE THREADS (linked to TODOs; acceptance anchored to current code surfaces)
 - Operational clarity / Attention model — todo_operational_clarity_attention_model.md
   - Acceptance anchors: status_footer reflects focus/health; roster shows agent/session presence; message_log filters by attention state; contract v1 alignment.
 - Agent-first interaction model — todo_agent_first_interaction_model.md
-  - Acceptance anchors: first-message roundtrip over SSH sessions; prompt_shell UX validates live agent responsiveness; transcript preserved.
+  - Acceptance anchors: first-message roundtrip over harness-managed SSH sessions using vm_commands.sh primitives; prompt_shell UX validates live agent responsiveness; transcript preserved.
 - Ephemeral VM storage & cleanup — todo_ephemeral_vm_storage_and_cleanup.md
   - Acceptance anchors: down/clean leave no residual processes, storage, or sockets; /run/castra-agent/* garbage-collected with safe windows.
 - CLI/Core remove VM-selection surfaces — todo_cli_and_core_remove_vm_selection_surfaces.md
@@ -54,9 +56,9 @@ ACTIVE THREADS (linked to TODOs; acceptance anchored to current code surfaces)
 - UI signal filtering & grouping — todo_ui_signal_filtering_grouping.md
   - Acceptance anchors: message_log and roster present grouped, de-duplicated signals keyed by attention and session identity.
 - Cooperative shutdown lifecycle — todo_cooperative_shutdown_lifecycle.md
-  - Acceptance anchors: orderly teardown across UI→harness→core with user-visible progress; SIGINT/interrupt propagates via vm_commands.sh semantics.
+  - Acceptance anchors: orderly teardown across UI→harness→core with user-visible progress; SIGINT/interrupt propagates via vm_commands.sh semantics; status reflects draining.
 - UI onboarding/tutorials — todo_ui_component_tutorials_onboarding_v1.md
-  - Acceptance anchors: first_up tutorial shows bootstrap→connect→interact→shutdown using agent-first model and vm_commands.sh wrappers.
+  - Acceptance anchors: first_up tutorial shows bootstrap→connect→interact→shutdown using agent-first model and vm_commands.sh wrappers, including send --wait and view-output.
 
 KNOWN CONSTRAINTS
 - Must adhere to event-contract v1 shapes; consumers rely on these structures.

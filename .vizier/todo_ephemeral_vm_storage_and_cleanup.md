@@ -40,3 +40,15 @@ Thread link: Thread 40 — Stabilization and polish. Context: Brokerless cutover
 
 ---
 
+Update — Include runner run-dir reclamation
+
+- Extend scope to cover remote runner artifacts under /run/castra-agent/<RUN_ID>:
+  • Normal and aborted runs leave RUN_DIR with stdout/stderr/pgid/started_at/stopped_at. Introduce a bounded retention policy (by time or count) with explicit user-facing defaults.
+  • CLEAN and down purge expired RUN_DIRs; status surfaces the count of stale RUN_DIRs when present.
+  • Acceptance: After a full up→interact→down cycle, zero stale RUN_DIRs remain beyond the retention window; list reflects only currently running or fresh runs.
+
+Anchors: vm_commands.sh (list, view-output); castra-harness/src/runner.rs; castra-core/app/clean.rs.
+
+
+---
+
