@@ -14,7 +14,7 @@
 ## Event Contract mapping
 - Render every `message` event verbatim with timestamp and severity.  
 - Promote `command.accepted` / `command.rejected` events to system messages so users immediately see success or remediation hints.  
-- Bootstrap and VM lifecycle events funnel through localized copy (e.g. “`vm-alpha` handshake complete”) before landing in the log, pairing with the VM card highlight.  
+- Bootstrap and VM lifecycle events funnel through localized copy (e.g. “`vm-alpha` readiness confirmed (SSH)”) before landing in the log, pairing with the VM card highlight.  
 - Implement rate-limited grouping (Thread 21) to collapse repetitive progress updates while keeping the latest detail visible.
 
 ## Interaction patterns

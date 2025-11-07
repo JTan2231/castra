@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     codex::HarnessRunner,
     components::{
-        message_log::MessageToggleHandler,
+        message_log::{MessageCopyHandler, MessageToggleHandler},
         shell::{render as render_shell, roster_rows},
         vm_fleet::{catalog_cards, vm_columns},
     },
@@ -32,12 +32,9 @@ use castra::{
 use castra_harness::TurnHandle;
 use castra_harness::{HarnessEvent, TurnRequest};
 use gpui::{
-    AppContext, AsyncApp, Context, Entity, FocusHandle, Focusable, IntoElement, MouseDownEvent,
-    Render, Task, WeakEntity, Window,
+    AppContext, AsyncApp, ClipboardItem, Context, Entity, FocusHandle, Focusable, IntoElement,
+    MouseDownEvent, Render, Task, WeakEntity, Window,
 };
-
-const BROKER_DEPRECATION_MESSAGE: &str =
-    "Deprecated: bus/broker have been removed. Connect directly to guest agent sessions via vm_commands.sh wrappers.";
 
 #[derive(Default)]
 pub struct ShutdownState {
@@ -304,6 +301,12 @@ impl ChatApp {
         self.state.chat_mut().toggle_message_at(index)
     }
 
+    fn copy_message_to_clipboard(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(message) = self.state.chat().messages().get(index) {
+            cx.write_to_clipboard(ClipboardItem::new_string(message.text().to_string()));
+        }
+    }
+
     pub fn on_prompt_event(&mut self, event: &PromptEvent, cx: &mut Context<Self>) {
         match event {
             PromptEvent::Submitted(text) => {
@@ -413,18 +416,12 @@ impl ChatApp {
                 .detach();
         }
 
-        let _options = build_up_options(&config_path);
+        let options = build_up_options(&config_path);
         let background = cx.background_spawn({
             let sender = event_tx.clone();
             async move {
                 let mut reporter = UiEventReporter::new(sender);
-                reporter.report(Event::Message {
-                    severity: DiagnosticSeverity::Warning,
-                    text: BROKER_DEPRECATION_MESSAGE.to_string(),
-                });
-                Err(CastraError::PreflightFailed {
-                    message: BROKER_DEPRECATION_MESSAGE.to_string(),
-                })
+                operations::up(options, Some(&mut reporter))
             }
         });
 
@@ -636,6 +633,29 @@ impl Render for ChatApp {
                 .collect();
             Arc::new(handlers)
         };
+        let copy_handlers: Arc<Vec<MessageCopyHandler>> = {
+            let handlers = self
+                .state
+                .chat()
+                .messages()
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    let handler_index = index;
+                    let handler = cx.listener(
+                        move |chat: &mut ChatApp,
+                              _: &MouseDownEvent,
+                              _window: &mut Window,
+                              cx: &mut Context<ChatApp>| {
+                            chat.copy_message_to_clipboard(handler_index, cx);
+                            cx.stop_propagation();
+                        },
+                    );
+                    Arc::new(handler) as MessageCopyHandler
+                })
+                .collect();
+            Arc::new(handlers)
+        };
 
         let stop_handler = if self.state.codex_turn_active() {
             Some(cx.listener(
@@ -678,6 +698,7 @@ impl Render for ChatApp {
             &toasts,
             stop_handler,
             toggle_handlers,
+            copy_handlers,
         )
     }
 }

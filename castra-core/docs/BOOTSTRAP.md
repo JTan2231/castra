@@ -1,6 +1,6 @@
 # Bootstrap Pipeline Reference
 
-Castra's post-boot bootstrap pipeline applies host-provided configuration (for example Nix flakes or shell scripts) once a VM becomes reachable via the in-guest Vizier service. The harness establishes SSH, verifies the Vizier handshake, and then drives host-provided scripts. This document describes how to steer the pipeline at invocation time and how to consume the structured events and logs it emits.
+Castra's post-boot bootstrap pipeline applies host-provided configuration (for example Nix flakes or shell scripts) once a VM is reachable over SSH. The runtime watches for the legacy bootstrap handshake file when present, but now falls back to probing direct SSH connectivity so the pipeline progresses even without Vizier in the guest. This document describes how to steer the pipeline at invocation time and how to consume the structured events and logs it emits.
 
 ## Invocation Modes and Overrides
 
@@ -35,7 +35,7 @@ Field reference:
 | --- | --- | --- |
 | `BootstrapPlanned` | `vm: String`, `mode: BootstrapMode`, `action: BootstrapPlanAction`, `reason: String`, `trigger: Option<BootstrapTrigger>`, `script_path: Option<PathBuf>`, `payload_path: Option<PathBuf>`, `payload_bytes: Option<u64>`, `handshake_timeout_secs: Option<u64>`, `remote_dir: Option<String>`, `ssh: Option<BootstrapPlanSsh>`, `env_keys: Vec<String>`, `verify: Option<BootstrapPlanVerify>`, `artifact_hash: Option<String>`, `metadata_path: Option<PathBuf>`, `warnings: Vec<String>` | Dry-run summary emitted immediately before execution. `ssh` carries the resolved SSH command (user, host, port, options, identity) that the harness surfaces for direct session helpers. |
 | `BootstrapStarted` | `vm: String`, `base_hash: String`, `artifact_hash: String`, `trigger: BootstrapTrigger` | `trigger` is `auto` or `always`, mirroring mode resolution after overrides. |
-| `BootstrapStep` | `vm: String`, `step: BootstrapStepKind`, `status: BootstrapStepStatus`, `duration_ms: u64`, `detail: Option<String>` | `step` values: `wait-handshake`, `connect`, `transfer`, `apply`, `verify`. `status` is `success`, `skipped`, or `failed`. |
+| `BootstrapStep` | `vm: String`, `step: BootstrapStepKind`, `status: BootstrapStepStatus`, `duration_ms: u64`, `detail: Option<String>` | `step` values: `wait-handshake`, `connect`, `transfer`, `apply`, `verify`. The `wait-handshake` detail reports either the fresh handshake file timestamp or the SSH connectivity probe that satisfied readiness. `status` is `success`, `skipped`, or `failed`. |
 | `BootstrapCompleted` | `vm: String`, `status: BootstrapStatus`, `duration_ms: u64`, `stamp: Option<String>` | `status` is `Success` when work executed, `NoOp` when the bootstrap runner declares no changes. `stamp` is retained for schema stability and is currently always `null`. |
 | `BootstrapFailed` | `vm: String`, `duration_ms: u64`, `error: String` | Emitted once per VM when the pipeline aborts; a durable log is written alongside the event. |
 
@@ -68,7 +68,7 @@ Every bootstrap run appends a JSON log under `logs/bootstrap/` in the project st
   "status": "success",
   "duration_ms": 8421,
   "steps": [
-    { "step": "wait-handshake", "status": "success", "duration_ms": 420 },
+    { "step": "wait-handshake", "status": "success", "duration_ms": 420, "detail": "SSH connectivity confirmed (root@127.0.0.1:2222). Handshake file <state_root>/handshakes/devbox.json was missing or stale; treating SSH reachability as readiness." },
     { "step": "connect", "status": "success", "duration_ms": 1100 },
     { "step": "transfer", "status": "success", "duration_ms": 2100 },
     { "step": "apply", "status": "success", "duration_ms": 3800 },

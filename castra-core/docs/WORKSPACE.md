@@ -30,7 +30,7 @@ Every workspace follows the same structure; paths in parentheses are created on 
 | `metadata/config_snapshot.toml` | Cached copy of the resolved `castra.toml` used when the original config is unavailable (for example, if the repo moved). |
 | `images/` | Cached base images. The default Alpine qcow2 is downloaded here on demand; additional qcows configured via `base_image` can also live here. |
 | `logs/` | Aggregated host-side logs. Each VM writes `<vm>.log` (QEMU stdout/stderr) and `<vm>-serial.log`; bootstrap runs append JSON to `logs/bootstrap/`. Legacy `logs/bus/` directories are pruned when encountered. |
-| `handshakes/` | Legacy broker ⇄ guest handshake JSON. No longer created on fresh runs; retained only for historical inspection. |
+| `handshakes/` | Legacy broker ⇄ guest handshake JSON from the Vizier era. The bootstrap wait step now relies on SSH reachability, so new runs do not populate this directory; any lingering files can be removed safely. |
 | `bootstrap/` | Per-VM staging area where bootstrap scripts and payloads are copied before upload (`assemble_blueprint`). Cleaned between runs. |
 | `overlays/` | Default home for per-VM qcow2 layers derived from role names when configs omit an explicit `overlay`. Discarded after shutdown per Thread 13. |
 | `<vm>.pid` | PID files written by `launch_vm`. Legacy `broker.pid` files are removed on sight. |
@@ -54,7 +54,7 @@ Castra creates the workspace root, `logs/`, and `images/` up front during `prepa
 
 ## Maintenance & Troubleshooting
 - Always run `castra down` before manipulating the workspace manually; pidfiles and QMP sockets should disappear during shutdown. If they linger, `castra clean --workspace --force` will remove them after validating nothing is running.
-- When legacy handshakes become stale or corrupted, removing `handshakes/*.json` (or running `castra clean`) tidies the workspace; harness session metadata supersedes them.
+- If a bootstrap run fails mid-flight, use `castra down` (or `castra clean`) to reset the workspace. Manual pruning of `handshakes/*.json` is no longer required because readiness is keyed off SSH reachability.
 - If you relocate a project, delete or move the old workspace to avoid orphaned directories under `~/.castra/projects`. Castra will derive a new hash based on the project’s new path.
 - For automation, prefer calling the library APIs (e.g., `core::project::config_state_root`) rather than hardcoding paths; this keeps tooling aligned with future schema changes in `.vizier` threads.
 

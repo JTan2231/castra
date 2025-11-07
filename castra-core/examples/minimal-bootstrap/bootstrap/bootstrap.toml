@@ -5,22 +5,20 @@
 # castra.toml, so you can keep sensitive overrides (like SSH users and identities)
 # out of version control when needed.
 
-# Force the handshake stage to accept broker hellos that identify as `alpine`.
-# The bundled Alpine image advertises this identity out of the box; without this
-# override Castra would wait for `devbox-0` (the expanded VM name) and time out.
-handshake_identity = "alpine"
+# The bootstrap wait step now treats SSH reachability as readiness, so no
+# handshake identity override is required. Provide SSH metadata below instead.
 
 [ssh]
 # Host the bootstrap runner targets once the guest is reachable. Because the
 # port forward in castra.toml maps guest SSH to localhost:2222, we keep the
-# default host and only override the port below. Update `user` and `identity`
-# to match the credentials baked into your Alpine image.
+# default host and only override the port below. Update `user` if your image
+# bakes in a different SSH principal.
 host = "127.0.0.1"
 port = 2222
 user = "root"
-# Example identity path; comment out if you rely on passwordless root or if the
-# image already trusts a different key. Paths are resolved relative to this file.
-identity = "~/.ssh/id_ed25519"
+# Uncomment the next line if your guest requires a specific identity; use an
+# absolute path because `~` is not expanded.
+# identity = "/abs/path/to/key"
 
 [env]
 # Extra environment keys appended to the values declared in castra.toml. The

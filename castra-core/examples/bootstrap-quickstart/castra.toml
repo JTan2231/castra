@@ -3,6 +3,14 @@ version = "0.2.0"
 [project]
 name = "bootstrap-quickstart"
 
+[bootstrap]
+# Keep the bootstrap wait polite; the guest image comes up quickly but we
+# reserve a little headroom so new environments do not flap.
+handshake_timeout_secs = 120
+# Staging root for scripts, payloads, and artifact checks. Each VM inherits
+# this value unless it specifies a more specific directory.
+remote_dir = "/tmp/castra-bootstrap"
+
 [[vms]]
 name = "alpine"
 base_image = "../minimal-bootstrap/alpine-x86_64.qcow2"
@@ -18,4 +26,6 @@ memory = "2 GiB"
   mode = "always"
   script = "bootstrap/run.sh"
   payload = "bootstrap/payload"
+  # Run in an explicit subdirectory so multiple guests can share the workspace.
+  remote_dir = "/tmp/castra-bootstrap/alpine"
   verify_path = "state/quickstart.txt"

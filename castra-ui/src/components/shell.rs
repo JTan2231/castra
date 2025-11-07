@@ -6,7 +6,7 @@ use gpui::{CursorStyle, Entity, Styled, div, hsla, prelude::*, px, rgb};
 use std::sync::Arc;
 
 use super::{
-    message_log::{MessageToggleHandler, message_log},
+    message_log::{MessageCopyHandler, MessageToggleHandler, message_log},
     prompt_shell::prompt_container,
     roster_sidebar::{agent_row, sidebar_container},
     status_footer::status_footer,
@@ -22,6 +22,7 @@ pub fn render<B>(
     toasts: &[String],
     stop_handler: Option<B>,
     message_toggle_handlers: Arc<Vec<Option<MessageToggleHandler>>>,
+    message_copy_handlers: Arc<Vec<MessageCopyHandler>>,
 ) -> gpui::Div
 where
     B: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
@@ -37,7 +38,11 @@ where
         .flex_grow()
         .min_h(px(0.))
         .min_w(px(0.))
-        .child(message_log(state.chat(), message_toggle_handlers));
+        .child(message_log(
+            state.chat(),
+            message_toggle_handlers,
+            message_copy_handlers,
+        ));
 
     let mut central_shell = div().flex().flex_grow().min_w(px(0.)).min_h(px(0.));
 

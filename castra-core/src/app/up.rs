@@ -336,7 +336,6 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
         println!(
             "Bootstrap plan summary: {run} would run, {skip} would skip, {errors} would error."
         );
-
     }
 
     if !outcome.bootstraps.is_empty() {
@@ -353,7 +352,6 @@ fn render_up(outcome: &UpOutcome, events: &[Event]) {
                     println!("→ {}: bootstrap skipped.", run.vm);
                 }
             }
-
         }
     }
 

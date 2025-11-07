@@ -32,7 +32,6 @@ impl HarnessRunner {
         let receiver = handle.events();
         Ok(HarnessJob { receiver, handle })
     }
-
 }
 
 impl HarnessJob {

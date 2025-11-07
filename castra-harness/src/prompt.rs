@@ -187,9 +187,7 @@ mod tests {
     #[test]
     fn renders_placeholder_when_no_endpoints() {
         let prompt = PromptBuilder::new().build();
-        assert!(prompt.starts_with(
-            "You are operating as the workspace coordinator"
-        ));
+        assert!(prompt.starts_with("You are operating as the workspace coordinator"));
         assert!(prompt.contains("# Operational Context"));
         assert!(prompt.contains("- No active VMs reported"));
     }

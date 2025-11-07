@@ -2,16 +2,12 @@
 
 This directory contains the leanest configuration needed to prove the bootstrap
 pipeline works end-to-end. It reuses the demo Alpine image that ships with the
-repository, forwards guest SSH to `localhost:2223`, and runs a tiny shell script
+repository, forwards guest SSH to `localhost:2222`, and runs a tiny shell script
 that stamps a completion file.
 
-> **Credentials**: The metadata references an example ED25519 key pair at
-> `bootstrap/keys/quickstart_ed25519`. The private key ships with this repo for
-> demo purposes only; do not reuse it outside local testing. Before running the
-> bootstrap pipeline, copy `bootstrap/keys/quickstart_ed25519.pub` into the
-> guest’s `~root/.ssh/authorized_keys` (for example via the VM console or
-> `ssh-copy-id` once you have a temporary password). With the public key in
-> place the bootstrap runner can authenticate without prompting.
+> **Credentials**: The example assumes `root@localhost:2222` accepts one of your
+> local SSH keys without a password prompt. If you need to point Castra at a
+> specific identity, add an `[ssh]` stanza to `bootstrap/bootstrap.toml`.
 
 ```bash
 cargo run -- up \
@@ -19,17 +15,17 @@ cargo run -- up \
   --bootstrap=always
 ```
 
-When the command returns you should see TTY progress covering the handshake,
-transfer, apply, and verify stages. Inspect the results with:
+When the command returns you should see TTY progress covering the readiness
+(SSH wait), transfer, apply, and verify stages. Inspect the results with:
 
 ```bash
 cargo run -- status --config examples/bootstrap-quickstart/castra.toml
 ls ~/.castra/projects/bootstrap-quickstart*/logs/bootstrap
 ```
 
-Need to tweak credentials or the broker identity? Edit
-`bootstrap/bootstrap.toml`—the file is intentionally tiny so the required edits
-stand out.
+Need to tweak credentials? Edit `bootstrap/bootstrap.toml`—the file is
+intentionally tiny so the required edits stand out. If a run fails midway, use
+`castra down` or `castra clean` to reset the workspace before retrying.
 
 Stop the VM when you're done:
 

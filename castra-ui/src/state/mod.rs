@@ -58,7 +58,6 @@ impl TokenUsageTotals {
     }
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageKind {
     System,
@@ -679,7 +678,6 @@ impl RosterState {
         self.active_agent = index;
         true
     }
-
 }
 
 impl Default for RosterState {
@@ -1547,7 +1545,8 @@ impl AppState {
             } => {
                 let attention = if action.is_error() { Error } else { Progress };
                 let detail = format!("Plan {} ({reason})", action.describe());
-                self.up.vm_fleet_mut()
+                self.up
+                    .vm_fleet_mut()
                     .update_vm(vm, Planned, attention, detail.clone());
                 if action.is_error() {
                     self.up.note_error(detail.clone());

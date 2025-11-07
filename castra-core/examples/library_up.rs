@@ -16,10 +16,7 @@ use castra::{
 };
 
 fn main() -> Result<(), Error> {
-    let ExampleConfig {
-        config_path,
-        plan,
-    } = parse_args()?;
+    let ExampleConfig { config_path, plan } = parse_args()?;
 
     let mut options = UpOptions::default();
     options.config = ConfigLoadOptions::explicit(config_path);
@@ -76,10 +73,7 @@ fn parse_args() -> Result<ExampleConfig, Error> {
             ),
         })?;
 
-    Ok(ExampleConfig {
-        config_path,
-        plan,
-    })
+    Ok(ExampleConfig { config_path, plan })
 }
 
 struct StdoutReporter;

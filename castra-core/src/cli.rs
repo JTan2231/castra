@@ -16,8 +16,7 @@ fn cli_long_version() -> &'static str {
 }
 
 /// Shared deprecation banner for legacy bus/broker commands.
-pub const BUS_BROKER_DEPRECATION_MESSAGE: &str =
-    "Deprecated: bus/broker have been removed. Connect directly to guest agent sessions over SSH using harness metadata.";
+pub const BUS_BROKER_DEPRECATION_MESSAGE: &str = "Deprecated: bus/broker have been removed. Connect directly to guest agent sessions over SSH using harness metadata.";
 
 /// Write the deprecation banner to the provided writer, appending a newline.
 pub fn write_bus_broker_deprecation<W: std::io::Write>(mut writer: W) -> std::io::Result<()> {

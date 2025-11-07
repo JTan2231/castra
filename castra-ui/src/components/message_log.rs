@@ -7,12 +7,15 @@ use std::sync::Arc;
 
 const SPEAKER_COLUMN_WIDTH_PX: f32 = 140.;
 const INDICATOR_COLUMN_WIDTH_PX: f32 = 18.;
+const ACTION_COLUMN_MIN_WIDTH_PX: f32 = 56.;
 
 pub type MessageToggleHandler = Arc<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
+pub type MessageCopyHandler = Arc<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
 
 pub fn message_log(
     chat: &ChatState,
     toggle_handlers: Arc<Vec<Option<MessageToggleHandler>>>,
+    copy_handlers: Arc<Vec<MessageCopyHandler>>,
 ) -> impl IntoElement {
     let mut content = div()
         .flex()
@@ -30,11 +33,13 @@ pub fn message_log(
     } else {
         let messages = chat.messages().to_vec();
         let list_state = chat.list_state().clone();
-        let handlers = toggle_handlers.clone();
+        let toggle = toggle_handlers.clone();
+        let copy = copy_handlers.clone();
 
         let list = list(list_state, move |index, _window, _app| {
-            let handler = handlers.get(index).and_then(|entry| entry.clone());
-            render_message_row(&messages[index], handler).into_any_element()
+            let toggle_handler = toggle.get(index).and_then(|entry| entry.clone());
+            let copy_handler = copy.get(index).cloned();
+            render_message_row(&messages[index], toggle_handler, copy_handler).into_any_element()
         })
         .flex()
         .flex_col()
@@ -76,6 +81,7 @@ fn placeholder_row() -> Div {
 fn render_message_row(
     message: &crate::state::ChatMessage,
     handler: Option<MessageToggleHandler>,
+    copy_handler: Option<MessageCopyHandler>,
 ) -> Div {
     let kind = message.kind();
     let is_collapsible = message.is_collapsible();
@@ -194,7 +200,8 @@ fn render_message_row(
                 .text_color(speaker_color)
                 .child(format!("[{}]", message.speaker())),
         )
-        .child(content_div.text_color(content_color).child(content));
+        .child(content_div.text_color(content_color).child(content))
+        .child(copy_button(copy_handler));
 
     if is_collapsible {
         if let Some(handler) = handler {
@@ -208,6 +215,35 @@ fn render_message_row(
     }
 
     row
+}
+
+fn copy_button(handler: Option<MessageCopyHandler>) -> Div {
+    let mut button = div()
+        .flex()
+        .justify_end()
+        .min_w(px(ACTION_COLUMN_MIN_WIDTH_PX))
+        .text_xs()
+        .text_color(rgb(0xd7d7d7));
+
+    if let Some(handler) = handler {
+        let handler = handler.clone();
+        button = button.child(
+            div()
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(4.))
+                .border(px(1.))
+                .border_color(hsla(0., 0., 0.4, 0.5))
+                .bg(hsla(0., 0., 0.2, 0.6))
+                .cursor(CursorStyle::PointingHand)
+                .child("Copy")
+                .on_mouse_down(MouseButton::Left, move |event, window, app| {
+                    handler(event, window, app);
+                }),
+        );
+    }
+
+    button
 }
 
 fn truncation_notice_row(dropped: usize) -> Div {

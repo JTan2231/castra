@@ -27,7 +27,7 @@
    ```  
    The vertical slice (Thread 20) wires this command to castra-core, emitting `command.requested` and `command.accepted` events.  
 2. The roster posts a system message confirming that `/up` started; the VM fleet cards begin updating as events arrive.  
-3. Message log scrolls through planning details (handshake wait, SSH target, environment keys) derived from `BootstrapPlanned`.
+3. Message log scrolls through planning details (readiness wait, SSH target, environment keys) derived from `BootstrapPlanned`.
 
 ## Follow the run
 - **VM Fleet:** Cards note `OverlayPrepared`, `VmLaunched`, and each bootstrap step. Offline → Online flips occur with `VmLaunched` and `ShutdownComplete`.  

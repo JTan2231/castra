@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::PortProtocol;
 #[cfg(test)]
 use crate::config::ProjectFeatures;
-use crate::config::{BootstrapMode, ProjectConfig, VmDefinition};
+use crate::config::{BootstrapMode, LifecycleConfig, ProjectConfig, VmDefinition};
 use crate::core::diagnostics::{Diagnostic, Severity};
 use crate::core::events::{
     BootstrapPlanAction, BootstrapPlanSsh, BootstrapPlanVerify, BootstrapStatus, BootstrapStepKind,
@@ -22,7 +22,7 @@ use crate::core::events::{
 use crate::core::options::VmLaunchMode;
 use crate::core::outcome::{BootstrapPlanOutcome, BootstrapRunOutcome, BootstrapRunStatus};
 use crate::core::reporter::Reporter;
-use crate::core::runtime::{AssetPreparation, RuntimeContext};
+use crate::core::runtime::{AssetPreparation, RuntimeContext, ShutdownTimeouts, shutdown_vm};
 use crate::core::status::HANDSHAKE_FRESHNESS;
 use crate::error::{Error, Result};
 use sha2::{Digest, Sha256};
@@ -84,6 +84,7 @@ pub fn run_all(
 
     let state_root = context.state_root.clone();
     let log_root = context.log_root.clone();
+    let lifecycle = project.lifecycle.clone();
 
     std::thread::scope(|scope| {
         let mut handles = Vec::new();
@@ -92,13 +93,20 @@ pub fn run_all(
             let tx_clone = event_tx.clone();
             let state_root = state_root.clone();
             let log_root = log_root.clone();
+            let lifecycle = lifecycle.clone();
             handles.push(scope.spawn(move || {
                 let mut local_diagnostics = Vec::new();
                 let mut emit_event = |event: Event| {
                     let _ = tx_clone.send(event);
                 };
-                let outcome =
-                    run_for_vm(&state_root, &log_root, vm, &mut emit_event, &mut local_diagnostics);
+                let outcome = run_for_vm(
+                    &state_root,
+                    &log_root,
+                    vm,
+                    lifecycle,
+                    &mut emit_event,
+                    &mut local_diagnostics,
+                );
                 (index, outcome, local_diagnostics)
             }));
         }
@@ -375,6 +383,7 @@ fn run_for_vm(
     state_root: &Path,
     log_root: &Path,
     vm: &VmDefinition,
+    lifecycle: LifecycleConfig,
     emit_event: &mut dyn FnMut(Event),
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<BootstrapRunOutcome> {
@@ -451,10 +460,10 @@ fn run_for_vm(
     let payload_source = vm.bootstrap.payload.as_ref().cloned();
 
     let blueprint = assemble_blueprint(state_root, vm, &script_source, payload_source.as_ref())
-    .map_err(|err| Error::BootstrapFailed {
-        vm: vm.name.clone(),
-        message: err,
-    })?;
+        .map_err(|err| Error::BootstrapFailed {
+            vm: vm.name.clone(),
+            message: err,
+        })?;
 
     for warning in &blueprint.warnings {
         diagnostics.push(
@@ -508,7 +517,6 @@ fn run_for_vm(
             });
         }
     }
-
 
     let handshake_path = state_root.join("handshakes").join(format!(
         "{}.json",
@@ -592,13 +600,23 @@ fn run_for_vm(
         trigger,
     });
 
+    let ssh_identity_detail = blueprint
+        .ssh
+        .identity
+        .as_ref()
+        .map(|path| format!(" (identity {})", path.display()))
+        .unwrap_or_default();
     emit_event(Event::Message {
         severity: Severity::Info,
         text: format!(
-            "→ {}: waiting for bootstrap handshake `{}` at {} (timeout {}s; freshness {}s).",
+            "→ {}: waiting for bootstrap readiness: handshake `{}` at {} or SSH {}@{}:{}{} (timeout {}s; freshness {}s).",
             vm.name,
             blueprint.handshake_identity,
             handshake_path.display(),
+            blueprint.ssh.user,
+            blueprint.ssh.host,
+            blueprint.ssh.port,
+            ssh_identity_detail,
             blueprint.handshake_timeout.as_secs(),
             HANDSHAKE_FRESHNESS.as_secs()
         ),
@@ -610,38 +628,27 @@ fn run_for_vm(
 
     let handshake_start = Instant::now();
     let handshake_result = wait_for_handshake(
-        state_root,
         &vm.name,
         &blueprint.handshake_identity,
+        &handshake_path,
+        &blueprint.ssh,
         blueprint.handshake_timeout,
     );
     let handshake_duration = handshake_start.elapsed();
 
-    println!("FOUND HANDSHAKE");
-
     match handshake_result {
-        Ok(handshake_ts) => {
+        Ok(success) => {
             steps.push(StepLog::success(
                 BootstrapStepKind::WaitHandshake,
                 handshake_duration,
-                Some(format!(
-                    "Fresh handshake observed at {:?} (identity `{}` via {}).",
-                    handshake_ts,
-                    blueprint.handshake_identity,
-                    handshake_path.display()
-                )),
+                Some(success.detail.clone()),
             ));
             emit_event(Event::BootstrapStep {
                 vm: vm.name.clone(),
                 step: BootstrapStepKind::WaitHandshake,
                 status: BootstrapStepStatus::Success,
                 duration_ms: elapsed_ms(handshake_duration),
-                detail: Some(format!(
-                    "Handshake fresh at {:?}; identity `{}`; file {}.",
-                    handshake_ts,
-                    blueprint.handshake_identity,
-                    handshake_path.display()
-                )),
+                detail: Some(success.detail.clone()),
             });
         }
         Err(err) => {
@@ -649,30 +656,24 @@ fn run_for_vm(
                 Error::BootstrapFailed { message, .. } => message.clone(),
                 other => other.to_string(),
             };
-            let enriched_detail = format!(
-                "{} (identity `{}` expected at {}).",
-                failure_detail,
-                blueprint.handshake_identity,
-                handshake_path.display()
-            );
             steps.push(StepLog::from_result(
                 BootstrapStepKind::WaitHandshake,
                 BootstrapStepStatus::Failed,
                 handshake_duration,
-                Some(enriched_detail.clone()),
+                Some(failure_detail.clone()),
             ));
             emit_event(Event::BootstrapStep {
                 vm: vm.name.clone(),
                 step: BootstrapStepKind::WaitHandshake,
                 status: BootstrapStepStatus::Failed,
                 duration_ms: elapsed_ms(handshake_duration),
-                detail: Some(enriched_detail.clone()),
+                detail: Some(failure_detail.clone()),
             });
             let duration_ms = elapsed_ms(start.elapsed());
             emit_event(Event::BootstrapFailed {
                 vm: vm.name.clone(),
                 duration_ms,
-                error: enriched_detail.clone(),
+                error: failure_detail.clone(),
             });
             let log_record = BootstrapRunLog::failure(
                 &vm.name,
@@ -680,12 +681,13 @@ fn run_for_vm(
                 &base_hash,
                 steps,
                 duration_ms,
-                enriched_detail.clone(),
+                failure_detail.clone(),
             );
             write_run_log(&log_dir, &log_record).map_err(|io_err| Error::BootstrapFailed {
                 vm: vm.name.clone(),
                 message: format!("Failed to persist bootstrap log: {io_err}"),
             })?;
+            teardown_bootstrap_vm(vm, state_root, &lifecycle, emit_event, diagnostics);
             return Err(err);
         }
     }
@@ -710,8 +712,7 @@ fn run_for_vm(
         ),
     });
 
-    println!("CHECKING CONNECTIVITY");
-    let connect_outcome = check_connectivity(&blueprint);
+    let connect_outcome = check_connectivity(&blueprint.ssh);
     let connect_duration = connect_outcome.duration;
     emit_event(Event::BootstrapStep {
         vm: vm.name.clone(),
@@ -750,14 +751,12 @@ fn run_for_vm(
             message: format!("Failed to persist bootstrap log: {io_err}"),
         })?;
 
-        println!("BOOTSTRAP FAILED");
+        teardown_bootstrap_vm(vm, state_root, &lifecycle, emit_event, diagnostics);
         return Err(Error::BootstrapFailed {
             vm: vm.name.clone(),
             message: failure_detail,
         });
     }
-
-    println!("TRANSFERRING CONTEXT");
 
     let mut transfer_context = Vec::new();
     transfer_context.push(format!(
@@ -826,13 +825,12 @@ fn run_for_vm(
             vm: vm.name.clone(),
             message: format!("Failed to persist bootstrap log: {io_err}"),
         })?;
+        teardown_bootstrap_vm(vm, state_root, &lifecycle, emit_event, diagnostics);
         return Err(Error::BootstrapFailed {
             vm: vm.name.clone(),
             message: failure_detail,
         });
     }
-
-    println!("APPLYING CONTEXT");
 
     let mut apply_context = Vec::new();
     apply_context.push(format!("remote dir {}", blueprint.remote_dir));
@@ -895,13 +893,12 @@ fn run_for_vm(
             vm: vm.name.clone(),
             message: format!("Failed to persist bootstrap log: {io_err}"),
         })?;
+        teardown_bootstrap_vm(vm, state_root, &lifecycle, emit_event, diagnostics);
         return Err(Error::BootstrapFailed {
             vm: vm.name.clone(),
             message: failure_detail,
         });
     }
-
-    println!("VERIFYING CONTEXT");
 
     let mut verify_context = Vec::new();
     if let Some(command) = blueprint.verify.command.as_ref() {
@@ -965,6 +962,7 @@ fn run_for_vm(
             vm: vm.name.clone(),
             message: format!("Failed to persist bootstrap log: {io_err}"),
         })?;
+        teardown_bootstrap_vm(vm, state_root, &lifecycle, emit_event, diagnostics);
         return Err(Error::BootstrapFailed {
             vm: vm.name.clone(),
             message: failure_detail,
@@ -1014,42 +1012,93 @@ fn run_for_vm(
     })
 }
 
+#[derive(Debug)]
+struct HandshakeSuccess {
+    detail: String,
+}
+
 fn wait_for_handshake(
-    state_root: &Path,
     vm: &str,
     handshake_identity: &str,
+    handshake_path: &Path,
+    ssh: &SshConfig,
     timeout: Duration,
-) -> Result<SystemTime> {
-    let file_name = format!("{}.json", sanitize_handshake_identity(handshake_identity));
-    let handshake_path = state_root.join("handshakes").join(file_name);
+) -> Result<HandshakeSuccess> {
     let deadline = Instant::now() + timeout;
-
-    println!("WAITING FOR HANDSHAKE");
+    let mut last_probe: Option<Instant> = None;
+    let mut attempted_connectivity = false;
+    let mut last_connectivity_error: Option<String> = None;
 
     loop {
-        if let Some(timestamp) = read_handshake_timestamp(&handshake_path)? {
+        if let Some(timestamp) = read_handshake_timestamp(handshake_path)? {
             let now = SystemTime::now();
             if now
                 .duration_since(timestamp)
                 .unwrap_or_else(|_| Duration::from_secs(0))
                 <= HANDSHAKE_FRESHNESS
             {
-                return Ok(timestamp);
+                let detail = format!(
+                    "Handshake file {} updated at {:?} (identity `{}`).",
+                    handshake_path.display(),
+                    timestamp,
+                    handshake_identity
+                );
+                return Ok(HandshakeSuccess { detail });
             }
         }
 
         let now = Instant::now();
         if now >= deadline {
+            let mut message = format!(
+                "Timed out waiting for bootstrap readiness. Expected handshake `{}` at {} within {}s (freshness window {}s).",
+                handshake_identity,
+                handshake_path.display(),
+                timeout.as_secs(),
+                HANDSHAKE_FRESHNESS.as_secs()
+            );
+            if let Some(err) = last_connectivity_error {
+                message.push_str(&format!(" Last SSH probe error: {err}"));
+            } else if attempted_connectivity {
+                message.push_str(" SSH connectivity probes did not succeed within the deadline.");
+            } else {
+                message.push_str(" SSH connectivity probes were not attempted.");
+            }
             return Err(Error::BootstrapFailed {
                 vm: vm.to_string(),
-                message: format!(
-                    "Timed out waiting for fresh bootstrap handshake `{}` at {} after {} seconds (freshness window {}s).",
-                    handshake_identity,
-                    handshake_path.display(),
-                    timeout.as_secs(),
-                    HANDSHAKE_FRESHNESS.as_secs()
-                ),
+                message,
             });
+        }
+
+        let should_probe = last_probe
+            .map(|stamp| {
+                now.duration_since(stamp) >= Duration::from_millis(CONNECTIVITY_RETRY_DELAY_MS)
+            })
+            .unwrap_or(true);
+        if should_probe {
+            attempted_connectivity = true;
+            let outcome = check_connectivity(ssh);
+            if matches!(outcome.status, BootstrapStepStatus::Success) {
+                let mut detail = outcome.detail.unwrap_or_else(|| {
+                    format!(
+                        "SSH connectivity confirmed for {}@{}:{}.",
+                        ssh.user, ssh.host, ssh.port
+                    )
+                });
+                detail.push(' ');
+                detail.push_str(&format!(
+                    "Handshake file {} was missing or stale; treating SSH reachability as readiness.",
+                    handshake_path.display()
+                ));
+                return Ok(HandshakeSuccess { detail });
+            } else {
+                last_connectivity_error = outcome.detail.or_else(|| {
+                    Some(format!(
+                        "Failed to verify SSH connectivity for {}@{}:{}.",
+                        ssh.user, ssh.host, ssh.port
+                    ))
+                });
+            }
+            last_probe = Some(Instant::now());
         }
 
         let remaining = deadline.saturating_duration_since(now);
@@ -1058,6 +1107,49 @@ fn wait_for_handshake(
             std::thread::yield_now();
         } else {
             std::thread::sleep(sleep_for);
+        }
+    }
+}
+
+fn teardown_bootstrap_vm(
+    vm: &VmDefinition,
+    state_root: &Path,
+    lifecycle: &LifecycleConfig,
+    emit_event: &mut dyn FnMut(Event),
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    emit_event(Event::Message {
+        severity: Severity::Warning,
+        text: format!(
+            "→ {}: bootstrap failed; shutting down VM to reset state.",
+            vm.name
+        ),
+    });
+
+    let timeouts = ShutdownTimeouts::new(
+        lifecycle.graceful_wait(),
+        lifecycle.sigterm_wait(),
+        lifecycle.sigkill_wait(),
+    );
+
+    match shutdown_vm(vm, state_root, timeouts, None) {
+        Ok(report) => {
+            for event in report.events {
+                emit_event(event);
+            }
+            diagnostics.extend(report.diagnostics);
+        }
+        Err(err) => {
+            diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "Failed to shut down VM `{}` after bootstrap error: {}",
+                        vm.name, err
+                    ),
+                )
+                .with_help("Run `castra down` to ensure the guest is stopped."),
+            );
         }
     }
 }
@@ -2120,24 +2212,23 @@ fn append_command_detail(parts: &mut Vec<String>, label: &str, output: &ProcessO
     }
 }
 
-fn check_connectivity(blueprint: &BootstrapBlueprint) -> CommandOutcome {
+fn check_connectivity(ssh: &SshConfig) -> CommandOutcome {
     let start = Instant::now();
     let probe_args = vec![String::from("true")];
     let mut attempt_errors = Vec::new();
 
     for attempt in 1..=CONNECTIVITY_ATTEMPTS {
-        println!("SSH connectivity attempt {}", attempt);
-        match run_ssh_command_capture(&blueprint.ssh, &probe_args) {
+        match run_ssh_command_capture(ssh, &probe_args) {
             Ok(output) => {
                 let mut detail_parts = vec![format!(
                     "SSH connectivity confirmed ({}@{}:{}) via `{}`.",
-                    blueprint.ssh.user, blueprint.ssh.host, blueprint.ssh.port, output.command
+                    ssh.user, ssh.host, ssh.port, output.command
                 )];
-                if let Some(identity) = blueprint.ssh.identity.as_ref() {
+                if let Some(identity) = ssh.identity.as_ref() {
                     detail_parts.push(format!("identity {}", identity.display()));
                 }
-                if !blueprint.ssh.options.is_empty() {
-                    detail_parts.push(format!("options {}", blueprint.ssh.options.join(", ")));
+                if !ssh.options.is_empty() {
+                    detail_parts.push(format!("options {}", ssh.options.join(", ")));
                 }
                 if attempt > 1 {
                     detail_parts.push(format!(
@@ -2728,6 +2819,11 @@ mod tests {
         Ok(path)
     }
 
+    enum HandshakeFixture {
+        FreshFile,
+        Missing,
+    }
+
     #[test]
     fn bootstrap_pipeline_skips_when_skip_mode()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -2841,7 +2937,6 @@ mod tests {
 
         let base_image_path = workspace.join("base.img");
         fs::write(&base_image_path, b"base-image")?;
-
 
         let vm = VmDefinition {
             name: "devbox".to_string(),
@@ -2983,16 +3078,61 @@ mod tests {
     #[test]
     fn bootstrap_pipeline_runs_successfully() -> std::result::Result<(), Box<dyn std::error::Error>>
     {
-        run_success_scenario("success")
+        let _events = run_success_scenario("success", HandshakeFixture::FreshFile)?;
+        Ok(())
     }
 
     #[test]
     fn bootstrap_pipeline_emits_noop_on_sentinel()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        run_success_scenario("noop")
+        let _events = run_success_scenario("noop", HandshakeFixture::FreshFile)?;
+        Ok(())
     }
 
-    fn run_success_scenario(mode: &str) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    #[test]
+    fn bootstrap_pipeline_uses_ssh_readiness_when_handshake_missing()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let events = run_success_scenario("success", HandshakeFixture::Missing)?;
+        let (status, detail) = events
+            .iter()
+            .find_map(|event| match event {
+                Event::BootstrapStep {
+                    step,
+                    status,
+                    detail,
+                    ..
+                } if *step == BootstrapStepKind::WaitHandshake => Some((status, detail)),
+                _ => None,
+            })
+            .expect("handshake step event missing");
+
+        assert_eq!(
+            *status,
+            BootstrapStepStatus::Success,
+            "handshake fallback should succeed via SSH"
+        );
+        let detail_text = detail
+            .as_ref()
+            .expect("handshake step detail should be present");
+        assert!(
+            detail_text.contains("SSH connectivity confirmed"),
+            "handshake fallback detail should mention SSH probe: {detail_text}"
+        );
+        assert!(
+            detail_text.contains("missing or stale"),
+            "handshake fallback detail should explain missing handshake file: {detail_text}"
+        );
+        assert!(
+            detail_text.contains("handshakes") && detail_text.contains("devbox.json"),
+            "handshake fallback detail should reference the expected file path: {detail_text}"
+        );
+        Ok(())
+    }
+
+    fn run_success_scenario(
+        mode: &str,
+        handshake_fixture: HandshakeFixture,
+    ) -> std::result::Result<Vec<Event>, Box<dyn std::error::Error>> {
         let _env_guard = PATH_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let temp_dir = TempDir::new()?;
         let workspace = temp_dir.path();
@@ -3002,10 +3142,12 @@ mod tests {
         fs::create_dir_all(state_root.join("logs"))?;
         fs::create_dir_all(state_root.join("images"))?;
 
-        let handshake_path = state_root.join("handshakes").join("devbox.json");
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let handshake_payload = json!({ "timestamp": now });
-        fs::write(&handshake_path, serde_json::to_vec(&handshake_payload)?)?;
+        if matches!(handshake_fixture, HandshakeFixture::FreshFile) {
+            let handshake_path = state_root.join("handshakes").join("devbox.json");
+            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+            let handshake_payload = json!({ "timestamp": now });
+            fs::write(&handshake_path, serde_json::to_vec(&handshake_payload)?)?;
+        }
 
         let project_root = workspace.join("project");
         let script_source = project_root.join("bootstrap").join("devbox").join("run.sh");
@@ -3129,6 +3271,6 @@ mod tests {
         if !diagnostics.is_empty() {
             panic!("diagnostics: {:?}", diagnostics);
         }
-        Ok(())
+        Ok(events)
     }
 }
